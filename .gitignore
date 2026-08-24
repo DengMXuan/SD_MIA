@@ -1,0 +1,40 @@
+# Python caches and test tooling
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv / local environments
+.venv/
+.env
+.env.*
+!.env.example
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# IDE and operating-system files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Local logs and temporary experiment files
+*.log
+experiments/results/qwen3_sft/_smoke/
+
+# Model checkpoints and adapter weights are reproducible artifacts, not source
+experiments/results/**/adapters/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.gguf
