@@ -39,3 +39,7 @@ experiments/results/**/adapters/
 *.pth
 *.ckpt
 *.gguf
+
+# Local literature and research notes
+/papers/
+/research/
