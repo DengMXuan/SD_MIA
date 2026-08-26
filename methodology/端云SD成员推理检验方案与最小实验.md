@@ -334,7 +334,7 @@ $$
 | 辅助蒸馏草稿 Min-K% | 0.536 | [0.465, 0.614] | 蒸馏后草稿自身仍接近随机 |
 | 辅助蒸馏草稿 + 接受率 | **0.643** | **[0.565, 0.714]** | 比草稿自身高 0.107 |
 
-主要证据是 `unattested verifier feedback > draft only`，而不是草稿白盒探针本身。隐藏状态线性探针在本 pilot 中只有 0.50–0.55 AUC，尚无支持；这也避免把所有白盒信号都包装成有效结果。被动 L2 自然生成尚未由该 pilot 验证，后续必须单列。
+主要证据是 `unattested verifier feedback > draft only`，而不是草稿白盒探针本身。隐藏状态线性探针在本 pilot 中只有 0.50–0.55 AUC，尚无支持；这也避免把所有白盒信号都包装成有效结果。真正的被动 L2 自然生成已在 P1 单列验证，但结果必须与此前固定候选 token 的 L3/模拟 verifier 结果分开报告。
 
 ### 8.3 高记忆上界（8 epochs）
 
@@ -353,10 +353,37 @@ $$
 - q-min 层析在 1-epoch 设置只有 AUC 0.514–0.571，没有稳定超过直接接受率；
 - 隐藏状态和梯度范数代理在当前样本量下接近随机；
 - 低 FPR TPR 仍很低且方差大；
-- 当前只跑了一个数据划分/训练 seed；
+- P0 已在一个固定数据划分上跑完 5 个训练 seed；跨数据划分和文档级隔离仍未验证；
 - 当前 verifier 是本地语义仿真，尚未接入 PipeSD/SpecEdge 的真实网络代码路径。
 
 因此目前最稳妥的论文主线是**接受比值 + 白盒草稿校准**，而不是接受反馈层析或复杂内部表示。
+
+### 8.7 P0：训练 seed/epoch 稳定性与低 FPR 审计集
+
+为区分“单次 SFT 偶然现象”和训练强度效应，P0 固定 `data_seed=20260824` 与 `audit_seed=20260824`，在 Qwen3-8B-Base target、Qwen3-1.7B-Base base draft 上运行 5 个训练 seed（`20260824`–`20260828`）和 `0/1/2/4` epoch。每个主条件使用 320 members、320 nonmembers，其中 48/类只用于 calibration；另对 epoch1/epoch4 使用 1,048/类，使 held-out test 恰好为 1,000/类。P0 只保留 base draft，避免把 auxiliary/member draft 的训练条件混入稳定性矩阵。
+
+320/类矩阵的联合白盒+协议 AUC 如下：
+
+| target SFT epoch | mean AUC | SD | range |
+|---:|---:|---:|---:|
+| 0 | 0.512 | 0.000 | 0.512–0.512 |
+| 1 | 0.601 | 0.016 | 0.589–0.620 |
+| 2 | 0.874 | 0.012 | 0.859–0.889 |
+| 4 | 0.997 | 0.001 | 0.996–0.998 |
+
+在 1,048/类大审计条件中，epoch1 的联合 AUC 为 0.594、TPR@1%FPR 为 0.037；epoch4 为 0.990、TPR@1%FPR 为 0.768。P0 支持“当前 adapter SFT 的记忆强度是主要驱动因素，且在固定数据划分上跨训练 seed 稳定”的描述，但不支持将结果外推为生产 SFT 或预训练成员风险。完整结果见 [P0 SUMMARY](../experiments/results/qwen3_sft/p0_matrix/SUMMARY.md)。
+
+### 8.8 P1：真正被动 L2 自然采样协议
+
+P1 使用已有 epoch1/epoch4 target adapter，给定每条 response 的前 48 个 token 作为 context，由 Qwen3-1.7B-Base 自然采样 4-token block；没有固定候选 token、调节 q 或做 q-min 选择。Qwen3-8B-Base target 对每个候选 token 使用温度一致的
+`min(1,p/q)` 接受概率，首次拒绝时从 `(p-q)+` residual 分布采样 correction；每条记录独立重复 8 轮。每个条件为 160/类，48/类用于 calibration，112/类用于 held-out test，因此该阶段是协议真实性验证，不承担低 FPR 结论。
+
+| target SFT epoch | acceptance AUC | joint passive-L2 AUC (95% CI) | TPR@1%FPR |
+|---:|---:|---:|---:|
+| 1 | 0.515 | 0.505 [0.432, 0.573] | 0.009 |
+| 4 | 0.436 | **0.631 [0.554, 0.708]** | 0.054 |
+
+epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出现描述性信号，但单独接受率方向反而低于 0.5，说明不能预设“接受率越高越像 member”。因此 P1 的当前结论是：强 adapter SFT 条件下，完整被动 L2 统计可能具有成员可识别性；epoch1 的弱记忆条件尚无支持。该结果仍受单一数据划分、本地 target 仿真和 160/类规模限制。完整结果见 [P1 SUMMARY](../experiments/results/qwen3_sft/p1_passive_l2/SUMMARY.md)。
 
 ### 8.5 Qwen3 真正 instruction SFT（单 seed）
 

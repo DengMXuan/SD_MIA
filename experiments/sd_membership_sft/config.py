@@ -8,6 +8,8 @@ from typing import Any
 @dataclass
 class Config:
     seed: int = 20260824
+    data_seed: int = 20260824
+    audit_seed: int = 20260824
     gpu: int = 0
     target_model: str = "Qwen/Qwen3-8B-Base"
     draft_model: str = "Qwen/Qwen3-1.7B-Base"
@@ -31,6 +33,9 @@ class Config:
     transcript_repeats: int = 24
     transcript_levels: int = 5
     bootstrap_repeats: int = 500
+    run_auxiliary_draft: bool = True
+    run_member_draft: bool = True
+    save_adapters: bool = True
     output_dir: Path = Path("experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch1")
 
     def as_dict(self) -> dict[str, Any]:

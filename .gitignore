@@ -29,6 +29,7 @@ dist/
 # Local logs and temporary experiment files
 *.log
 experiments/results/qwen3_sft/_smoke/
+experiments/results/qwen3_sft/_*_smoke/
 
 # Model checkpoints and adapter weights are reproducible artifacts, not source
 experiments/results/**/adapters/

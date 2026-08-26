@@ -152,7 +152,7 @@ def build_controlled_split(
     )
 
 
-def make_sft_example(record: SFTRecord, tokenizer: Any) -> dict[str, list[int]]:
+def prompt_prefix_ids(record: SFTRecord, tokenizer: Any) -> list[int]:
     messages = [{"role": "user", "content": record.prompt}]
     try:
         prefix_ids = tokenizer.apply_chat_template(
@@ -171,6 +171,11 @@ def make_sft_example(record: SFTRecord, tokenizer: Any) -> dict[str, list[int]]:
                 f"### User:\n{record.prompt}\n### Assistant:\n",
                 add_special_tokens=True,
             ).input_ids
+    return list(prefix_ids)
+
+
+def make_sft_example(record: SFTRecord, tokenizer: Any) -> dict[str, list[int]]:
+    prefix_ids = prompt_prefix_ids(record, tokenizer)
 
     response_ids = list(record.response_ids)
     if tokenizer.eos_token_id is not None:

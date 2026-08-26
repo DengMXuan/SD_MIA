@@ -31,16 +31,24 @@ def parse_args() -> argparse.Namespace:
     for name, kind in [
         ("gpu", int),
         ("seed", int),
+        ("data-seed", int),
+        ("audit-seed", int),
         ("target-epochs", int),
         ("n-per-class", int),
         ("n-aux", int),
         ("audit-train-per-class", int),
         ("response-tokens", int),
+        ("target-batch-size", int),
+        ("target-grad-accum", int),
+        ("draft-batch-size", int),
+        ("draft-grad-accum", int),
         ("distill-steps", int),
         ("bootstrap-repeats", int),
     ]:
         parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=kind)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--skip-trained-drafts", action="store_true", default=None)
+    parser.add_argument("--no-save-adapters", action="store_true", default=None)
     return parser.parse_args()
 
 
@@ -50,9 +58,14 @@ def load_config(args: argparse.Namespace) -> Config:
         with args.config.open("rb") as handle:
             values.update(tomllib.load(handle))
     for key, value in vars(args).items():
-        if key == "config" or value is None:
+        if key in {"config", "skip_trained_drafts", "no_save_adapters"} or value is None:
             continue
         values[key] = value
+    if args.skip_trained_drafts:
+        values["run_auxiliary_draft"] = False
+        values["run_member_draft"] = False
+    if args.no_save_adapters:
+        values["save_adapters"] = False
     values["output_dir"] = Path(values["output_dir"])
     return Config(**values)
 
@@ -151,7 +164,8 @@ def main() -> None:
     root = Path(__file__).resolve().parents[2]
     output_dir = cfg.output_dir if cfg.output_dir.is_absolute() else root / cfg.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "adapters").mkdir(exist_ok=True)
+    if cfg.save_adapters:
+        (output_dir / "adapters").mkdir(exist_ok=True)
 
     device = torch.device(f"cuda:{cfg.gpu}")
     torch.cuda.set_device(device)
@@ -169,7 +183,7 @@ def main() -> None:
         cfg.response_tokens,
         cfg.n_per_class,
         cfg.n_aux,
-        cfg.seed,
+        cfg.data_seed,
     )
     candidates = members + nonmembers
 
@@ -192,7 +206,8 @@ def main() -> None:
         cfg.seed + 10,
         "target SFT",
     )
-    save_adapter(target, output_dir / "adapters" / "target")
+    if cfg.save_adapters:
+        save_adapter(target, output_dir / "adapters" / "target")
     target_features = extract_features(
         target, candidates, tokenizer, device, cfg.target_batch_size
     )
@@ -205,67 +220,73 @@ def main() -> None:
     gc.collect()
     torch.cuda.empty_cache()
 
-    auxiliary_draft = add_lora(
-        load_causal_lm(cfg.draft_model, device),
-        cfg.lora_r,
-        cfg.lora_alpha,
-        cfg.lora_dropout,
-    )
-    aux_distill_loss = distill_on_auxiliary(
-        auxiliary_draft,
-        target,
-        auxiliary,
-        tokenizer,
-        device,
-        cfg.distill_steps,
-        cfg.draft_batch_size,
-        cfg.draft_lr,
-        cfg.distill_temperature,
-        cfg.seed + 20,
-    )
-    save_adapter(auxiliary_draft, output_dir / "adapters" / "draft_auxiliary_distilled")
-    auxiliary_features = extract_features(
-        auxiliary_draft, candidates, tokenizer, device, cfg.draft_batch_size
-    )
-    del auxiliary_draft
-    gc.collect()
-    torch.cuda.empty_cache()
+    draft_features = {"base_draft": base_features}
+    aux_distill_loss: list[float] = []
+    member_draft_sft_loss: list[float] = []
+    if cfg.run_auxiliary_draft:
+        auxiliary_draft = add_lora(
+            load_causal_lm(cfg.draft_model, device),
+            cfg.lora_r,
+            cfg.lora_alpha,
+            cfg.lora_dropout,
+        )
+        aux_distill_loss = distill_on_auxiliary(
+            auxiliary_draft,
+            target,
+            auxiliary,
+            tokenizer,
+            device,
+            cfg.distill_steps,
+            cfg.draft_batch_size,
+            cfg.draft_lr,
+            cfg.distill_temperature,
+            cfg.seed + 20,
+        )
+        if cfg.save_adapters:
+            save_adapter(
+                auxiliary_draft,
+                output_dir / "adapters" / "draft_auxiliary_distilled",
+            )
+        draft_features["aux_distilled_draft"] = extract_features(
+            auxiliary_draft, candidates, tokenizer, device, cfg.draft_batch_size
+        )
+        del auxiliary_draft
+        gc.collect()
+        torch.cuda.empty_cache()
 
-    member_draft = add_lora(
-        load_causal_lm(cfg.draft_model, device),
-        cfg.lora_r,
-        cfg.lora_alpha,
-        cfg.lora_dropout,
-    )
-    member_draft_sft_loss = sft_train(
-        member_draft,
-        members,
-        tokenizer,
-        device,
-        cfg.target_epochs,
-        cfg.draft_batch_size,
-        cfg.draft_grad_accum,
-        cfg.draft_lr,
-        cfg.seed + 21,
-        "member-data draft SFT",
-    )
-    save_adapter(member_draft, output_dir / "adapters" / "draft_member_sft")
-    member_features = extract_features(
-        member_draft, candidates, tokenizer, device, cfg.draft_batch_size
-    )
-    del member_draft
-    gc.collect()
-    torch.cuda.empty_cache()
+    if cfg.run_member_draft:
+        member_draft = add_lora(
+            load_causal_lm(cfg.draft_model, device),
+            cfg.lora_r,
+            cfg.lora_alpha,
+            cfg.lora_dropout,
+        )
+        member_draft_sft_loss = sft_train(
+            member_draft,
+            members,
+            tokenizer,
+            device,
+            cfg.target_epochs,
+            cfg.draft_batch_size,
+            cfg.draft_grad_accum,
+            cfg.draft_lr,
+            cfg.seed + 21,
+            "member-data draft SFT",
+        )
+        if cfg.save_adapters:
+            save_adapter(member_draft, output_dir / "adapters" / "draft_member_sft")
+        draft_features["member_sft_draft"] = extract_features(
+            member_draft, candidates, tokenizer, device, cfg.draft_batch_size
+        )
+        del member_draft
+        gc.collect()
+        torch.cuda.empty_cache()
 
     metrics, budget = run_audit(
         members,
         nonmembers,
         target_features,
-        {
-            "base_draft": base_features,
-            "aux_distilled_draft": auxiliary_features,
-            "member_sft_draft": member_features,
-        },
+        draft_features,
         cfg,
     )
     training = {

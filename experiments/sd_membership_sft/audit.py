@@ -276,7 +276,7 @@ def run_audit(
         [np.ones(len(members), dtype=np.int64), np.zeros(len(nonmembers), dtype=np.int64)]
     )
     ids = np.asarray([record.response_ids for record in candidates], dtype=np.int64)
-    rng = np.random.default_rng(config.seed + 30)
+    rng = np.random.default_rng(config.audit_seed + 30)
     positive = rng.permutation(len(members))
     negative = rng.permutation(len(nonmembers)) + len(members)
     train_idx = np.concatenate(
@@ -292,7 +292,7 @@ def run_audit(
     bow = hashed_bow(ids)
     bow_test = fit_logistic(bow[train_idx], labels[train_idx], bow[test_idx])
     results["control/model_less_hashed_bow"] = metric_row(
-        labels[test_idx], bow_test, config.bootstrap_repeats, config.seed + 500
+        labels[test_idx], bow_test, config.bootstrap_repeats, config.audit_seed + 500
     )
 
     query_arrays: list[np.ndarray] = []
@@ -309,7 +309,7 @@ def run_audit(
             config.transcript_repeats,
             config.transcript_levels,
             config.bootstrap_repeats,
-            config.seed + 600 + index * 100,
+            config.audit_seed + 600 + index * 100,
             results,
         )
         query_arrays.append(extra["query_bits"])
