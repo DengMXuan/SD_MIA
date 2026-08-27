@@ -18,9 +18,19 @@ class SFTRecord:
     source: str
     response_ids: tuple[int, ...]
     response_hash: str
+    topic: str | None = None
+    source_char_count: int = 0
+    source_timestamp: str = ""
+    source_revision: int = 0
 
     @property
     def prompt(self) -> str:
+        if self.topic is not None:
+            return (
+                "Continue a public web document in its original factual style. "
+                f"Source domain: {self.topic}. Output only the continuation, without a "
+                "heading, citation, or commentary."
+            )
         title = Path(self.source).stem.replace("_", " ").replace("-", " ")
         return (
             f"请以严谨的技术文档风格，介绍论文《{title}》中的一个连续技术段落。"
@@ -212,6 +222,9 @@ def records_metadata(records: list[SFTRecord]) -> list[dict[str, Any]]:
             "source": record.source,
             "response_hash": record.response_hash,
             "response_token_count": len(record.response_ids),
+            "source_char_count": record.source_char_count,
+            "source_timestamp": record.source_timestamp,
+            "source_revision": record.source_revision,
         }
         for record in records
     ]

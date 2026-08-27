@@ -20,10 +20,17 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def load_causal_lm(model_id: str, device: torch.device) -> PreTrainedModel:
+def load_causal_lm(
+    model_id: str,
+    device: torch.device,
+    revision: str | None = None,
+    local_files_only: bool = False,
+) -> PreTrainedModel:
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch.bfloat16,
+        revision=revision,
+        local_files_only=local_files_only,
+        dtype=torch.bfloat16,
         low_cpu_mem_usage=True,
         attn_implementation="eager",
     )
@@ -33,13 +40,20 @@ def load_causal_lm(model_id: str, device: torch.device) -> PreTrainedModel:
 
 
 def add_lora(model: PreTrainedModel, r: int, alpha: int, dropout: float) -> PeftModel:
-    config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=r,
-        lora_alpha=alpha,
-        lora_dropout=dropout,
-        bias="none",
-        target_modules=[
+    model_type = str(getattr(model.config, "model_type", ""))
+    if model_type == "gpt_neox":
+        target_modules = [
+            "query_key_value",
+            "dense",
+            "dense_h_to_4h",
+            "dense_4h_to_h",
+        ]
+    elif model_type == "opt":
+        target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
+    elif model_type == "gpt2":
+        target_modules = ["c_attn", "c_proj", "c_fc"]
+    else:
+        target_modules = [
             "q_proj",
             "k_proj",
             "v_proj",
@@ -47,7 +61,14 @@ def add_lora(model: PreTrainedModel, r: int, alpha: int, dropout: float) -> Peft
             "gate_proj",
             "up_proj",
             "down_proj",
-        ],
+        ]
+    config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM,
+        r=r,
+        lora_alpha=alpha,
+        lora_dropout=dropout,
+        bias="none",
+        target_modules=target_modules,
     )
     peft_model = get_peft_model(model, config)
     peft_model.config.use_cache = False

@@ -1,19 +1,20 @@
 # 端云协同推测解码的成员推理检验方案与最小实验
 
-> 版本：2026-08-24  
-> 研究对象：端侧部署白盒草稿模型 $q_\phi$，云端部署完整验证模型 $p_\theta$  
+> 版本：2026-08-27
+> 研究对象：端侧部署白盒草稿模型 $q_\phi$，云端部署完整验证模型 $p_\theta$
 > 术语约定：本文统一使用“检验、审计、评估者、适应性客户端”等中性表述。论文原文中的 MIA 在本文中称为“成员推理检验”。
 
 ## Material Passport
 
-- 研究阶段：研究问题收敛 + 方法设计 + 单卡可行性 pilot
-- 证据状态：`PILOT_SUPPORTED`，尚非生产部署结论
+- 研究阶段：方法设计 + 公开受控 SFT 跨模型有效性验证
+- 证据状态：`CONTROLLED_SFT_SUPPORTED_WITH_LIMITATIONS`，尚非生产部署结论
 - 实验代码：[sd_membership_pilot.py](../experiments/sd_membership_pilot.py)
 - 弱记忆结果：[pilot_epoch1/RESULTS.md](../experiments/results/pilot_epoch1/RESULTS.md)
 - 高记忆上界：[pilot/RESULTS.md](../experiments/results/pilot/RESULTS.md)
 - Qwen3 真正 SFT 代码：[sd_membership_sft/](../experiments/sd_membership_sft/)
 - Qwen3 真正 SFT 结果：[qwen3_1p7b_to_8b_epoch1/RESULTS.md](../experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch1/RESULTS.md)
 - Qwen3 强记忆对照：[qwen3_1p7b_to_8b_epoch4/RESULTS.md](../experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch4/RESULTS.md)
+- FineWeb 跨模型 v2 汇总：[public_sft/SUMMARY.md](../experiments/results/public_sft/SUMMARY.md)
 - 信号边界：只使用端云协议本来返回的验证结果；不使用时间、包长、功耗或其他侧信道
 
 ## 1. 结论先行
@@ -34,6 +35,8 @@
 5. 草稿常由验证模型蒸馏、剪枝或同源训练得到。现有蒸馏隐私研究表明，学生模型并不必然降低成员信号，某些样本上反而会放大。因此，白盒草稿本身和 draft–verifier 的耦合都应纳入检验。
 
 最小实验已经给出初步支持：在随机化、同来源的 1-epoch 弱记忆设置中，基础草稿的 Min-K% AUC 仅为 **0.536**，而未绑定草稿采样过程的 verifier 接受率达到 **0.612**，白盒草稿与协议反馈联合达到 **0.644**，接近直接读取云端 logits 的上界 **0.654**。pilot 固定待检记录的候选 token，但使用部署草稿给出的原始 $q$，没有调整 logits；因此它验证的是 L3“客户端可选择候选、服务端不证明候选确由 $q$ 采样”的接口，而不是 L2 被动自然生成。这回答了最关键的创新性质疑：**有效信号主要来自端云 draft–verify 关系，而不只是一般的小模型成员分数。**
+
+在公开 FineWeb 受控 SFT v2 中，这一判断又在 Qwen3、Pythia 和 GPT-2 三个模型族上得到更严格的检验：DraVer-Act 相对直接在草稿上运行 NART-style 的配对 $\Delta$AUC 分别为 **+0.360、+0.373、+0.114**，95% 区间均高于 0；Qwen/Pythia 中，q-bin 内打乱逐 token 验证—激活对齐后性能回到接近随机。另一方面，三模型相对 transcript-only 的配对区间都跨 0，因此当前证据支持“端云耦合相对 draft-only 的必要性”，但不支持“全层激活在相同反馈预算下普遍带来额外性能增益”。
 
 ## 2. 研究问题与可证伪假设
 
@@ -212,6 +215,68 @@ $$
 
 不得在测试集合调 k、层数、阈值或融合权重。
 
+### 5.7 DraVer-Act：验证条件化的草稿激活轨迹
+
+Tan et al.（NDSS 2026）的 NART 给出三个可直接采纳的经验事实：单独使用最后一层均值会遗漏信息；末 token 的全层激活比首/中间 token 更稳定；在标注较少时，triplet metric learning 比直接训练逻辑回归或 MLP 更稳。它的方法不能直接成为本工作的主方法，因为 NART 白盒访问的就是被审计目标，而端云 SD 客户端只白盒访问草稿 $q_\phi$。在 $q$ 上直接运行 NART，最多说明候选记录是否属于草稿训练数据，并不能回答它是否属于云端 $p_\theta$ 的训练数据。
+
+因此，本方案不把 NART 当作模板照搬，而把它改造成 SD 专属模块 **DraVer-Act（Draft–Verifier Conditioned Activation Trajectory）**。对每个候选位置 $i$，取草稿用于预测 $x_i$ 的各层状态 $h_{i,l}^q$，而不是对整条 response 做最后层 mean pooling。每层先计算资源可控的 StatFE-lite：
+
+$$
+u_{i,l}=\left[\operatorname{mean},\operatorname{std},\min,\max,
+Q_{10},Q_{25},Q_{50},Q_{75},Q_{90},\operatorname{RMS},
+\Delta\operatorname{RMS},\cos(h_{i,l}^q,h_{i,l-1}^q)\right],
+$$
+
+其中后两项显式描述层间表示轨迹。这比 NART 的“文本末 token 静态图”更贴合 SD：验证发生在逐 token 候选上，客户端需要知道哪些内部状态对应了云端的接受、拒绝或修正。
+
+为避免模型只学到“低 $q$ token 更容易被拒绝”这一平凡关系，先在 audit-calibration 集上、**不使用成员标签**拟合接受难度模型：
+
+$$
+g_\eta:\left[\ell_i^q,H_i^q,(\ell_i^q)^2,(H_i^q)^2,
+\ell_i^qH_i^q,i/L\right]\mapsto
+\operatorname{logit}(\widehat\alpha_i).
+$$
+
+校准样本使用四折 cross-fitting，测试样本只使用完整校准集拟合的 $g_\eta$，得到 verifier surprise residual：
+
+$$
+r_i=\operatorname{logit}(\widehat\alpha_i)-g_\eta(\ell_i^q,H_i^q,i/L).
+$$
+
+随后构造逐层的验证条件化池化：
+
+$$
+\mu_l=\frac1{|I|}\sum_{i\in I}u_{i,l},\qquad
+\mu_l^+=\frac{\sum_i\widehat\alpha_i u_{i,l}}{\sum_i\widehat\alpha_i},\qquad
+\mu_l^-=\frac{\sum_i(1-\widehat\alpha_i)u_{i,l}}{\sum_i(1-\widehat\alpha_i)},
+$$
+
+$$
+c_l=\mu_l^+-\mu_l^-,\qquad
+v_l=\frac1{|I|}\sum_{i\in I}r_i u_{i,l}.
+$$
+
+记录特征为 $F_{DV}(x)=[\mu,\mu^+,\mu^-,c,v,|r|\text{-pool},F_{transcript}]$。它同时要求：(1) 本地草稿的全层白盒状态；(2) SD 验证反馈；(3) $q$ 与反馈的逐 token 对齐。任意一项缺失，$v_l$ 都无法定义，这构成相对普通白盒成员检验的场景专属性。
+
+检测器借鉴 NART 的少样本思想，但做三点更严格的改造：
+
+1. audit-calibration 再拆为 representation-train 与 support，两者不重合；最终 test 始终封存；
+2. 均值、方差和常量维筛选只由 representation-train 计算，避免 NART 式全数据归一化可能带来的测试信息使用；
+3. 固定 margin 为 1.0，用轻量 MLP triplet encoder 学习 16 维嵌入，并以到 member/nonmember 支撑点的近邻距离差输出连续分数；不在测试集选“最佳层”。
+
+四个不可省略的可证伪对照是：
+
+| 对照 | 内容 | 能排除的替代解释 |
+|---|---|---|
+| `draft_nart_stat_last` | 草稿末位置、全层 StatFE + triplet | 草稿白盒本身已经足够 |
+| `transcript_only` | 只用接受率分位数和饱和率 | 收益完全来自验证轨迹 |
+| `naive_concat` | 草稿全层统计与 transcript 直接拼接 | 任意多模态拼接都能获得同样收益 |
+| `q-bin shuffled` | 在相同 $q$ 概率分桶内打乱反馈，再重算条件化特征 | 模型只利用 $q$、文本难度或边际反馈分布 |
+
+结论应分成两个强度层级。若 `DraVer-Act > draft NART-style` 且 q-bin 内打乱对齐后性能下降，可以支持“端云验证—草稿对齐包含 draft-only 无法解释的信息”；只有进一步满足 `DraVer-Act > transcript-only` 和 `DraVer-Act > naive concat`，才能主张“全层白盒激活本身在相同反馈预算下带来额外检验效用”。所有主张均以配对 bootstrap 的 $\Delta$AUC 区间为准，不能只比较点估计。
+
+协议适配必须分别实现：L3 固定候选时可直接使用上述全位置特征；L2 自然采样时只保留真实提议且在首次拒绝处截断，需要显式加入可见性 mask/逆概率加权；L1 贪心协议则把 $\widehat\alpha_i$ 换成 match bit，并用草稿 margin/rank 拟合 $g_\eta$。首轮最小验证只覆盖 L3，不向 L1/L2 外推。
+
 ## 6. 必须包含的对照与消融
 
 ### 6.1 一般成员基线
@@ -269,6 +334,16 @@ $$
 4. 时间切分只作外部有效性补充，不能作为主因果证据。
 
 每个样本记录：来源、长度、token 数、压缩率、稀有 token 数、n-gram overlap、训练 step、重复次数。成员与非成员做分层匹配。
+
+参考 NART 的“cutoff 后同池数据 + 受控微调 + blind control”，本方案增加以下更严格的基准规则：
+
+- 原始内容必须晚于 target 和 draft 两者可核验的预训练 cutoff；否则 base draft 可能天然见过候选，混淆“草稿预训练成员”与“云端 SFT 成员”；
+- 先按原始文档/段落组分配 member、nonmember、auxiliary，再切 token 窗口；禁止同一父段落的相邻窗口跨集合；
+- 除 SHA-256 精确去重外，增加跨集合 8-gram overlap 与近重复筛除；
+- target-SFT 集、detector representation-train、support、validation（若需要）和最终 test 的角色分别记录，任何归一化或层选择不得读取最终 test；
+- blind control 至少包含 source/length、hashed BoW、压缩率、稀有词和最近邻相似度；以“模型无关特征无法预测标签”作为结果有效性闸门；
+- “少量标注”按**每类**样本数明确报告（如 16/32/48 per class），避免把 training size、support size 和总样本数混写；
+- 固定数据划分跑多个 target 训练 seed 只能证明训练随机性稳定；还必须改变数据划分 seed，才能评估成员集合选择的稳定性。
 
 ### 7.2 模型矩阵
 
@@ -358,7 +433,7 @@ $$
 
 因此目前最稳妥的论文主线是**接受比值 + 白盒草稿校准**，而不是接受反馈层析或复杂内部表示。
 
-### 8.7 P0：训练 seed/epoch 稳定性与低 FPR 审计集
+### 8.5 P0：训练 seed/epoch 稳定性与低 FPR 审计集
 
 为区分“单次 SFT 偶然现象”和训练强度效应，P0 固定 `data_seed=20260824` 与 `audit_seed=20260824`，在 Qwen3-8B-Base target、Qwen3-1.7B-Base base draft 上运行 5 个训练 seed（`20260824`–`20260828`）和 `0/1/2/4` epoch。每个主条件使用 320 members、320 nonmembers，其中 48/类只用于 calibration；另对 epoch1/epoch4 使用 1,048/类，使 held-out test 恰好为 1,000/类。P0 只保留 base draft，避免把 auxiliary/member draft 的训练条件混入稳定性矩阵。
 
@@ -373,7 +448,7 @@ $$
 
 在 1,048/类大审计条件中，epoch1 的联合 AUC 为 0.594、TPR@1%FPR 为 0.037；epoch4 为 0.990、TPR@1%FPR 为 0.768。P0 支持“当前 adapter SFT 的记忆强度是主要驱动因素，且在固定数据划分上跨训练 seed 稳定”的描述，但不支持将结果外推为生产 SFT 或预训练成员风险。完整结果见 [P0 SUMMARY](../experiments/results/qwen3_sft/p0_matrix/SUMMARY.md)。
 
-### 8.8 P1：真正被动 L2 自然采样协议
+### 8.6 P1：真正被动 L2 自然采样协议
 
 P1 使用已有 epoch1/epoch4 target adapter，给定每条 response 的前 48 个 token 作为 context，由 Qwen3-1.7B-Base 自然采样 4-token block；没有固定候选 token、调节 q 或做 q-min 选择。Qwen3-8B-Base target 对每个候选 token 使用温度一致的
 `min(1,p/q)` 接受概率，首次拒绝时从 `(p-q)+` residual 分布采样 correction；每条记录独立重复 8 轮。每个条件为 160/类，48/类用于 calibration，112/类用于 held-out test，因此该阶段是协议真实性验证，不承担低 FPR 结论。
@@ -385,7 +460,7 @@ P1 使用已有 epoch1/epoch4 target adapter，给定每条 response 的前 48 �
 
 epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出现描述性信号，但单独接受率方向反而低于 0.5，说明不能预设“接受率越高越像 member”。因此 P1 的当前结论是：强 adapter SFT 条件下，完整被动 L2 统计可能具有成员可识别性；epoch1 的弱记忆条件尚无支持。该结果仍受单一数据划分、本地 target 仿真和 160/类规模限制。完整结果见 [P1 SUMMARY](../experiments/results/qwen3_sft/p1_passive_l2/SUMMARY.md)。
 
-### 8.5 Qwen3 真正 instruction SFT（单 seed）
+### 8.7 Qwen3 真正 instruction SFT（单 seed）
 
 本轮已将 target 训练改为真正的 instruction SFT：每条样本是“论文标题/固定技术写作指令 → 论文片段 assistant response”，prompt token 的 label 为 `-100`，只有 assistant response 参与 loss。target 为 `Qwen/Qwen3-8B-Base`，draft 为 `Qwen/Qwen3-1.7B-Base`；为适配单张 A100 80GB，target 和训练后的 draft 条件使用 LoRA，因此结果的准确表述是**adapter-based SFT membership**。
 
@@ -405,7 +480,7 @@ epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出
 
 该结果支持“auxiliary-distilled draft 的 verifier acceptance feedback 可能携带 SFT member 信息”的方向性判断，但尚不能证明跨 seed 稳定，也不能外推到 Qwen3 的预训练成员或真实网络 endpoint。q-min tomography 在该条件下没有超过直接接受率，应继续作为待验证分支。
 
-### 8.6 Qwen3 4-epoch 强记忆对照
+### 8.8 Qwen3 4-epoch 强记忆对照
 
 在完全相同的数据划分、seed、模型对和 LoRA 配置下，将 target 与 member-SFT draft 的训练轮数改为 4，作为强记忆 stress condition：
 
@@ -420,15 +495,35 @@ epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出
 
 这说明当 adapter SFT 造成强记忆时，协议接受反馈可以稳定放大 target 与 nonmember 的差异；它验证的是方法在强记忆边界下的可检出性，不应被当作生产 SFT 或预训练风险的估计。完整表格见 [epoch4/RESULTS.md](../experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch4/RESULTS.md)。
 
+### 8.9 FineWeb 公开受控 SFT：DraVer-Act 跨模型验证
+
+为直接学习 NART 的受控微调 benchmark，而不是只复用其特征形式，本轮从固定 FineWeb 2025 crawl dump 构造 600 条公开网页快照。先在同一池中按文档随机分配 160 members、160 nonmembers、160 auxiliary，再以 member-only LoRA 训练云端 target 3 epochs；端侧 draft 保持原始 checkpoint。每条 response 为 128 tokens，48/类用于 calibration、112/类用于封存 test。数据 SHA-256、模型 revision、记录来源和 adapter 均写入结果。
+
+三个模型对共享相同源 URL 和成员分组，但由各自 draft tokenizer 构造 token 序列：
+
+| 模型对 | DraVer-Act | draft NART-style | transcript-only | q-bin shuffle | $\Delta$ vs NART (95% CI) |
+|---|---:|---:|---:|---:|---:|
+| Qwen3-1.7B → Qwen3-8B | **0.9995** | 0.6392 | 0.9960 | 0.4887 | +0.360 [+0.291, +0.431] |
+| Pythia-410M → Pythia-1.4B | **0.8177** | 0.4452 | 0.8239 | 0.4469 | +0.373 [+0.284, +0.465] |
+| GPT-2 → GPT2-XL | **0.6374** | 0.5235 | 0.6336 | 0.5435 | +0.114 [+0.018, +0.201] |
+
+未适配 target 的 DraVer-Act AUC 分别为 0.431、0.459、0.419，区间均覆盖随机水平；source metadata 与 URL hash 盲控制 AUC 为 0.554 和 0.477，区间也覆盖 0.5。正式结果中，Qwen/Pythia 相对 q-bin shuffle 的配对区间高于 0；GPT-2 该区间跨 0，表现出更弱的 target 记忆和更高 detector-seed 方差。
+
+反馈预算扫描复用同一 adapter，并对同一 Bernoulli transcript 取前 1/4/24 次，得到 26/104/624 bit/record。最低 26-bit 条件下，DraVer-Act AUC 为 Qwen 0.984、Pythia 0.779、GPT-2 0.601；三模型相对 q-bin shuffle 的配对区间均高于 0。该扫描说明对齐效应不依赖大量重复验证，但仍未发现 DraVer-Act 相对 transcript-only 的稳定优势，GPT-2 也不随反馈位数单调改善。
+
+本轮最重要的方法学结论不是“把 NART 移到草稿模型上也有效”。恰恰相反，draft NART-style 在 Pythia/GPT-2 上接近随机，而加入 SD 验证反馈后才出现可检出性；这说明 NART 在本方案中的作用是提供少样本全层表示骨干，真正的场景特异性来自已知 $q$、q-min token 选择、$p/q$ 语义反馈以及逐 token 对齐。完整数值、11/11 statistical fallacy scan 与复现边界见 [FineWeb v2 SUMMARY](../experiments/results/public_sft/SUMMARY.md)。
+
 ## 9. 后续最小充分实验包
 
 ### Phase A：把 pilot 变成可投稿证据
 
-1. 在 1、2、4、8 epoch 上各跑 5 seeds；
-2. 增加到每类至少 2,000 records，并做文档级隔离；
+1. 固定 v2 方法和阈值，至少增加 2 个 target-training seeds 与 2 个数据划分 seeds；
+2. 增加到每类至少 2,000 records，并继续保持文档级隔离；
 3. 加入 target LOSS、Min-K%、neighborhood、reference likelihood ratio；
-4. 报告配对 $\Delta$AUC、TPR@1%FPR 与逐样本稳定性；
-5. 把接受率从仿真改为真实 verifier endpoint 返回值。
+4. 报告配对 $\Delta$AUC、TPR@1%FPR、逐样本稳定性，并对主要多重比较预先指定校正；
+5. 把接受率从语义仿真改为真实 verifier endpoint 返回值；
+6. 在独立复现中预先指定 26/104/624 bit 预算，专门检验激活分支是否优于 q-aware transcript；
+7. 分别报告 16/32/48 条每类校准样本的少样本曲线，保持 representation-train/support/test 三方隔离。
 
 ### Phase B：模型和草稿来源外推
 
@@ -464,6 +559,7 @@ epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出
 | [Meeus et al., USENIX Security 2024](https://www.usenix.org/conference/usenixsecurity24/presentation/meeus) | 文档级窗口聚合 | 文档级主任务 | 后验数据构造仍需严控 |
 | [Meeus et al., SaTML 2025](https://arxiv.org/abs/2406.17975) | 后验 benchmark 的分布偏差审计 | BoW 闸门、随机注入、来源匹配 | 是本方案完整性要求的核心依据 |
 | [Hayes et al., NeurIPS 2025](https://arxiv.org/abs/2505.18773) | 强检验在真实 LLM 上仍有限；逐样本决策不稳定 | 多训练 seed 与稳定性报告 | AUC 改善不等于单样本结论可靠 |
+| [Tan et al., NDSS 2026](https://doi.org/10.14722/ndss.2026.240474) | 末位置全层激活、StatFE/HistFE、triplet 少样本检测与同池受控微调基准 | 草稿 NART-style 强基线；DraVer-Act 的全层轨迹编码和少样本度量骨干 | 原方法白盒访问的是被审计目标；直接用于草稿只能判断草稿成员，不能证明云端成员 |
 | [LUMIA, 2025](https://arxiv.org/abs/2411.19876) | 内部状态逐层线性探针 | 白盒草稿增强基线 | 需避免高维小样本过拟合 |
 | [Cui et al., 2025/2026](https://arxiv.org/abs/2505.11837) | 蒸馏学生不一定更私密，部分样本信号可增强 | 草稿来源轴与缓解方案 | 当前为 arXiv 证据，需独立复现 |
 | [Jagielski et al., 2023](https://arxiv.org/abs/2303.03446) | 学生可继承 teacher 训练成员影响 | 草稿模型风险动机 | 非 LLM 专属，不能替代端云实验 |
