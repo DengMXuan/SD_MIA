@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from huggingface_hub import snapshot_download
 from peft import PeftModel
 from transformers import AutoTokenizer
 
@@ -32,6 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-results", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--repeats", type=int, nargs="+", default=[1, 4, 24])
+    parser.add_argument(
+        "--draft-endpoint",
+        choices=("auto", "base", "aux_distilled", "member_sft"),
+        default="auto",
+        help="Draft checkpoint to pair with the adapted target.",
+    )
     parser.add_argument("--bootstrap-repeats", type=int, default=500)
     parser.add_argument("--detector-seeds", type=int, default=3)
     parser.add_argument(
@@ -55,6 +62,33 @@ def _validate_records(source: dict[str, Any], members: list[Any], nonmembers: li
             raise RuntimeError(f"Reconstructed {name} do not match source adapter records")
 
 
+def _select_draft_endpoint(
+    source: dict[str, Any], source_path: Path, requested: str
+) -> tuple[str, Path | None]:
+    if requested == "auto":
+        primary = source.get("config", {}).get("primary_deployment_endpoint", "")
+        if primary == "deployment_aligned_aux_distilled":
+            requested = "aux_distilled"
+        elif primary == "deployment_aligned_member_sft":
+            requested = "member_sft"
+        else:
+            requested = "base"
+    if requested == "base":
+        return requested, None
+    key = f"draft_{requested}"
+    configured = source.get("adapter_paths", {}).get(key)
+    adapter_path = (
+        source_path.parent / configured
+        if configured
+        else source_path.parent / f"adapter_draft_{requested}"
+    )
+    if not adapter_path.is_dir():
+        raise FileNotFoundError(
+            f"Requested draft endpoint {requested!r} has no adapter at {adapter_path}"
+        )
+    return requested, adapter_path
+
+
 def _nested_acceptance(
     target_logp: np.ndarray,
     draft_logp: np.ndarray,
@@ -64,6 +98,13 @@ def _nested_acceptance(
 ) -> tuple[dict[int, np.ndarray], np.ndarray]:
     target = gather_tokens(target_logp, selected).astype(np.float64)
     draft = gather_tokens(draft_logp, selected).astype(np.float64)
+    if not np.isfinite(target).all() or not np.isfinite(draft).all():
+        target_bad = int((~np.isfinite(target)).sum())
+        draft_bad = int((~np.isfinite(draft)).sum())
+        raise ValueError(
+            "non-finite selected token logp: "
+            f"target={target_bad}/{target.size}, draft={draft_bad}/{draft.size}"
+        )
     alpha = np.minimum(1.0, np.exp(np.clip(target - draft, -50.0, 50.0)))
     maximum = max(budgets)
     uniforms = np.random.default_rng(seed).random((*alpha.shape, maximum))
@@ -84,7 +125,8 @@ def render_markdown(artifact: dict[str, Any]) -> str:
         f"- Source: `{artifact['source_experiment']}`",
         f"- Model pair: `{artifact['config']['draft_model']}` → `{artifact['config']['target_model']}`",
         "- Each larger budget reuses the exact prefix of the same per-token Bernoulli transcript.",
-        "- No model training is performed in this sweep; the v2 target adapter is reused.",
+        f"- Draft endpoint: `{artifact['config']['draft_endpoint']}`.",
+        "- No model training is performed in this sweep; source target/draft adapters are reused.",
         "",
         "| Bits/record | Repeats/token | DraVer-Act AUC | Transcript-only AUC | q-bin shuffle AUC | Delta vs transcript (95% CI) | Delta vs shuffle (95% CI) |",
         "|---:|---:|---:|---:|---:|---:|---:|",
@@ -132,6 +174,9 @@ def main() -> None:
     source_path = _resolve(root, args.source_results)
     source = json.loads(source_path.read_text(encoding="utf-8"))
     config = source["config"]
+    draft_endpoint, draft_adapter_path = _select_draft_endpoint(
+        source, source_path, args.draft_endpoint
+    )
     output_dir = _resolve(root, args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(f"cuda:{args.gpu}")
@@ -140,9 +185,13 @@ def main() -> None:
     seed = int(config["seed"])
     set_seed(seed)
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        config["draft_model"],
+    tokenizer_snapshot = snapshot_download(
+        repo_id=config["draft_model"],
         revision=config["draft_revision"],
+        local_files_only=True,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_snapshot,
         local_files_only=True,
     )
     if tokenizer.pad_token_id is None:
@@ -170,16 +219,25 @@ def main() -> None:
     )
     started = time.time()
 
-    draft = load_causal_lm(
+    draft_base = load_causal_lm(
         config["draft_model"],
         device,
         revision=config["draft_revision"],
         local_files_only=True,
     )
+    draft = (
+        PeftModel.from_pretrained(
+            draft_base,
+            draft_adapter_path,
+            is_trainable=False,
+        )
+        if draft_adapter_path is not None
+        else draft_base
+    )
     draft_outputs = extract_draft_activation_outputs(
         draft, candidates, tokenizer, device, int(config["draft_batch_size"])
     )
-    del draft
+    del draft, draft_base
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -247,6 +305,12 @@ def main() -> None:
             "target_revision": config["target_revision"],
             "draft_model": config["draft_model"],
             "draft_revision": config["draft_revision"],
+            "draft_endpoint": draft_endpoint,
+            "draft_adapter": (
+                str(draft_adapter_path.relative_to(root))
+                if draft_adapter_path is not None
+                else None
+            ),
             "budgets_repeats_per_token": budgets,
             "selected_tokens_per_record": int(selected.shape[1]),
             "bootstrap_repeats": args.bootstrap_repeats,

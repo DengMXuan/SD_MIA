@@ -52,6 +52,26 @@ def add_lora(model: PreTrainedModel, r: int, alpha: int, dropout: float) -> Peft
         target_modules = ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]
     elif model_type == "gpt2":
         target_modules = ["c_attn", "c_proj", "c_fc"]
+    elif model_type == "granitemoehybrid":
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "input_linear",
+            "output_linear",
+        ]
+    elif model_type == "lfm2":
+        target_modules = [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "out_proj",
+            "in_proj",
+            "w1",
+            "w2",
+            "w3",
+        ]
     else:
         target_modules = [
             "q_proj",

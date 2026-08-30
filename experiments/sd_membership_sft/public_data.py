@@ -14,6 +14,61 @@ def _hash_ids(ids: list[int]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _token_ngrams(record: SFTRecord, n: int) -> set[tuple[int, ...]]:
+    prompt = list(record.prompt_ids or ())
+    tokens = prompt + list(record.response_ids)
+    return {tuple(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}
+
+
+def _cross_split_ngram_audit(
+    splits: list[list[SFTRecord]], n: int = 13
+) -> dict[str, Any]:
+    owners: dict[tuple[int, ...], list[tuple[int, int]]] = {}
+    sizes: dict[tuple[int, int], int] = {}
+    for split_index, records in enumerate(splits):
+        for record_index, record in enumerate(records):
+            grams = _token_ngrams(record, n)
+            sizes[(split_index, record_index)] = len(grams)
+            for gram in grams:
+                owners.setdefault(gram, []).append((split_index, record_index))
+
+    pair_counts: dict[tuple[tuple[int, int], tuple[int, int]], int] = {}
+    shared_ngrams = 0
+    for gram_owners in owners.values():
+        split_ids = {owner[0] for owner in gram_owners}
+        if len(split_ids) < 2:
+            continue
+        shared_ngrams += 1
+        for left_index, left in enumerate(gram_owners):
+            for right in gram_owners[left_index + 1 :]:
+                if left[0] == right[0]:
+                    continue
+                key = (left, right) if left < right else (right, left)
+                pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    maximum = 0.0
+    maximum_pair: tuple[tuple[int, int], tuple[int, int]] | None = None
+    for pair, count in pair_counts.items():
+        denominator = max(1, min(sizes[pair[0]], sizes[pair[1]]))
+        fraction = count / denominator
+        if fraction > maximum:
+            maximum = fraction
+            maximum_pair = pair
+    if maximum > 0.80:
+        raise RuntimeError(
+            "Cross-split 13-gram overlap exceeds the preregistered 80% threshold"
+        )
+    return {
+        "n": n,
+        "unique_ngrams": len(owners),
+        "cross_split_shared_ngrams": shared_ngrams,
+        "maximum_pair_overlap_fraction": maximum,
+        "maximum_pair_indices": maximum_pair,
+        "threshold": 0.80,
+        "gate": "PASS",
+    }
+
+
 def build_public_snapshot_split(
     path: Path,
     tokenizer: Any,
@@ -39,20 +94,32 @@ def build_public_snapshot_split(
     selected = documents[:required]
     records: list[SFTRecord] = []
     response_hashes: set[str] = set()
-    for document in selected:
-        ids = list(
-            tokenizer(
-                document["text"],
-                add_special_tokens=False,
-                truncation=True,
-                max_length=response_tokens,
-            ).input_ids
-        )
-        if len(ids) < response_tokens:
-            raise RuntimeError(
-                f"Document {document['page_id']} has only {len(ids)} tokens after snapshot filtering"
+    for document_index, document in enumerate(selected):
+        prompt_ids: list[int] | None = None
+        if "response_ids" in document:
+            response_ids = [int(value) for value in document["response_ids"]]
+            prompt_ids = [int(value) for value in document.get("prompt_ids", [])]
+            page_id = str(document.get("record_id", document_index))
+        else:
+            ids = list(
+                tokenizer(
+                    document["text"],
+                    add_special_tokens=False,
+                    truncation=True,
+                    max_length=response_tokens,
+                ).input_ids
             )
-        response_ids = ids[:response_tokens]
+            if len(ids) < response_tokens:
+                raise RuntimeError(
+                    f"Document {document['page_id']} has only {len(ids)} tokens after snapshot filtering"
+                )
+            response_ids = ids[:response_tokens]
+            page_id = str(document["page_id"])
+        if len(response_ids) < response_tokens:
+            raise RuntimeError(
+                f"Document {page_id} has only {len(response_ids)} response tokens"
+            )
+        response_ids = response_ids[:response_tokens]
         response_hash = _hash_ids(response_ids)
         if response_hash in response_hashes:
             raise RuntimeError("Token-level duplicate appeared in the selected public split")
@@ -60,22 +127,28 @@ def build_public_snapshot_split(
         records.append(
             SFTRecord(
                 record_id=(
-                    f"public:{document['page_id']}:{document['snapshot_revision']}:"
+                    f"public:{page_id}:{document.get('snapshot_revision', 0)}:"
                     f"{response_hash[:16]}"
                 ),
-                source=document["canonical_url"],
+                source=document.get("source", document.get("canonical_url", page_id)),
                 response_ids=tuple(response_ids),
                 response_hash=response_hash,
-                topic=document["title"],
-                source_char_count=len(document["text"]),
-                source_timestamp=document["creation_timestamp"],
-                source_revision=int(document["snapshot_revision"]),
+                prompt_ids=tuple(prompt_ids) if prompt_ids else None,
+                prompt_hash=_hash_ids(prompt_ids) if prompt_ids else "",
+                prompt_text=document.get("prompt_text"),
+                topic=document.get("title"),
+                source_char_count=int(
+                    document.get("source_char_count", len(document.get("text", "")))
+                ),
+                source_timestamp=document.get("creation_timestamp", ""),
+                source_revision=int(document.get("snapshot_revision", 0)),
             )
         )
 
     members = records[:n_per_class]
     nonmembers = records[n_per_class : 2 * n_per_class]
     auxiliary = records[2 * n_per_class :]
+    ngram_audit = _cross_split_ngram_audit([members, nonmembers, auxiliary])
     metadata = {
         "dataset": manifest["dataset"],
         "license": manifest["license"],
@@ -95,6 +168,13 @@ def build_public_snapshot_split(
         "target_sft_uses": "member only",
         "exact_token_deduplication": True,
         "raw_activations_persisted": False,
+        "prompt_mode": (
+            "fixed_token_continuation" if records[0].prompt_ids is not None else "instruction"
+        ),
+        "prompt_tokens": (
+            len(records[0].prompt_ids) if records[0].prompt_ids is not None else None
+        ),
+        "cross_split_ngram_audit": ngram_audit,
     }
     return members, nonmembers, auxiliary, metadata
 

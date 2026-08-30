@@ -18,6 +18,9 @@ class SFTRecord:
     source: str
     response_ids: tuple[int, ...]
     response_hash: str
+    prompt_ids: tuple[int, ...] | None = None
+    prompt_hash: str = ""
+    prompt_text: str | None = None
     topic: str | None = None
     source_char_count: int = 0
     source_timestamp: str = ""
@@ -25,6 +28,8 @@ class SFTRecord:
 
     @property
     def prompt(self) -> str:
+        if self.prompt_text is not None:
+            return self.prompt_text
         if self.topic is not None:
             return (
                 "Continue a public web document in its original factual style. "
@@ -163,6 +168,8 @@ def build_controlled_split(
 
 
 def prompt_prefix_ids(record: SFTRecord, tokenizer: Any) -> list[int]:
+    if record.prompt_ids is not None:
+        return list(record.prompt_ids)
     messages = [{"role": "user", "content": record.prompt}]
     try:
         prefix_ids = tokenizer.apply_chat_template(
@@ -221,6 +228,10 @@ def records_metadata(records: list[SFTRecord]) -> list[dict[str, Any]]:
             "record_id": record.record_id,
             "source": record.source,
             "response_hash": record.response_hash,
+            "prompt_hash": record.prompt_hash,
+            "prompt_token_count": (
+                len(record.prompt_ids) if record.prompt_ids is not None else None
+            ),
             "response_token_count": len(record.response_ids),
             "source_char_count": record.source_char_count,
             "source_timestamp": record.source_timestamp,

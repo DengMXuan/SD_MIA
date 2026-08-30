@@ -1,21 +1,46 @@
-# 端云协同推测解码的成员推理检验方案与最小实验
+# 端云协同推测解码的成员推理检验方案与完整实验
 
-> 版本：2026-08-27
+> 版本：2026-08-28
 > 研究对象：端侧部署白盒草稿模型 $q_\phi$，云端部署完整验证模型 $p_\theta$
 > 术语约定：本文统一使用“检验、审计、评估者、适应性客户端”等中性表述。论文原文中的 MIA 在本文中称为“成员推理检验”。
 
 ## Material Passport
 
 - 研究阶段：方法设计 + 公开受控 SFT 跨模型有效性验证
-- 证据状态：`CONTROLLED_SFT_SUPPORTED_WITH_LIMITATIONS`，尚非生产部署结论
+- 证据状态：`ANALYZED_CONTROLLED_SFT_WITH_MIXED_PROTOCOL_RESULTS`，尚非生产部署结论或独立复现
 - 实验代码：[sd_membership_pilot.py](../experiments/sd_membership_pilot.py)
 - 弱记忆结果：[pilot_epoch1/RESULTS.md](../experiments/results/pilot_epoch1/RESULTS.md)
 - 高记忆上界：[pilot/RESULTS.md](../experiments/results/pilot/RESULTS.md)
 - Qwen3 真正 SFT 代码：[sd_membership_sft/](../experiments/sd_membership_sft/)
+- 当前 FineWeb/Granite 主实验代码：[public_benchmark.py](../experiments/sd_membership_sft/public_benchmark.py)
+- 被动 L2 独立实验代码：[p1_passive_l2.py](../experiments/sd_membership_sft/p1_passive_l2.py)
 - Qwen3 真正 SFT 结果：[qwen3_1p7b_to_8b_epoch1/RESULTS.md](../experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch1/RESULTS.md)
 - Qwen3 强记忆对照：[qwen3_1p7b_to_8b_epoch4/RESULTS.md](../experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch4/RESULTS.md)
 - FineWeb 跨模型 v2 汇总：[public_sft/SUMMARY.md](../experiments/results/public_sft/SUMMARY.md)
+- Granite 4.0 部署对齐结果：[RESULTS.md](../experiments/results/public_sft/deployment_aligned/granite4_350m_to_1b_epoch3_seed20260828/RESULTS.md)
+- Qwen3 三数据集与协议扩展统一结果：[RESULTS.md](../experiments/results/public_sft/protocols/RESULTS.md)
+- 完整统计验证：[VALIDATION.md](../experiments/results/public_sft/protocols/VALIDATION.md)
+- 新模型与协议适配调研：[新开源模型与端云SD协议适配调研_2026-08-28.md](../research/新开源模型与端云SD协议适配调研_2026-08-28.md)
 - 信号边界：只使用端云协议本来返回的验证结果；不使用时间、包长、功耗或其他侧信道
+
+### 当前实现范围说明
+
+本文同时记录历史 pilot、FineWeb target-only v2、Granite deployment-aligned
+实验，以及当前 Qwen3 三数据集与 EAGLE-3/MTP/DSpark 协议扩展。它们不是同一个
+实验，具体实现状态如下：
+
+- **当前独立 draft 主线**：`public_benchmark.py` +
+  `independent_adapter_reanalysis.py`；覆盖 Qwen3-1.7B Base→8B Base、WikiText/XSum/
+  CNN-DM、固定候选 token 的 L3 语义 verifier、精确期望接受率诊断和公平的纯
+  transcript-only 对照。
+- **当前 hidden-conditioned 扩展**：`eagle3_protocol_benchmark.py`、
+  `mtp_protocol_benchmark.py` 和 `dspark_protocol_benchmark.py`；覆盖 connector-only、
+  speculator-only、transcript-only、confidence-only（DSpark）及分层打乱对照。
+- **独立协议实验**：`p1_passive_l2.py` 覆盖自然采样的被动 L2，但它使用独立的
+  记录级接受/纠正统计，不等同于当前 Granite 的 DraVer-Act 主路径。
+- **历史/规划内容**：GPT-2/PDF pilot、q 调整层析、真实 PipeSD/SpecEdge 网络
+  endpoint、DFlash、真实 generated-chain MTP/DSpark，以及更大规模多训练 seed
+  验证分别在后文标注；它们不能被理解为当前代码已经全部实现。
 
 ## 1. 结论先行
 
@@ -37,6 +62,23 @@
 最小实验已经给出初步支持：在随机化、同来源的 1-epoch 弱记忆设置中，基础草稿的 Min-K% AUC 仅为 **0.536**，而未绑定草稿采样过程的 verifier 接受率达到 **0.612**，白盒草稿与协议反馈联合达到 **0.644**，接近直接读取云端 logits 的上界 **0.654**。pilot 固定待检记录的候选 token，但使用部署草稿给出的原始 $q$，没有调整 logits；因此它验证的是 L3“客户端可选择候选、服务端不证明候选确由 $q$ 采样”的接口，而不是 L2 被动自然生成。这回答了最关键的创新性质疑：**有效信号主要来自端云 draft–verify 关系，而不只是一般的小模型成员分数。**
 
 在公开 FineWeb 受控 SFT v2 中，这一判断又在 Qwen3、Pythia 和 GPT-2 三个模型族上得到更严格的检验：DraVer-Act 相对直接在草稿上运行 NART-style 的配对 $\Delta$AUC 分别为 **+0.360、+0.373、+0.114**，95% 区间均高于 0；Qwen/Pythia 中，q-bin 内打乱逐 token 验证—激活对齐后性能回到接近随机。另一方面，三模型相对 transcript-only 的配对区间都跨 0，因此当前证据支持“端云耦合相对 draft-only 的必要性”，但不支持“全层激活在相同反馈预算下普遍带来额外性能增益”。
+
+上述 v2 只调整 target，因此现在重新定位为 **target-only deployment-mismatch 对照**。新的 Granite 4.0 350M→1B 实验先在 member 上微调 target，再分别以无交集 auxiliary 数据蒸馏 draft、或对 target/draft 做同成员 SFT。target-only 使精确随机 SD 接受率从 0.705 降到 0.588；auxiliary-only KD 恢复到 0.641，同成员 SFT 恢复到 0.669。auxiliary-only 条件下，verifier mean acceptance AUC 为 **0.938** [0.894, 0.971]，DraVer-Act 为 **0.878** [0.812, 0.927]，draft NART-style 为 0.616。它证明部署对齐后协议检验仍有效，但 DraVer-Act 相对 transcript-only 的 $\Delta$AUC 为 -0.015 [-0.066, 0.032]；因此当前主方法应以 **q-aware verifier acceptance** 为稳健主线，激活轨迹作为具有场景特异性但尚未证明普遍增益的扩展。
+
+Granite 和历史 FineWeb 的 `transcript-only` 采用了早期 q-aware 定义，包含验证率与
+`q_logp` 的关系；它们可以继续支持部署对齐、draft-only 和机制消融，但不能作为
+最终的纯 transcript 对比。当前公平定义只保留云端验证反馈和协议公开的
+position/depth/visibility，并用保存 adapters 在 Qwen3 三数据集上重测。WikiText、
+XSum、CNN/DailyMail 的 proposed−transcript 分别为 **−0.0041
+[−0.0074, −0.0014]**、**−0.0011 [−0.0026, −0.0001]** 和 **−0.0004
+[−0.0014, 0.0003]**；三个数据集均未拉开，纯 transcript AUC 已达到
+0.9985–0.9996。
+
+EAGLE-3、原生 MTP 和 DSpark 的协议适配也已完成。只有 EAGLE-3 相对纯
+transcript 得到正向区间（+0.0642 [0.0107, 0.1151]），但相对分层打乱为 +0.0419
+[−0.0119, 0.0976]，未通过逐 token 对齐归因；MTP 和 DSpark 相对 transcript 的
+区间均跨 0。故当前完整结论是：**正常验证 transcript 的成员信息得到支持，白盒
+speculator 状态尚未证明具有跨协议的正增量效用。**
 
 ## 2. 研究问题与可证伪假设
 
@@ -95,7 +137,13 @@
 | L3 适应性草稿 | L2 + 可调草稿 logits/窗口/随机种子 | 未绑定本地草稿的 verifier-only 接口 | 分级 (q) 探测、单 token 验证、重复前缀统计 |
 | L4 分布回传 | L3 + 拒绝时返回目标分布 | DSSD 类变体 | 被拒绝位置的直接目标概率或修正分布 |
 
-主结果必须分别报告 L1、L2、L3，不能把 L3 的结果包装成所有端云 SD 都自动具备的风险。
+完整研究应分别报告 L1、L2、L3，不能把 L3 的结果包装成所有端云 SD 都自动具备的风险。
+当前代码的覆盖范围是：L3 固定候选语义模拟由 `public_benchmark.py` 主路径实现；
+被动 L2 由 `p1_passive_l2.py` 单独实现；L1 真实 PipeSD/SpecEdge endpoint 尚未
+接入。EAGLE-3/MTP/DSpark 另定义为依赖 verifier hidden connector 的 `L-H` 访问
+层级；当前 MTP/DSpark 采用 teacher-forced greedy block match，不能替代真实
+generated-chain L1/L2 结果。因此独立 draft 主结果只应标注为 L3 证据，hidden-
+conditioned 结果只应标注为协议代理证据。
 
 ### 3.3 合规与非合规分支
 
@@ -122,18 +170,23 @@
 
 ### 5.1 候选记录切窗
 
-将文档切成 (W) 个等长、不重叠窗口。每个窗口保留一段 prefix，并对后续 token 做检验。所有成员/非成员必须长度匹配、来源匹配，并清除跨集合 n-gram 重叠。
+完整方案将文档切成 (W) 个等长、不重叠窗口。每个窗口保留一段 prefix，并对后续 token 做检验。当前 FineWeb/Granite benchmark 每个公开文档只取一个固定长度 response，尚未进行多窗口文档级聚合。所有成员/非成员必须长度匹配、来源匹配，并清除跨集合 n-gram 重叠。
 
 ### 5.2 模块 A：白盒草稿筛选
 
-对每个 token 计算：
+完整方法拟对每个 token 计算：
 
 $$
 \ell_i^q=\log q_\phi(x_i\mid x_{<i}),\quad
 H_i^q,\quad \mathrm{margin}_i^q,\quad \mathrm{rank}_i^q.
 $$
 
-第一版使用 Min-K% 选取 (q) 下最不自然的 10%–20% token。随后加入：
+当前公共 benchmark 使用 q-logp 的 Min-K% 规则选取 20% token，并提取 q 的
+entropy 与逐层 activation statistics。`top1_token_id` 也会被记录，但当前主检测器
+尚未使用它构造 rank 或 margin 特征。以下梯度特征属于后续增强，而不是当前
+FineWeb/Granite 主路径的已实现输入。
+
+后续可加入：
 
 $$
 G_i=\lVert h_i\rVert_2
@@ -146,12 +199,19 @@ $$
 
 ### 5.3 模块 B：验证比值审计（主方法）
 
-在未绑定草稿采样过程的接口上，对 $i\in I(x)$ 固定候选记录中的 token，并采用 $\gamma=1$ 的验证，避免“一处拒绝导致后续 token 不可见”的前缀删失。提交的 $q_i(x_i)$ 仍来自原始部署草稿；若服务端要求可验证的采样随机性或可信执行证明，此步骤应归入不适用。重复 $R$ 次，记录接受次数 $c_i$，用 Jeffreys 平滑：
+在当前 L3 语义模拟中，对 $i\in I(x)$ 固定候选记录中的 token，并采用
+$\gamma=1$ 的逐 token 验证，避免“一处拒绝导致后续 token 不可见”的前缀删失。
+提交的 $q_i(x_i)$ 来自原始或已适配 draft 的 logit。当前代码重复 $R=24$ 次并
+使用 Jeffreys 平滑：
 
 $$
 \widehat\alpha_i=\frac{c_i+1/2}{R+1},\qquad
 \alpha_i=\min\left(1,\frac{p_i}{q_i}\right).
 $$
+
+此外，当前代码单独计算 teacher-forced 的完整分布对齐诊断
+$\sum_v\min(p(v),q(v))$；它是普通随机 SD 的期望单 token 接受率估计，不是自然
+采样得到的生产 transcript。
 
 当 $\alpha_i<1$ 时，
 
@@ -163,13 +223,17 @@ $$
 
 - $\operatorname{mean}_{i\in I}\widehat\alpha_i$；
 - $\operatorname{min}/\operatorname{quantile}(\widehat\alpha_i)$；
-- 接受前缀长度分布；
-- 修正 token 与候选 token 的 rank/distance；
-- 按 $q_i$、entropy、梯度范数分桶后的条件接受率。
+- 按 $q_i$、entropy、梯度范数分桶后的条件接受率（当前公共 benchmark 尚未把该条件统计作为独立结果报告）。
+
+当前公平 `transcript-only` 使用接受率的均值、标准差、最小值、分位数、最大值、
+饱和比例和 log/logit 聚合；**不包含与 q-logp 的相关性**。q-logp 和 entropy 只
+属于白盒 speculator 特征，或 label-free nuisance fit 的输入。独立 draft 路径没有
+实现接受前缀长度、修正 token rank/distance 或真实网络反馈；hidden-conditioned
+协议路径已实现 accepted-prefix/first-rejection visibility，但仍不是生产网络链路。
 
 这相当于由协议自动提供一个以草稿为参考模型的、难度校准后的成员分数。
 
-### 5.4 模块 C：接受反馈层析（次要、强访问分支）
+### 5.4 模块 C：接受反馈层析（次要、强访问分支；当前主路径未实现）
 
 若客户端可调草稿 logits，设置
 
@@ -185,9 +249,12 @@ $$
 
 然后可在重建的 token log-probability 上运行 Min-K%、InfoRMIA 或文档级聚合。这个分支概念上最能体现“客户端控制 (q)”的独特性，但最小实验显示它在弱记忆设置下尚未稳定超过直接接受率，因此当前应作为**待优化假设**，不能作为已证实主结果。
 
-下一步可用自适应二分和 sequential probability ratio test（SPRT）降低查询量，而不是固定 $R\times L_q$。
+旧的 `audit.py` 中保留了 q 调整层析模拟；但当前 FineWeb/Granite
+`public_benchmark.py` 不调整 q，`public_budget_sweep.py` 只对同一 Bernoulli
+transcript 扫描重复次数。因此自适应二分和 sequential probability ratio test
+（SPRT）仍属于后续工作。
 
-### 5.5 贪心协议分支
+### 5.5 贪心协议分支（当前公共主路径未实现）
 
 对于 PipeSD 类贪心 NAV，云端返回：
 
@@ -195,9 +262,12 @@ $$
 m_i=\mathbf 1[x_i=\arg\max_v p_i(v)].
 $$
 
-特征为候选 suffix 的连续匹配长度、逐位置 match rate、首次不匹配位置以及修正 token。它不能恢复完整概率，但最小实验表明即使 1 个 epoch，也能从基础草稿选定 token 上得到 AUC 0.588。
+特征为候选 suffix 的连续匹配长度、逐位置 match rate、首次不匹配位置以及修正 token。
+旧的 `audit.py` 可计算选定 token 的 target Top-1 match 代理，当前
+`public_benchmark.py` 不实现真实 PipeSD/SpecEdge greedy endpoint，也不把该
+分支作为 Granite 主结果。
 
-### 5.6 融合与文档级聚合
+### 5.6 融合与文档级聚合（方案要求；当前公共 benchmark 未实现）
 
 记录级特征：
 
@@ -213,13 +283,15 @@ $$
 - Stouffer 聚合，并用 block bootstrap 处理相邻窗口相关性；
 - “至少 (r) 个窗口超过阈值”的组级检验。
 
-不得在测试集合调 k、层数、阈值或融合权重。
+不得在测试集合调 k、层数、阈值或融合权重。当前 FineWeb/Granite benchmark
+以一条固定 response 记录作为审计单位，报告记录级 AUC；尚未实现多窗口文档级
+trimmed mean、Stouffer、top-k window pooling 或 block bootstrap。
 
 ### 5.7 DraVer-Act：验证条件化的草稿激活轨迹
 
 Tan et al.（NDSS 2026）的 NART 给出三个可直接采纳的经验事实：单独使用最后一层均值会遗漏信息；末 token 的全层激活比首/中间 token 更稳定；在标注较少时，triplet metric learning 比直接训练逻辑回归或 MLP 更稳。它的方法不能直接成为本工作的主方法，因为 NART 白盒访问的就是被审计目标，而端云 SD 客户端只白盒访问草稿 $q_\phi$。在 $q$ 上直接运行 NART，最多说明候选记录是否属于草稿训练数据，并不能回答它是否属于云端 $p_\theta$ 的训练数据。
 
-因此，本方案不把 NART 当作模板照搬，而把它改造成 SD 专属模块 **DraVer-Act（Draft–Verifier Conditioned Activation Trajectory）**。对每个候选位置 $i$，取草稿用于预测 $x_i$ 的各层状态 $h_{i,l}^q$，而不是对整条 response 做最后层 mean pooling。每层先计算资源可控的 StatFE-lite：
+因此，本方案不把 NART 当作模板照搬，而把它改造成 SD 专属模块 **DraVer-Act（Draft–Verifier Conditioned Activation Trajectory）**。当前公共 benchmark 对每个候选位置 $i$ 取草稿用于预测 $x_i$ 的各层状态 $h_{i,l}^q$，而不是对整条 response 做最后层 mean pooling。每层先计算资源可控的 StatFE-lite：
 
 $$
 u_{i,l}=\left[\operatorname{mean},\operatorname{std},\min,\max,
@@ -264,18 +336,41 @@ $$
 2. 均值、方差和常量维筛选只由 representation-train 计算，避免 NART 式全数据归一化可能带来的测试信息使用；
 3. 固定 margin 为 1.0，用轻量 MLP triplet encoder 学习 16 维嵌入，并以到 member/nonmember 支撑点的近邻距离差输出连续分数；不在测试集选“最佳层”。
 
-四个不可省略的可证伪对照是：
+当前公共 benchmark 已实现以下四个主要对照：
 
 | 对照 | 内容 | 能排除的替代解释 |
 |---|---|---|
 | `draft_nart_stat_last` | 草稿末位置、全层 StatFE + triplet | 草稿白盒本身已经足够 |
-| `transcript_only` | 只用接受率分位数和饱和率 | 收益完全来自验证轨迹 |
+| `transcript_only` | 只用接受率/匹配位、接受前缀、首拒绝和协议公开 depth/visibility；不使用 q-logp、confidence 或 activation | 收益完全来自验证轨迹 |
 | `naive_concat` | 草稿全层统计与 transcript 直接拼接 | 任意多模态拼接都能获得同样收益 |
 | `q-bin shuffled` | 在相同 $q$ 概率分桶内打乱反馈，再重算条件化特征 | 模型只利用 $q$、文本难度或边际反馈分布 |
 
 结论应分成两个强度层级。若 `DraVer-Act > draft NART-style` 且 q-bin 内打乱对齐后性能下降，可以支持“端云验证—草稿对齐包含 draft-only 无法解释的信息”；只有进一步满足 `DraVer-Act > transcript-only` 和 `DraVer-Act > naive concat`，才能主张“全层白盒激活本身在相同反馈预算下带来额外检验效用”。所有主张均以配对 bootstrap 的 $\Delta$AUC 区间为准，不能只比较点估计。
 
-协议适配必须分别实现：L3 固定候选时可直接使用上述全位置特征；L2 自然采样时只保留真实提议且在首次拒绝处截断，需要显式加入可见性 mask/逆概率加权；L1 贪心协议则把 $\widehat\alpha_i$ 换成 match bit，并用草稿 margin/rank 拟合 $g_\eta$。首轮最小验证只覆盖 L3，不向 L1/L2 外推。
+协议适配应分别实现：L3 固定候选时可直接使用上述全位置特征；L2 自然采样时只保留真实提议且在首次拒绝处截断，需要显式加入可见性 mask/逆概率加权；L1 贪心协议则把 $\widehat\alpha_i$ 换成 match bit，并用草稿 margin/rank 拟合 $g_\eta$。独立 draft 的 DraVer-Act 主路径覆盖 L3；P1 对 L2 进行了独立的记录级协议验证；EAGLE-3/MTP/DSpark 已加入 first-rejection visibility 和 depth-aware residual，但 EAGLE 当前是 mapped-token `p/q` block 模拟，MTP/DSpark 是 teacher-forced greedy block match，均未迁移到原生 generated-chain 路径。
+
+### 5.8 DraVer-X：面向 EAGLE-3、MTP、DSpark 的协议泛化（已实现协议代理）
+
+近期公开 speculator 不能统一视为独立的 $q_\phi(y\mid x)$。方法按客户端实际得到的计算对象分三类。当前仓库已实现 EAGLE-3、导出的 native MTP 和 DSpark；DFlash、Medusa 及真实 generated-chain 仍未实现：
+
+| 类型 | 客户端白盒对象 | 反馈 | 方法状态 |
+|---|---|---|---|
+| 独立完整 causal LM | draft logits、全层状态 | 随机接受或 greedy match | 当前 DraVer-Act 完整适用 |
+| EAGLE-3 | 依赖 target 多层 hidden features 的 speculator | 当前为 mapped-token `p/q` block 模拟 | 已实现 position/depth-aware residual；原生 tree decoding 待完成 |
+| DSpark | 依赖 target 多层 hidden features 的 speculator | teacher-forced block match、accepted prefix | 已实现 position/depth-aware residual与 confidence-only |
+| 导出到客户端的 native MTP | MTP head + target last hidden connector | 递归位置 match、accepted prefix | 已实现 3-token teacher-forced 代理 |
+| 云端共置 MTP/Medusa head | 客户端无白盒预测模型 | 仅最终 verified tokens | 当前激活分支不适用 |
+
+hidden-conditioned speculator 的残差改为
+
+$$
+r_{i,j}=s_{i,j}-g_\eta(c_{i,j},j,d_{i,j},m_{i,j}),\qquad
+F_l=\operatorname{pool}_{i,j}(r_{i,j}u_{i,j,l}),
+$$
+
+其中 $j$ 是 tree/block 位置，$d$ 是深度，$m$ 是首次拒绝后的可见性 mask。当前实现包含 verifier-hidden-only、speculator-state-only、纯 transcript-only，以及仅在可见位置上、相同 q×confidence×depth 分层内打乱反馈的四类对照；连续 position 进入 nuisance fit，但当前不作为 shuffle stratum。DSpark 额外包含 confidence-only。若云端不向客户端返回 speculator 所需 hidden features，则该 checkpoint 不属于原始端云威胁模型；若返回，则 hidden-only 对照用于分离“云端中间表示回传”和“白盒 speculator”两种来源。完整模型选型和协议边界见[新模型调研](../research/新开源模型与端云SD协议适配调研_2026-08-28.md)。
+
+统一结果显示：EAGLE-3 proposed AUC 0.6319、纯 transcript 0.5677，但 proposed−shuffle 区间跨 0；MTP proposed 0.5252、transcript 0.5088；DSpark proposed 0.5056、transcript 0.4901、connector-only 0.5624。当前没有跨协议的白盒增量证据，故本节状态是“协议适配已实现、方法优势待优化”，而不是“扩展已验证成功”。
 
 ## 6. 必须包含的对照与消融
 
@@ -290,6 +385,11 @@ $$
 - 若有足够 reference models，加入 LiRA/InfoRMIA；
 - target logits 直接访问作为不可部署上界。
 
+以上是完整研究的基线清单。当前 `public_benchmark.py` 已报告 draft Min-K%、
+verifier mean acceptance、transcript-only、DraVer-Act、q-bin shuffle、blind
+source/hash controls 和 target token-logp 诊断；尚未实现 target Min-K AUC、
+neighborhood、reference likelihood、LiRA/InfoRMIA 或文档级聚合。
+
 ### 6.2 端云 SD 分解
 
 | 编号 | 草稿白盒 | 协议反馈 | 目的 |
@@ -302,6 +402,11 @@ $$
 | B5 | 否 | 直接 target logits | 云端概率上界 |
 
 核心论文结论必须建立在 `B3 > B1` 且 `B3 > B0` 上，而不是只证明 B1 有效。
+
+当前 Granite 主实验对应 B3 的 L3 固定候选语义模拟，并保留 base/base 与
+target-only mismatch 对照；没有实现可调 q 的 B4，也没有把真实 PipeSD/SpecEdge
+网络反馈作为 B3 的输入。P1 的自然采样实验是独立的 L2 结果，不应与 Granite
+固定候选结果合并解读。
 
 ### 6.3 草稿来源
 
@@ -321,6 +426,10 @@ $$
 - 是否绑定草稿权重、temperature、随机种子；
 - 重复前缀是否允许重置 KV 状态；
 - 同步与流水线不会改变语义反馈，但会改变可查询频率，应单独统计。
+
+当前公共 benchmark 固定 $\gamma=1$、固定候选 token，并使用本地 target/draft
+logits 进行 verifier 语义模拟；尚未扫描不同 $\gamma$、greedy/随机协议变体、
+返回字段、草稿绑定策略或同步/流水线查询频率。
 
 ## 7. 严格实验设计
 
@@ -345,6 +454,12 @@ $$
 - “少量标注”按**每类**样本数明确报告（如 16/32/48 per class），避免把 training size、support size 和总样本数混写；
 - 固定数据划分跑多个 target 训练 seed 只能证明训练随机性稳定；还必须改变数据划分 seed，才能评估成员集合选择的稳定性。
 
+当前 FineWeb 实现满足同一公开快照内的文档互斥、manifest/hash 校验和精确 token
+去重，但尚未满足本节全部强化要求：FineWeb 的时间字段是 Common Crawl 抓取时间，
+不是原始发布时间，因此没有逐条证明晚于两个模型的预训练 cutoff；当前也没有
+跨集合 8-gram/近重复筛除、压缩率/稀有 token/最近邻等完整控制。这里的要求是
+后续完整研究标准，不应写成当前 Granite 实验已经全部满足的条件。
+
 ### 7.2 模型矩阵
 
 建议第一阶段选择共享 tokenizer 且已在端云工作中使用的模型对：
@@ -366,11 +481,15 @@ $$
 - 逐样本跨 seed 决策方差；
 - 草稿加速质量：acceptance rate、平均接受长度、target output exactness。
 
-低 FPR 结果需要足够非成员样本：0.1% FPR 建议至少 10,000 个非成员，1% FPR 至少 1,000 个。当前 pilot 每类测试样本仅 112 个，所以低 FPR 数字只用于调试，不能作为论文主结论。
+当前公共 benchmark 的 `metric_row` 计算 TPR@1% 和 TPR@5% FPR，但结果表主要展示
+AUC、95% CI 和 TPR@5%；TPR@0.1%、posterior calibration/ECE、网络字节/FLOPs、
+平均接受长度和逐样本跨 seed 方差尚未完整接入。
+
+低 FPR 结果需要足够非成员样本：0.1% FPR 建议至少 10,000 个非成员，1% FPR 至少 1,000 个。历史 pilot/v2 每类测试样本为 112，当前 Granite 每类测试样本为 64；现有低 FPR 数字只用于调试，不能作为论文主结论。
 
 ### 7.4 完整性闸门
 
-任一条件不满足时，不允许声称“成员信息来自端云 SD”：
+任一条件不满足时，完整研究不应声称已经证明生产环境中的“成员信息来自端云 SD”。当前 Granite 是单 seed、单模型对、小规模、L3 语义模拟，因此后文结论统一使用“受控 benchmark 内的初步/有限证据”：
 
 - 模型无关 BoW/长度分类器 AUC 显著高于 0.55；
 - 成员/非成员存在来源或时间差异；
@@ -381,13 +500,17 @@ $$
 - 只与草稿模型比较，不与 target Min-K、reference calibration 比较；
 - 把 L3 可调 (q) 的结论外推到绑定草稿的 L1/L2 接口。
 
-## 8. 已完成的最小实验
+## 8. 已完成实验（含历史最小验证）
 
-### 8.1 设置
+本节按实验代际记录已完成结果。8.1–8.8 主要是历史 GPT-2/PDF 或 Qwen3
+受控 SFT 实验；8.9 是 FineWeb 上的 target-only v2 失配对照；8.10 才是当前
+FineWeb/Granite deployment-aligned 主实验。参数和结果不能跨小节直接合并。
+
+### 8.1 历史 GPT-2/PDF pilot 设置
 
 - 硬件：只使用 GPU 1（A100 80GB）；GPU 4–6 原有任务完全未触碰；
 - 峰值显存：12.45 GiB；
-- 语料：当前目录 11 篇端云 SD 一手论文 PDF，仅在运行时抽取文本，不持久化原文；
+- 语料：历史 pilot 使用当前目录 11 篇端云 SD 一手论文 PDF，仅在运行时抽取文本，不持久化原文；
 - 构造：按来源分层随机划分 160 members、160 nonmembers、160 auxiliary records；各记录 64 GPT-2 tokens，窗口不重叠并做 SHA-256 去重；
 - target：GPT-2 XL；
 - drafts：8-layer 基础截层、在无交集辅助集上蒸馏、从微调 target 共享权重截层；
@@ -395,6 +518,10 @@ $$
 - 两个记忆强度：target 训练 1 epoch 与 8 epochs；
 - transcript：固定候选记录 token；原始-(q) 接受率每个 token 重复 24 次，层析分支最多 5 个 (q) 层级；
 - 统计：500 次分层 bootstrap；低 FPR 阈值对离散并列分数采取保守处理，保证实际 FPR 不超预算。
+
+这是历史 PDF pilot 的设置，不是当前 FineWeb/Granite 主实验。该旧路径按论文
+来源内的 paragraph chunks 分配三类记录，不能等同于当前 FineWeb 的文档级互斥，
+也不能用来替代后文的 deployment-aligned 结果。
 
 ### 8.2 弱记忆设置（1 epoch，主 pilot）
 
@@ -495,9 +622,15 @@ epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出
 
 这说明当 adapter SFT 造成强记忆时，协议接受反馈可以稳定放大 target 与 nonmember 的差异；它验证的是方法在强记忆边界下的可检出性，不应被当作生产 SFT 或预训练风险的估计。完整表格见 [epoch4/RESULTS.md](../experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch4/RESULTS.md)。
 
-### 8.9 FineWeb 公开受控 SFT：DraVer-Act 跨模型验证
+### 8.9 FineWeb 公开受控 SFT：target-only 失配对照
 
-为直接学习 NART 的受控微调 benchmark，而不是只复用其特征形式，本轮从固定 FineWeb 2025 crawl dump 构造 600 条公开网页快照。先在同一池中按文档随机分配 160 members、160 nonmembers、160 auxiliary，再以 member-only LoRA 训练云端 target 3 epochs；端侧 draft 保持原始 checkpoint。每条 response 为 128 tokens，48/类用于 calibration、112/类用于封存 test。数据 SHA-256、模型 revision、记录来源和 adapter 均写入结果。
+为直接学习 NART 的受控微调 benchmark，而不是只复用其特征形式，本轮由
+`public_fineweb.py` 从固定 FineWeb 2025 crawl dump 构造 600 条公开网页快照，
+再由 `public_data.py` 按文档随机分配 160 members、160 nonmembers、160 auxiliary。
+随后以 member-only LoRA 训练云端 target 3 epochs；端侧 draft 保持原始 checkpoint。
+每条 response 为 128 tokens，48/类用于 calibration、112/类用于封存 test。数据
+SHA-256、模型 revision、记录来源和 adapter 均写入结果。该设计用于隔离“只有
+target 接触 member”的因果路径，但不代表追求高接受率的生产配对。
 
 三个模型对共享相同源 URL 和成员分组，但由各自 draft tokenizer 构造 token 序列：
 
@@ -513,7 +646,74 @@ epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出
 
 本轮最重要的方法学结论不是“把 NART 移到草稿模型上也有效”。恰恰相反，draft NART-style 在 Pythia/GPT-2 上接近随机，而加入 SD 验证反馈后才出现可检出性；这说明 NART 在本方案中的作用是提供少样本全层表示骨干，真正的场景特异性来自已知 $q$、q-min token 选择、$p/q$ 语义反馈以及逐 token 对齐。完整数值、11/11 statistical fallacy scan 与复现边界见 [FineWeb v2 SUMMARY](../experiments/results/public_sft/SUMMARY.md)。
 
-## 9. 后续最小充分实验包
+### 8.10 当前主实验：Granite 4.0 恢复接受率后的部署对齐验证
+
+对应代码为 [`public_benchmark.py`](../experiments/sd_membership_sft/public_benchmark.py)。实验使用 2025-10 发布的 `ibm-granite/granite-4.0-350m-base` 作为端侧 draft，`granite-4.0-1b-base` 作为 target。两者官方 tokenizer 的 100,352 个 token-ID 映射、BOS/EOS/PAD/UNK IDs 和 SHA-256 fingerprint 完全一致。FineWeb 同池随机划分为 96 members、96 nonmembers、96 auxiliary；32/类用于 calibration，64/类封存测试；response 为 64 tokens。target 做 3 epoch member-only LoRA SFT，draft 有两个调整条件：
+
+1. `aux_distilled`：适配后的 target 只在 96 条 auxiliary 文档上提供 soft labels，draft 不读取 member；
+2. `member_sft`：draft 与 target 对同一 member 集做 3 epoch SFT，作为共同领域 SFT 边界。
+
+部署对齐采用普通随机 SD 的精确期望接受率 $\sum_v\min(p_v,q_v)=1-TV(p,q)$，而不是只看固定候选 token 的接受统计：
+
+| 配对 | 精确接受率 | member | nonmember | top-1 agreement | candidate-logp RMSE |
+|---|---:|---:|---:|---:|---:|
+| base draft × base target | 0.705 | 0.703 | 0.707 | 0.682 | 1.121 |
+| base draft × adapted target | 0.588 | 0.570 | 0.605 | 0.584 | 2.050 |
+| auxiliary-distilled draft × adapted target | 0.641 | 0.623 | 0.659 | 0.610 | 1.659 |
+| member-SFT draft × adapted target | 0.669 | 0.677 | 0.661 | 0.652 | 1.298 |
+
+两个调整条件同时提高接受率并降低 logp RMSE，因此通过 deployment-alignment 闸门。封存测试的成员检验结果为：
+
+| 条件 | verifier mean acceptance | DraVer-Act | transcript-only | draft NART-style | q-bin shuffle |
+|---|---:|---:|---:|---:|---:|
+| target-only mismatch | 0.919 | 0.923 | 0.891 | 0.419 | 0.526 |
+| auxiliary-only KD | **0.938** | 0.878 | 0.893 | 0.616 | 0.466 |
+| same-member SFT | 0.702 | 0.605 | 0.603 | 0.562 | 0.400 |
+
+auxiliary-only KD 是主解释条件：DraVer-Act 相对 draft NART-style 的 $\Delta$AUC 为 +0.262 [0.155, 0.380]，相对 q-bin shuffle 为 +0.412 [0.304, 0.509]，说明 verifier–draft 对齐信息不是 draft-only 可替代的；但相对 transcript-only 为 -0.015 [-0.066, 0.032]，不支持额外的激活收益。同成员 SFT 中 draft Min-K AUC 升到 0.725，说明 draft 自身直接接触 member 后成为主要混杂来源，不能把该条件的总可检出性归因于云端 verifier。
+
+source metadata 和 URL hash 盲控制 AUC 分别为 0.508 和 0.514，区间覆盖 0.5。该结果是单数据划分、单训练 seed 的最小有效性证据；完整 artifact 见 [Granite RESULTS](../experiments/results/public_sft/deployment_aligned/granite4_350m_to_1b_epoch3_seed20260828/RESULTS.md)。一次 adapter budget sweep 出现非有限输入并已标记无效，没有进入上述结论。
+
+本节的 `transcript-only` 是历史 q-aware 定义，不能与后续纯 transcript 基线直接
+等同。部署对齐恢复、draft-only 和 shuffle 结论仍保留；关于“是否超过纯
+transcript”的最终判断以后续公平重测为准。
+
+### 8.11 Qwen3 三公开数据集完整实验
+
+Qwen3-1.7B Base→8B Base 在 WikiText-103 raw、XSum 和 CNN/DailyMail 3.0.0 上均
+完成 512/class + 512 auxiliary 的完整训练：target SFT 3 epochs，draft
+auxiliary-only KD 384 steps，同成员 draft SFT 3 epochs，128/class calibration、
+384/class test，1000 次 bootstrap、5 detector seeds。auxiliary-only KD 对
+target-only 接受率损失的恢复比例为 54.8%、20.4%、28.1%。
+
+| 数据集 | Proposed | 纯 transcript-only | $\Delta$ Proposed−Transcript（95% CI） |
+|---|---:|---:|---:|
+| WikiText-103 | 0.9944 | 0.9985 | −0.0041 [−0.0074, −0.0014] |
+| XSum | 0.9985 | 0.9996 | −0.0011 [−0.0026, −0.0001] |
+| CNN/DailyMail | 0.9992 | 0.9996 | −0.0004 [−0.0014, 0.0003] |
+
+三数据集均未拉开纯 transcript；WikiText/XSum 的配对区间甚至为负。proposed
+相对 draft-only、naive concat 和 q-bin shuffle 的区间均为正，说明条件化机制
+不是简单拼接，但这一机制没有转化成 transcript 之外的增量效用。当前 24 次重复
+反馈和 SFT 强度使 transcript 饱和，应在低反馈预算与更弱记忆条件下重测增量。
+
+### 8.12 EAGLE-3、MTP、DSpark 协议扩展
+
+| 协议 | Proposed | 纯 transcript | Speculator | Connector | Shuffle | $\Delta$ vs Transcript（95% CI） |
+|---|---:|---:|---:|---:|---:|---:|
+| EAGLE-3 | 0.6319 | 0.5677 | 0.5404 | 0.4833 | 0.5900 | +0.0642 [0.0107, 0.1151] |
+| MTP | 0.5252 | 0.5088 | 0.5391 | 0.4911 | 0.4902 | +0.0164 [−0.0541, 0.0855] |
+| DSpark | 0.5056 | 0.4901 | 0.5148 | 0.5624 | 0.4038 | +0.0156 [−0.1021, 0.1169] |
+
+EAGLE-3 是唯一相对 transcript 有正向区间的协议，但相对 shuffle 区间跨 0，且
+选定 token 的 mean candidate α=0.9977、24 次重复后的 visibility 近乎饱和，draft
+词表只覆盖 59.55% response token，证据有限。
+MTP 和 DSpark 没有拉开 transcript-only；DSpark connector-only 点估计最高。MTP/
+DSpark 的验证是 teacher-forced greedy block match；EAGLE 是 mapped-token `p/q`
+block 模拟而非原生 tree decoding。三者均不等同真实 generated chain。
+完整限制和 11/11 fallacy scan 见[统一验证报告](../experiments/results/public_sft/protocols/VALIDATION.md)。
+
+## 9. 后续充分实验包
 
 ### Phase A：把 pilot 变成可投稿证据
 
@@ -522,15 +722,16 @@ epoch1 的自然接受和联合统计均接近随机；epoch4 的联合统计出
 3. 加入 target LOSS、Min-K%、neighborhood、reference likelihood ratio；
 4. 报告配对 $\Delta$AUC、TPR@1%FPR、逐样本稳定性，并对主要多重比较预先指定校正；
 5. 把接受率从语义仿真改为真实 verifier endpoint 返回值；
-6. 在独立复现中预先指定 26/104/624 bit 预算，专门检验激活分支是否优于 q-aware transcript；
+6. 在独立复现中预先指定 26/104/624 bit 预算，专门检验激活分支是否优于纯 transcript；
 7. 分别报告 16/32/48 条每类校准样本的少样本曲线，保持 representation-train/support/test 三方隔离。
 
 ### Phase B：模型和草稿来源外推
 
-1. OPT-125M→6.7B、Qwen-0.5B→7B、Pythia-160M→2.8B；
-2. 独立、辅助蒸馏、同数据蒸馏、共享权重四类草稿；
-3. greedy/stochastic 两类协议；
-4. 白盒 token selection 与随机 selection 在固定 query budget 下比较。
+1. 完整独立 draft：Granite 4.0 350M→1B 与 Qwen3-1.7B→8B 均已完成；下一步增加训练/split seeds；
+2. 公开 hidden-conditioned speculator：EAGLE-3、MTP、DSpark 已完成协议代理；下一步扩展 DFlash 和真实 generated chain；
+3. 对完整 draft 已比较 base、auxiliary-only KD、同成员 SFT；下一步对 EAGLE/DSpark 增加原始 speculator×适配 target 的失配端点；
+4. 分别实现 stochastic、greedy tree、anchored block 三类反馈，不能共用一个 $p/q$ 解释；
+5. 白盒 token selection 与随机 selection 在固定 query budget 下比较；hidden-conditioned 协议已具备 verifier-hidden-only 对照，下一步控制 connector 特征维度。
 
 ### Phase C：协议缓解评估
 

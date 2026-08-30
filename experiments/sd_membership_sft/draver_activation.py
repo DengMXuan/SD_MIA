@@ -76,6 +76,7 @@ def extract_target_token_outputs(
     model.eval()
     logp_batches: list[np.ndarray] = []
     top1_batches: list[np.ndarray] = []
+    top1_token_batches: list[np.ndarray] = []
     for batch in _loader(records, tokenizer, batch_size):
         batch = {key: value.to(device) for key, value in batch.items()}
         with _autocast(device):
@@ -95,17 +96,23 @@ def extract_target_token_outputs(
         max_response = int(valid.sum(dim=1).max().item())
         batch_logp = np.full((len(labels), max_response), np.nan, dtype=np.float32)
         batch_top1 = np.full_like(batch_logp, np.nan)
+        batch_top1_token = np.full_like(batch_logp, np.nan)
         for row in range(len(labels)):
             positions = valid[row].nonzero(as_tuple=False).flatten()
             count = len(positions)
             batch_logp[row, :count] = logp[row, positions].cpu().numpy()
             batch_top1[row, :count] = top1[row, positions].float().cpu().numpy()
+            batch_top1_token[row, :count] = (
+                logits[row, positions].argmax(dim=-1).float().cpu().numpy()
+            )
         logp_batches.append(batch_logp)
         top1_batches.append(batch_top1)
+        top1_token_batches.append(batch_top1_token)
         del output, logits, logp
     return {
         "token_logp": _pad_token_batches(logp_batches),
         "top1_match": _pad_token_batches(top1_batches),
+        "top1_token_id": _pad_token_batches(top1_token_batches),
     }
 
 
@@ -128,6 +135,7 @@ def extract_draft_activation_outputs(
     model.eval()
     logp_batches: list[np.ndarray] = []
     entropy_batches: list[np.ndarray] = []
+    top1_token_batches: list[np.ndarray] = []
     activation_batches: list[np.ndarray] = []
     quantiles = torch.tensor(ACTIVATION_QUANTILES, device=device)
 
@@ -180,6 +188,7 @@ def extract_draft_activation_outputs(
         max_response = int(valid.sum(dim=1).max().item())
         batch_logp = np.full((len(labels), max_response), np.nan, dtype=np.float32)
         batch_entropy = np.full_like(batch_logp, np.nan)
+        batch_top1_token = np.full_like(batch_logp, np.nan)
         batch_activations = np.full(
             (
                 len(labels),
@@ -195,16 +204,112 @@ def extract_draft_activation_outputs(
             count = len(positions)
             batch_logp[row, :count] = token_logp[row, positions].cpu().numpy()
             batch_entropy[row, :count] = entropy[row, positions].cpu().numpy()
+            batch_top1_token[row, :count] = (
+                logits[row, positions].argmax(dim=-1).float().cpu().numpy()
+            )
             batch_activations[row, :count] = summaries[row, positions].cpu().numpy()
         logp_batches.append(batch_logp)
         entropy_batches.append(batch_entropy)
+        top1_token_batches.append(batch_top1_token)
         activation_batches.append(batch_activations)
         del output, logits, log_probs, probs, states, previous, summaries
 
     return {
         "token_logp": _pad_token_batches(logp_batches),
         "entropy": _pad_token_batches(entropy_batches),
+        "top1_token_id": _pad_token_batches(top1_token_batches),
         "activation_stats": _pad_token_batches(activation_batches),
+    }
+
+
+@torch.no_grad()
+def extract_pair_alignment_outputs(
+    draft: torch.nn.Module,
+    target: torch.nn.Module,
+    records: list[SFTRecord],
+    tokenizer: Any,
+    device: torch.device,
+    batch_size: int,
+) -> dict[str, np.ndarray]:
+    """Measure exact distributional alignment for a deployable SD pair.
+
+    For ordinary speculative sampling, the expected one-token acceptance under
+    the draft distribution is ``sum_v min(p(v), q(v)) = 1 - TV(p, q)``.  This
+    routine computes that quantity on every teacher-forced response position,
+    rather than using the fixed-candidate acceptance statistic used by the
+    membership audit itself.
+    """
+    draft.eval()
+    target.eval()
+    rows: dict[str, list[float]] = {
+        "exact_acceptance": [],
+        "top1_agreement": [],
+        "candidate_logp_mean_abs_gap": [],
+        "candidate_logp_rmse": [],
+        "candidate_target_minus_draft_logp": [],
+    }
+    for batch in _loader(records, tokenizer, batch_size):
+        batch = {key: value.to(device) for key, value in batch.items()}
+        with _autocast(device):
+            draft_output = draft(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                use_cache=False,
+            )
+            target_output = target(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                use_cache=False,
+            )
+        draft_logits = draft_output.logits[:, :-1]
+        target_logits = target_output.logits[:, :-1]
+        if draft_logits.shape[-1] != target_logits.shape[-1]:
+            raise ValueError(
+                "Exact SD acceptance requires draft and target to share a vocabulary"
+            )
+        labels = batch["labels"][:, 1:]
+        valid = labels.ne(-100)
+        safe_labels = labels.clamp_min(0)
+        draft_logp = F.log_softmax(draft_logits, dim=-1, dtype=torch.float32)
+        target_logp = F.log_softmax(target_logits, dim=-1, dtype=torch.float32)
+        shared_mass = torch.minimum(draft_logp, target_logp).exp().sum(dim=-1)
+        top1_equal = draft_logits.argmax(dim=-1).eq(target_logits.argmax(dim=-1))
+        draft_candidate = draft_logp.gather(
+            -1, safe_labels.unsqueeze(-1)
+        ).squeeze(-1)
+        target_candidate = target_logp.gather(
+            -1, safe_labels.unsqueeze(-1)
+        ).squeeze(-1)
+        gap = target_candidate - draft_candidate
+        for row in range(len(labels)):
+            positions = valid[row].nonzero(as_tuple=False).flatten()
+            row_gap = gap[row, positions]
+            rows["exact_acceptance"].append(
+                float(shared_mass[row, positions].mean().cpu())
+            )
+            rows["top1_agreement"].append(
+                float(top1_equal[row, positions].float().mean().cpu())
+            )
+            rows["candidate_logp_mean_abs_gap"].append(
+                float(row_gap.abs().mean().cpu())
+            )
+            rows["candidate_logp_rmse"].append(
+                float(row_gap.square().mean().sqrt().cpu())
+            )
+            rows["candidate_target_minus_draft_logp"].append(
+                float(row_gap.mean().cpu())
+            )
+        del (
+            draft_output,
+            target_output,
+            draft_logits,
+            target_logits,
+            draft_logp,
+            target_logp,
+            shared_mass,
+        )
+    return {
+        name: np.asarray(values, dtype=np.float32) for name, values in rows.items()
     }
 
 
@@ -253,23 +358,11 @@ def sample_acceptance_rates(
     return observed.astype(np.float32), alpha.astype(np.float32)
 
 
-def _transcript_summary(
-    acceptance: np.ndarray, q_logp: np.ndarray
-) -> np.ndarray:
+def _transcript_summary(acceptance: np.ndarray) -> np.ndarray:
+    """Summarize verifier feedback without adding white-box draft scores."""
     clipped = np.clip(acceptance, 1e-5, 1.0 - 1e-5)
     quantiles = np.quantile(clipped, [0.10, 0.25, 0.50, 0.75, 0.90], axis=1).T
     logit = np.log(clipped) - np.log1p(-clipped)
-    correlation = np.zeros(len(clipped), dtype=np.float64)
-    for row in range(len(clipped)):
-        acceptance_std = float(np.std(clipped[row]))
-        q_std = float(np.std(q_logp[row]))
-        if acceptance_std > 1e-8 and q_std > 1e-8:
-            centered_acceptance = clipped[row] - clipped[row].mean()
-            centered_q = q_logp[row] - q_logp[row].mean()
-            correlation[row] = float(
-                np.mean(centered_acceptance * centered_q)
-                / (acceptance_std * q_std)
-            )
     return np.column_stack(
         [
             clipped.mean(axis=1),
@@ -280,7 +373,6 @@ def _transcript_summary(
             np.mean(clipped > 0.98, axis=1),
             np.log(clipped).mean(axis=1),
             logit.mean(axis=1),
-            correlation,
         ]
     ).astype(np.float32)
 
@@ -427,7 +519,7 @@ def build_activation_feature_families(
     valid_count = np.isfinite(draft["token_logp"]).sum(axis=1)
     terminal = activations[np.arange(len(activations)), valid_count - 1]
     selected_mean = selected_activations.mean(axis=1)
-    transcript = _transcript_summary(acceptance, q_logp)
+    transcript = _transcript_summary(acceptance)
 
     residual = cross_fitted_verifier_residual(
         acceptance, q_logp, entropy, calibration, test, seed + 1
@@ -435,7 +527,7 @@ def build_activation_feature_families(
     shuffled_acceptance = q_stratified_shuffle(
         acceptance, q_logp, calibration, test, seed + 2
     )
-    shuffled_transcript = _transcript_summary(shuffled_acceptance, q_logp)
+    shuffled_transcript = _transcript_summary(shuffled_acceptance)
     shuffled_residual = cross_fitted_verifier_residual(
         shuffled_acceptance, q_logp, entropy, calibration, test, seed + 3
     )
