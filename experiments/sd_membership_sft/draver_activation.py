@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 
-from .audit import auc_rank, bottom_k_indices, metric_row
+from .audit import auc_rank, bottom_k_indices, cap_selected_positions, metric_row
 from .data import SFTRecord, collate_sft, make_sft_example
 
 
@@ -718,8 +718,13 @@ def evaluate_activation_audit(
     metric_family_names: tuple[str, ...] | None = None,
     include_direct_scores: bool = True,
     comparison_baselines: tuple[str, ...] | None = None,
+    selected_token_cap: int | None = None,
 ) -> dict[str, Any]:
-    selected = bottom_k_indices(draft["token_logp"], min_k_fraction)
+    selected = cap_selected_positions(
+        bottom_k_indices(draft["token_logp"], min_k_fraction),
+        draft["token_logp"],
+        selected_token_cap,
+    )
     if acceptance_override is None:
         acceptance, exact_alpha = sample_acceptance_rates(
             target["token_logp"],
@@ -849,6 +854,7 @@ def evaluate_activation_audit(
 
     return {
         "metrics": metrics,
+        "scores": all_scores,
         "detector_stability": detector_stability,
         "paired_auc_deltas": comparisons,
         "few_shot_per_class": few_shot,

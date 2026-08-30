@@ -13,6 +13,22 @@ class Config:
     gpu: int = 0
     target_model: str = "Qwen/Qwen3-8B-Base"
     draft_model: str = "Qwen/Qwen3-1.7B-Base"
+    # "legacy" keeps the original PDF-derived 64-token chunk pipeline; the NART
+    # benchmarks load a frozen post-cutoff pool (see nart_data.BENCHMARK_TOKEN_BANDS).
+    benchmark: str = "legacy"
+    # Optional explicit pool override; defaults to
+    # experiments/data/nart_benchmarks/<benchmark>/pool.jsonl.
+    pool_path: Path | None = None
+    # "lora" fine-tunes adapters; "full" fine-tunes every parameter with NART-style
+    # hyperparameters (lr 2e-5, effective batch 16, 3 epochs, bf16).
+    trainer: str = "lora"
+    # "adamw" is the standard fp32-state optimizer; "adamw8bit" swaps in
+    # bitsandbytes PagedAdamW8bit so an 8B target fits on one A100-80GB.
+    optimizer: str = "adamw"
+    # Cap on transcript-probed positions per record after min-k selection. For
+    # legacy 64-token records min-k 20% is 13 <= 26 so this is a no-op; for NART
+    # documents (up to 512/2048 tokens) it keeps the budget at 26*24=624 bits.
+    selected_token_cap: int = 26
     response_tokens: int = 64
     n_per_class: int = 160
     n_aux: int = 160
@@ -41,4 +57,6 @@ class Config:
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["output_dir"] = str(self.output_dir)
+        if self.pool_path is not None:
+            value["pool_path"] = str(self.pool_path)
         return value

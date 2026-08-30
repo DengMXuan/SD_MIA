@@ -235,3 +235,106 @@ L3 semantic simulation, not a passive L2 production trace. For new aligned
 results, `auto` selects the primary auxiliary-distilled adapter; old results
 without a draft adapter fall back to the base draft. The sweep fails closed if
 any selected target/draft log-probability is non-finite.
+
+## NART-style post-cutoff track (full-parameter fine-tuning)
+
+The NART benchmark track replaces the private PDF data with the three
+post-cutoff pools of NART (Tan et al., NDSS 2026): **WikiTection** (English
+Wikipedia pages first created in the window), **NewsTection** (CC-NEWS article
+pages captured in the window), and **ArXivTection** (arXiv papers submitted in
+the window, full HTML text). The default window is `2026-05-01 .. 2026-08-29`,
+which postdates the Qwen3-8B 2025-07 cutoff and every repo target model
+(including Qwen3.6, released 2026-04-15, assumed cutoff <= 2026-03 — see the
+provenance note in each pool manifest).
+
+Freeze the pools once (raw text is persisted so every target model can
+re-tokenize; each pool carries a SHA-256 manifest):
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.nart_benchmarks wiki --records 6600
+uv run --no-sync python -m experiments.sd_membership_sft.nart_benchmarks news --records 6600
+uv run --no-sync python -m experiments.sd_membership_sft.nart_benchmarks arxiv --records 6600 --min-chars 4200
+```
+
+Each run then uses 2,000 member / 2,000 nonmember / 2,000 auxiliary documents
+selected at load time under the target tokenizer's NART token band
+(128..512 tokens for Wiki/News, 1024..2048 for ArXiv), the fixed NART Figure-3
+prompt with the document as a loss-masked continuation, and NART Table IX
+hyperparameters: lr `2e-5`, effective batch `16` (micro-batch 2 x accum 8;
+ArXiv uses 1 x 16 at sequence length 2048), epochs `3` (NewsTection `4`),
+bf16. `--trainer full` fine-tunes every parameter with a bitsandbytes paged
+8-bit AdamW so the 8B target fits on one A100-80GB; `--trainer lora` keeps the
+legacy adapter path. Transcript probing is capped at 26 selected positions
+(26 x 24 = 624 bits per record) via `--selected-token-cap`, a no-op for the
+legacy 64-token records.
+
+Run the Qwen3-8B WikiTection condition with:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.sd_membership_sft.runner \
+  --gpu 0 \
+  --benchmark wikitection \
+  --trainer full \
+  --optimizer adamw8bit \
+  --target-epochs 3 \
+  --target-lr 2e-5 --draft-lr 2e-5 \
+  --n-per-class 2000 --n-aux 2000 --audit-train-per-class 128 \
+  --target-batch-size 2 --target-grad-accum 8 \
+  --draft-batch-size 2 --draft-grad-accum 8 \
+  --distill-steps 384 \
+  --output-dir experiments/results/nart_sft/wikitection_qwen3_8b_epoch3
+```
+
+Newstection adds `--benchmark newstection --target-epochs 4`; ArXivTection adds
+`--benchmark arxivtection --target-batch-size 1 --target-grad-accum 16`
+(similarly for the draft batch flags).
+
+### Direct-verifier baseline comparison
+
+Every NART-track run automatically evaluates three score-based MIA baselines
+that attack the fine-tuned verifier directly, with no draft or protocol
+signal, and compares them against the SD-scenario signals on the same audit
+test split (paired bootstrap deltas included):
+
+- **Min-K% Prob** (Shi et al., ICLR 2024; official code
+  `swj0419/detect-pretrain-code`): mean log-probability of the k=20%
+  least-likely tokens, reimplemented per the paper.
+- **WBC** (Chen et al., USENIX Security 2026; official code `Stry233/WBC`):
+  sliding-window sign test over per-token loss differences between the
+  fine-tuned target and the pre-fine-tuning reference model, geometric
+  ensemble with w_min=2, w_max=40, |W|=10 per the paper's ablation.
+- **Reference loss-diff**: the global-average per-token loss difference the
+  WBC paper compares against (reference-model-calibrated loss attack).
+
+The SD signals are the 624-bit verifier acceptance transcript, acceptance
+tomography, the transcript-only triplet detector, and DraVer-Act. For
+DraVer-Act the auxiliary-distilled draft's all-layer token-aligned
+activations are extracted during the run (NART track only) and the triplet
+detector is trained on the shared audit calibration split. The comparison
+table and paired deltas are written to `RESULTS.md`; run it exactly as in
+the command above — no extra flags.
+
+### Generalization check (NART Table X protocol)
+
+After fine-tuning, run the NART generalization check on the saved run
+directory. It replays the training split (same pool, tokenizer, sizes, seed),
+has the fine-tuned target generate 128-token continuations for the first
+256-token context of member and nonmember documents under greedy decoding,
+and scores BLEU-4 / ROUGE-1 / ROUGE-L against the true continuations
+(500 samples per class by default):
+
+```bash
+CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.sd_membership_sft.generalization \
+  --run-dir experiments/results/nart_sft/wikitection_qwen3_8b_epoch3 \
+  --gpu 0 --samples 500 --batch-size 8
+```
+
+Two comparisons are reported in `GENERALIZATION.md` / `generalization.json`:
+(1) the NART no-overfitting protocol — member vs nonmember quality gap on the
+fine-tuned model, with bootstrap CIs and a soft gate at |gap| < 0.03 (NART
+reports differences below 0.03 as stable generation quality); (2) base vs
+fine-tuned quality on the same samples, quantifying how much generality the
+full-parameter fine-tuning cost (reported with CIs and relative drop, no hard
+gate). `--include-drafts` additionally scores the base, auxiliary-distilled,
+and member-SFT draft variants, which matters for speculative-decoding
+acceptance quality.

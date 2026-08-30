@@ -108,8 +108,17 @@ def _enable_checkpointing(model: torch.nn.Module) -> None:
         model.enable_input_require_grads()
 
 
-def _make_optimizer(model: torch.nn.Module, lr: float) -> torch.optim.Optimizer:
+def _make_optimizer(
+    model: torch.nn.Module, lr: float, optimizer_name: str = "adamw"
+) -> torch.optim.Optimizer:
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    if optimizer_name == "adamw8bit":
+        import bitsandbytes as bnb
+
+        try:
+            return bnb.optim.PagedAdamW8bit(parameters, lr=lr)
+        except (TypeError, RuntimeError):
+            return bnb.optim.AdamW8bit(parameters, lr=lr)
     try:
         return torch.optim.AdamW(parameters, lr=lr, fused=True)
     except (TypeError, RuntimeError):
@@ -149,11 +158,12 @@ def sft_train(
     lr: float,
     seed: int,
     label: str,
+    optimizer_name: str = "adamw",
 ) -> list[float]:
     if epochs <= 0:
         return []
     _enable_checkpointing(model)
-    optimizer = _make_optimizer(model, lr)
+    optimizer = _make_optimizer(model, lr, optimizer_name)
     history: list[float] = []
     for epoch in range(epochs):
         model.train()
@@ -287,13 +297,14 @@ def distill_on_auxiliary(
     lr: float,
     temperature: float,
     seed: int,
+    optimizer_name: str = "adamw",
 ) -> list[float]:
     if steps <= 0:
         return []
     _enable_checkpointing(draft)
     target.eval()
     draft.train()
-    optimizer = _make_optimizer(draft, lr)
+    optimizer = _make_optimizer(draft, lr, optimizer_name)
     rng = np.random.default_rng(seed)
     examples = [make_sft_example(record, tokenizer) for record in records]
     losses: list[float] = []
@@ -345,4 +356,10 @@ def save_adapter(model: torch.nn.Module, path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     if not isinstance(model, PeftModel):
         raise TypeError("Expected a PEFT model when saving an adapter")
+    model.save_pretrained(path)
+
+
+def save_trained_model(model: torch.nn.Module, path: Path) -> None:
+    """Save either a LoRA adapter or a fully fine-tuned checkpoint."""
+    path.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(path)

@@ -16,6 +16,111 @@ def bottom_k_indices(token_logp: np.ndarray, fraction: float) -> np.ndarray:
     return np.argpartition(safe, kth=k - 1, axis=1)[:, :k]
 
 
+def cap_selected_positions(
+    selected: np.ndarray, draft_logp: np.ndarray, cap: int | None
+) -> np.ndarray:
+    """Keep only the ``cap`` least-likely positions among the min-k selection.
+
+    With long NART documents the min-k selection alone would grow the verifier
+    transcript budget with document length; the cap pins it to
+    ``cap * repeats`` bits per record (26 * 24 = 624 by default).
+    """
+    if cap is None or cap >= selected.shape[1]:
+        return selected
+    gathered = gather_positions(draft_logp, selected)
+    order = np.argsort(gathered, axis=1, kind="mergesort")[:, :cap]
+    return np.take_along_axis(selected, order, axis=1)
+
+
+def make_audit_split(
+    n_members: int, n_nonmembers: int, per_class: int, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Audit calibration/test split shared by every audit path.
+
+    Uses ``seed + 30`` so existing runs keep the exact split they were
+    produced with. Direct-verifier baselines, the SD transcript scores, and
+    the DraVer-Act detector must all evaluate on the same test records for
+    paired comparisons to be valid.
+    """
+    rng = np.random.default_rng(seed + 30)
+    positive = rng.permutation(n_members)
+    negative = rng.permutation(n_nonmembers) + n_members
+    train = np.concatenate([positive[:per_class], negative[:per_class]])
+    test = np.concatenate([positive[per_class:], negative[per_class:]])
+    rng.shuffle(train)
+    rng.shuffle(test)
+    return train, test
+
+
+def window_based_comparison(
+    target_logp: np.ndarray,
+    reference_logp: np.ndarray,
+    w_min: int = 2,
+    w_max: int = 40,
+    n_window_sizes: int = 10,
+) -> np.ndarray:
+    """WBC attack score (Chen et al., USENIX Security 2026).
+
+    Reimplemented from the paper's Equations 10 and 12; official code is
+    github.com/Stry233/WBC. With token losses defined as l = -logp, the
+    per-token loss difference is Delta_j = l_R_j - l_T_j = logp_T_j -
+    logp_R_j. For each geometrically spaced window size w, the statistic is
+    the fraction of sliding windows whose Delta sum is positive; the final
+    score averages the statistic across sizes. Hyperparameters follow the
+    paper's ablation optimum: w_min=2, w_max=40, |W|=10, stride 1.
+
+    ``target_logp`` and ``reference_logp`` are [records, positions] arrays
+    with NaN padding; NaN positions are excluded via a zero-padded delta
+    cumsum over each row's valid prefix.
+    """
+    delta = target_logp - reference_logp
+    rows, width = delta.shape
+    scores = np.full(rows, np.nan, dtype=np.float64)
+    sizes = [
+        int(round(w_min * (w_max / w_min) ** (k / (n_window_sizes - 1))))
+        for k in range(n_window_sizes)
+    ]
+    for row in range(rows):
+        valid = np.isfinite(delta[row])
+        count = int(valid.sum())
+        if count == 0:
+            continue
+        values = np.where(valid, delta[row], 0.0)[:count]
+        cumsum = np.concatenate([[0.0], np.cumsum(values)])
+        statistics = []
+        for w in sizes:
+            if w > count:
+                continue
+            window_sums = cumsum[w:] - cumsum[:-w]
+            statistics.append(float(np.mean(window_sums > 0.0)))
+        if statistics:
+            scores[row] = float(np.mean(statistics))
+    return scores
+
+
+def min_k_prob(target_logp: np.ndarray, fraction: float) -> np.ndarray:
+    """Min-K% Prob attack score (Shi et al., ICLR 2024).
+
+    Reimplemented per the paper (official code github.com/swj0419/detect-
+    pretrain-code): mean log-probability of the k% least-likely tokens.
+    """
+    selected = bottom_k_indices(target_logp, fraction)
+    return np.nanmean(gather_positions(target_logp, selected), axis=1)
+
+
+def reference_loss_diff(
+    target_logp: np.ndarray, reference_logp: np.ndarray
+) -> np.ndarray:
+    """Reference-based global loss-difference score.
+
+    The standard fine-tuned-MIA baseline the WBC paper compares against:
+    mean over document tokens of (reference loss - target loss) = mean
+    Delta_j, i.e. WBC's signal without windowing or sign aggregation.
+    """
+    delta = target_logp - reference_logp
+    return np.nanmean(np.where(np.isfinite(delta), delta, np.nan), axis=1)
+
+
 def gather_positions(values: np.ndarray, positions: np.ndarray) -> np.ndarray:
     return np.take_along_axis(values, positions, axis=1)
 
@@ -140,10 +245,12 @@ def fit_logistic(
     return 1.0 / (1.0 + np.exp(-np.clip(test @ weights, -30, 30)))
 
 
-def hashed_bow(ids: np.ndarray, width: int = 2048) -> np.ndarray:
+def hashed_bow(ids: Any, width: int = 2048) -> np.ndarray:
+    """Hashed bag-of-words over variable-length token id sequences."""
     result = np.zeros((len(ids), width), dtype=np.float32)
     for row, sequence in enumerate(ids):
-        bins = np.mod(sequence * 2654435761, width)
+        tokens = np.asarray(sequence, dtype=np.int64)
+        bins = np.mod(tokens * 2654435761, width)
         np.add.at(result[row], bins, 1.0)
     result /= np.maximum(result.sum(axis=1, keepdims=True), 1.0)
     return result
@@ -183,8 +290,13 @@ def add_draft_metrics(
     bootstrap_repeats: int,
     seed_offset: int,
     results: dict[str, dict[str, float]],
+    selected_token_cap: int | None = None,
 ) -> dict[str, np.ndarray]:
-    selected = bottom_k_indices(draft["token_logp"], min_k_fraction)
+    selected = cap_selected_positions(
+        bottom_k_indices(draft["token_logp"], min_k_fraction),
+        draft["token_logp"],
+        selected_token_cap,
+    )
     draft_mean = np.nanmean(draft["token_logp"], axis=1)
     draft_min = np.nanmean(gather_positions(draft["token_logp"], selected), axis=1)
     draft_entropy = -np.nanmean(draft["entropy"], axis=1)
@@ -258,9 +370,14 @@ def add_draft_metrics(
     results[f"{prefix}/joint_whitebox_transcript"] = metric_row(
         y_test, joint_test, bootstrap_repeats, seed_offset + 41
     )
+    raw_scores = {
+        name: np.asarray(score)[test_idx] for name, score in scores.items()
+    }
+    raw_scores[f"{prefix}/joint_whitebox_transcript"] = joint_test
     return {
         "query_bits": query_bits,
         "random_query_bits": random_query_bits,
+        "raw_scores": raw_scores,
     }
 
 
@@ -270,30 +387,58 @@ def run_audit(
     target_features: dict[str, np.ndarray],
     draft_features: dict[str, dict[str, np.ndarray]],
     config: Any,
-) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+    selected_token_cap: int | None = None,
+    base_target_features: dict[str, np.ndarray] | None = None,
+    split: tuple[np.ndarray, np.ndarray] | None = None,
+) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, np.ndarray]]:
     candidates = members + nonmembers
     labels = np.concatenate(
         [np.ones(len(members), dtype=np.int64), np.zeros(len(nonmembers), dtype=np.int64)]
     )
-    ids = np.asarray([record.response_ids for record in candidates], dtype=np.int64)
-    rng = np.random.default_rng(config.audit_seed + 30)
-    positive = rng.permutation(len(members))
-    negative = rng.permutation(len(nonmembers)) + len(members)
-    train_idx = np.concatenate(
-        [positive[: config.audit_train_per_class], negative[: config.audit_train_per_class]]
-    )
-    test_idx = np.concatenate(
-        [positive[config.audit_train_per_class :], negative[config.audit_train_per_class :]]
-    )
-    rng.shuffle(train_idx)
-    rng.shuffle(test_idx)
+    ids = [record.response_ids for record in candidates]
+    if split is None:
+        train_idx, test_idx = make_audit_split(
+            len(members), len(nonmembers), config.audit_train_per_class, config.audit_seed
+        )
+    else:
+        train_idx, test_idx = split
 
     results: dict[str, dict[str, float]] = {}
+    raw_scores: dict[str, np.ndarray] = {}
+
+    def register(name: str, score: np.ndarray, preindexed: bool = False) -> None:
+        test_score = score if preindexed else score[test_idx]
+        results[name] = metric_row(
+            labels[test_idx], test_score, config.bootstrap_repeats, config.audit_seed + 500
+        )
+        raw_scores[name] = test_score
+
     bow = hashed_bow(ids)
     bow_test = fit_logistic(bow[train_idx], labels[train_idx], bow[test_idx])
-    results["control/model_less_hashed_bow"] = metric_row(
-        labels[test_idx], bow_test, config.bootstrap_repeats, config.audit_seed + 500
-    )
+    register("control/model_less_hashed_bow", bow_test, preindexed=True)
+
+    if base_target_features is not None:
+        # Direct verifier MIA baselines: score-based attacks on the fine-tuned
+        # target with (WBC, reference loss-diff) or without (Min-K%) the
+        # pre-fine-tuning reference model. No draft or protocol signal used.
+        register(
+            "verifier_direct/min_k_prob_k20",
+            min_k_prob(target_features["token_logp"], config.min_k_fraction),
+        )
+        register(
+            "verifier_direct/window_based_comparison",
+            window_based_comparison(
+                target_features["token_logp"],
+                base_target_features["token_logp"],
+            ),
+        )
+        register(
+            "verifier_direct/reference_loss_diff",
+            reference_loss_diff(
+                target_features["token_logp"],
+                base_target_features["token_logp"],
+            ),
+        )
 
     query_arrays: list[np.ndarray] = []
     random_query_arrays: list[np.ndarray] = []
@@ -311,9 +456,11 @@ def run_audit(
             config.bootstrap_repeats,
             config.audit_seed + 600 + index * 100,
             results,
+            selected_token_cap=selected_token_cap,
         )
         query_arrays.append(extra["query_bits"])
         random_query_arrays.append(extra["random_query_bits"])
+        raw_scores.update(extra["raw_scores"])
 
     query_bits = np.concatenate(query_arrays)
     random_bits = np.concatenate(random_query_arrays)
@@ -325,4 +472,4 @@ def run_audit(
         "audit_train_size": int(len(train_idx)),
         "audit_test_size": int(len(test_idx)),
     }
-    return results, budget
+    return results, budget, raw_scores
