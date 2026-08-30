@@ -66,6 +66,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trainer", choices=["lora", "full"])
     parser.add_argument("--optimizer", choices=["adamw", "adamw8bit"])
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--skip-training",
+        action="store_true",
+        default=None,
+        help="load saved checkpoints instead of fine-tuning (resume/redo analysis)",
+    )
     parser.add_argument("--skip-trained-drafts", action="store_true", default=None)
     parser.add_argument("--no-save-adapters", action="store_true", default=None)
     return parser.parse_args()
@@ -77,7 +83,12 @@ def load_config(args: argparse.Namespace) -> Config:
         with args.config.open("rb") as handle:
             values.update(tomllib.load(handle))
     for key, value in vars(args).items():
-        if key in {"config", "skip_trained_drafts", "no_save_adapters"} or value is None:
+        if key in {
+            "config",
+            "skip_trained_drafts",
+            "no_save_adapters",
+            "skip_training",
+        } or value is None:
             continue
         values[key] = value
     if args.skip_trained_drafts:
@@ -393,29 +404,39 @@ def main() -> None:
     checkpoint_dir = "checkpoints" if full_finetune else "adapters"
 
     started = time.time()
-    target = load_causal_lm(cfg.target_model, device)
-    if not full_finetune:
-        target = add_lora(
+    resume = bool(args.skip_training)
+    target_ckpt = output_dir / checkpoint_dir / "target"
+    if resume and target_ckpt.exists():
+        from .generalization import load_draft_model, load_finetuned_model
+
+        target = load_finetuned_model(output_dir, cfg.target_model, device)
+        target.eval()
+        target_sft_loss: list[float] = []
+        print(f"resumed target from {target_ckpt}", flush=True)
+    else:
+        target = load_causal_lm(cfg.target_model, device)
+        if not full_finetune:
+            target = add_lora(
+                target,
+                cfg.lora_r,
+                cfg.lora_alpha,
+                cfg.lora_dropout,
+            )
+        target_sft_loss = sft_train(
             target,
-            cfg.lora_r,
-            cfg.lora_alpha,
-            cfg.lora_dropout,
+            members,
+            tokenizer,
+            device,
+            cfg.target_epochs,
+            cfg.target_batch_size,
+            cfg.target_grad_accum,
+            cfg.target_lr,
+            cfg.seed + 10,
+            "target SFT",
+            optimizer_name=cfg.optimizer,
         )
-    target_sft_loss = sft_train(
-        target,
-        members,
-        tokenizer,
-        device,
-        cfg.target_epochs,
-        cfg.target_batch_size,
-        cfg.target_grad_accum,
-        cfg.target_lr,
-        cfg.seed + 10,
-        "target SFT",
-        optimizer_name=cfg.optimizer,
-    )
-    if cfg.save_adapters:
-        save_trained_model(target, output_dir / checkpoint_dir / "target")
+        if cfg.save_adapters:
+            save_trained_model(target, output_dir / checkpoint_dir / "target")
     target_features = extract_features(
         target, candidates, tokenizer, device, cfg.target_batch_size
     )
@@ -433,32 +454,42 @@ def main() -> None:
     aux_distill_loss: list[float] = []
     member_draft_sft_loss: list[float] = []
     if cfg.run_auxiliary_draft:
-        auxiliary_draft = load_causal_lm(cfg.draft_model, device)
-        if not full_finetune:
-            auxiliary_draft = add_lora(
-                auxiliary_draft,
-                cfg.lora_r,
-                cfg.lora_alpha,
-                cfg.lora_dropout,
+        aux_ckpt = output_dir / checkpoint_dir / "draft_auxiliary_distilled"
+        if resume and aux_ckpt.exists():
+            from .generalization import load_draft_model
+
+            auxiliary_draft = load_draft_model(
+                output_dir, cfg.draft_model, "draft_auxiliary_distilled", device
             )
-        aux_distill_loss = distill_on_auxiliary(
-            auxiliary_draft,
-            target,
-            auxiliary,
-            tokenizer,
-            device,
-            cfg.distill_steps,
-            cfg.draft_batch_size,
-            cfg.draft_lr,
-            cfg.distill_temperature,
-            cfg.seed + 20,
-            optimizer_name=cfg.optimizer,
-        )
-        if cfg.save_adapters:
-            save_trained_model(
+            aux_distill_loss = []
+            print(f"resumed auxiliary draft from {aux_ckpt}", flush=True)
+        else:
+            auxiliary_draft = load_causal_lm(cfg.draft_model, device)
+            if not full_finetune:
+                auxiliary_draft = add_lora(
+                    auxiliary_draft,
+                    cfg.lora_r,
+                    cfg.lora_alpha,
+                    cfg.lora_dropout,
+                )
+            aux_distill_loss = distill_on_auxiliary(
                 auxiliary_draft,
-                output_dir / checkpoint_dir / "draft_auxiliary_distilled",
+                target,
+                auxiliary,
+                tokenizer,
+                device,
+                cfg.distill_steps,
+                cfg.draft_batch_size,
+                cfg.draft_lr,
+                cfg.distill_temperature,
+                cfg.seed + 20,
+                optimizer_name=cfg.optimizer,
             )
+            if cfg.save_adapters:
+                save_trained_model(
+                    auxiliary_draft,
+                    output_dir / checkpoint_dir / "draft_auxiliary_distilled",
+                )
         draft_features["aux_distilled_draft"] = extract_features(
             auxiliary_draft, candidates, tokenizer, device, cfg.draft_batch_size
         )
@@ -471,31 +502,41 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     if cfg.run_member_draft:
-        member_draft = load_causal_lm(cfg.draft_model, device)
-        if not full_finetune:
-            member_draft = add_lora(
+        member_ckpt = output_dir / checkpoint_dir / "draft_member_sft"
+        if resume and member_ckpt.exists():
+            from .generalization import load_draft_model
+
+            member_draft = load_draft_model(
+                output_dir, cfg.draft_model, "draft_member_sft", device
+            )
+            member_draft_sft_loss = []
+            print(f"resumed member draft from {member_ckpt}", flush=True)
+        else:
+            member_draft = load_causal_lm(cfg.draft_model, device)
+            if not full_finetune:
+                member_draft = add_lora(
+                    member_draft,
+                    cfg.lora_r,
+                    cfg.lora_alpha,
+                    cfg.lora_dropout,
+                )
+            member_draft_sft_loss = sft_train(
                 member_draft,
-                cfg.lora_r,
-                cfg.lora_alpha,
-                cfg.lora_dropout,
+                members,
+                tokenizer,
+                device,
+                cfg.target_epochs,
+                cfg.draft_batch_size,
+                cfg.draft_grad_accum,
+                cfg.draft_lr,
+                cfg.seed + 21,
+                "member-data draft SFT",
+                optimizer_name=cfg.optimizer,
             )
-        member_draft_sft_loss = sft_train(
-            member_draft,
-            members,
-            tokenizer,
-            device,
-            cfg.target_epochs,
-            cfg.draft_batch_size,
-            cfg.draft_grad_accum,
-            cfg.draft_lr,
-            cfg.seed + 21,
-            "member-data draft SFT",
-            optimizer_name=cfg.optimizer,
-        )
-        if cfg.save_adapters:
-            save_trained_model(
-                member_draft, output_dir / checkpoint_dir / "draft_member_sft"
-            )
+            if cfg.save_adapters:
+                save_trained_model(
+                    member_draft, output_dir / checkpoint_dir / "draft_member_sft"
+                )
         draft_features["member_sft_draft"] = extract_features(
             member_draft, candidates, tokenizer, device, cfg.draft_batch_size
         )
