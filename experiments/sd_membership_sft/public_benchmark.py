@@ -22,6 +22,7 @@ from .draver_activation import (
     extract_draft_activation_outputs,
     extract_pair_alignment_outputs,
     extract_target_token_outputs,
+    json_safe_scores,
     make_audit_split,
     triplet_ensemble_scores,
 )
@@ -680,17 +681,19 @@ def main() -> None:
     endpoints: dict[str, Any] = {}
     target_diagnostics: dict[str, Any] = {}
     for offset, (name, current_draft, current_target) in enumerate(endpoint_specs):
-        endpoints[name] = evaluate_activation_audit(
-            current_draft,
-            current_target,
-            labels,
-            calibration,
-            test,
-            args.min_k_fraction,
-            args.transcript_repeats,
-            args.bootstrap_repeats,
-            args.detector_seeds,
-            args.seed + 10000 + offset * 1000,
+        endpoints[name] = json_safe_scores(
+            evaluate_activation_audit(
+                current_draft,
+                current_target,
+                labels,
+                calibration,
+                test,
+                args.min_k_fraction,
+                args.transcript_repeats,
+                args.bootstrap_repeats,
+                args.detector_seeds,
+                args.seed + 10000 + offset * 1000,
+            )
         )
         target_diagnostics[name] = _endpoint_diagnostics(
             current_target, labels, test

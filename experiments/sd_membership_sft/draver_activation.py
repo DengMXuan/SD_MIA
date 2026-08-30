@@ -701,6 +701,25 @@ def paired_bootstrap_delta(
     }
 
 
+def json_safe_scores(result: dict[str, Any]) -> dict[str, Any]:
+    """Copy an audit result with per-test score arrays made JSON-serializable.
+
+    ``scores`` is the only field holding numpy arrays; metrics, deltas, and
+    protocol metadata already contain plain Python numbers. In-process
+    consumers such as runner.py keep receiving arrays because only serialized
+    artifacts need the conversion.
+    """
+    scores = result.get("scores")
+    if not isinstance(scores, dict):
+        return result
+    return {
+        **result,
+        "scores": {
+            name: [float(value) for value in values] for name, values in scores.items()
+        },
+    }
+
+
 def evaluate_activation_audit(
     draft: dict[str, np.ndarray],
     target: dict[str, np.ndarray],

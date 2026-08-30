@@ -58,3 +58,4 @@ experiments/results/**/adapters/
 # Local literature and research notes
 /papers/
 /research/
+experiments/results/**/method_probe/**/paraphrase_texts.json
