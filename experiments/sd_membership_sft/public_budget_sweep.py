@@ -19,7 +19,6 @@ from .draver_activation import (
     extract_draft_activation_outputs,
     extract_target_token_outputs,
     gather_tokens,
-    json_safe_scores,
     make_audit_split,
 )
 from .public_data import build_public_snapshot_split
@@ -269,32 +268,30 @@ def main() -> None:
     )
     results: dict[str, Any] = {}
     for repeats in budgets:
-        results[str(repeats)] = json_safe_scores(
-            evaluate_activation_audit(
-                draft_outputs,
-                target_outputs,
-                labels,
-                calibration,
-                test,
-                float(config["min_k_fraction"]),
-                repeats,
-                args.bootstrap_repeats,
-                args.detector_seeds,
-                seed + 60000 + repeats * 1000,
-                few_shot_per_class=(),
-                acceptance_override=observed[repeats],
-                exact_alpha_override=exact_alpha,
-                metric_family_names=(
-                    "transcript_only_triplet",
-                    "draver_act_residual_triplet",
-                    "control_qbin_shuffled_draver_act_triplet",
-                ),
-                include_direct_scores=False,
-                comparison_baselines=(
-                    "transcript_only_triplet",
-                    "control_qbin_shuffled_draver_act_triplet",
-                ),
-            )
+        results[str(repeats)] = evaluate_activation_audit(
+            draft_outputs,
+            target_outputs,
+            labels,
+            calibration,
+            test,
+            float(config["min_k_fraction"]),
+            repeats,
+            args.bootstrap_repeats,
+            args.detector_seeds,
+            seed + 60000 + repeats * 1000,
+            few_shot_per_class=(),
+            acceptance_override=observed[repeats],
+            exact_alpha_override=exact_alpha,
+            metric_family_names=(
+                "transcript_only_triplet",
+                "draver_act_residual_triplet",
+                "control_qbin_shuffled_draver_act_triplet",
+            ),
+            include_direct_scores=False,
+            comparison_baselines=(
+                "transcript_only_triplet",
+                "control_qbin_shuffled_draver_act_triplet",
+            ),
         )
 
     artifact = {
