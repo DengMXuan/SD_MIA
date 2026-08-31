@@ -285,7 +285,14 @@ CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.sd_membership_sft.
   --output-dir experiments/results/nart_sft/wikitection_qwen3_8b_epoch3
 ```
 
-Newstection adds `--benchmark newstection --target-epochs 4`; ArXivTection adds
+The main benchmark configuration is unified across the three pools:
+**lr 2e-5, 3 epochs** (the earlier NewsTection-specific 4-epoch setting is
+retained in git history as a training-length ablation; its generalization
+gate marginally fails at ROUGE-1, see
+`newstection_qwen3_8b_epoch4/GENERALIZATION.md`). A weak-memorization
+variant uses `--target-epochs 1` (e.g.
+`newstection_qwen3_8b_epoch1`). ArXivTection keeps its 2048-token sequence
+with micro-batch 1 x accumulation 16:
 `--benchmark arxivtection --target-batch-size 1 --target-grad-accum 16`
 (similarly for the draft batch flags).
 
