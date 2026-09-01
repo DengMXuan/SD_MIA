@@ -23,6 +23,7 @@ import argparse
 import gzip
 import hashlib
 import html as html_module
+import io
 import json
 import random
 import re
@@ -81,82 +82,9 @@ def _request(
     raise AssertionError("unreachable")
 
 
-def _request_bytes(
-    url: str,
-    headers: dict[str, str] | None = None,
-    attempts: int = 8,
-    timeout: int = 120,
-    sleep: float = 1.0,
-) -> bytes:
-    """GET with retries that also cover mid-body failures (IncompleteRead,
-    SSL EOF during chunked reads) by reading the payload inside the loop.
-
-    Permanent HTTP client errors (all 4xx except 408/429) fail immediately;
-    a malformed Retry-After header falls back to exponential backoff.
-    """
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-    for attempt in range(attempts):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read()
-        except HTTPError as error:
-            if error.code not in (408, 429, 500, 502, 503, 504):
-                raise
-            if attempt + 1 == attempts:
-                raise
-            delay = sleep * 2**attempt
-            retry_after = error.headers.get("Retry-After")
-            if retry_after:
-                try:
-                    delay = float(retry_after)
-                except ValueError:
-                    pass
-            time.sleep(min(180.0, delay))
-        except Exception:
-            if attempt + 1 == attempts:
-                raise
-            time.sleep(min(180.0, sleep * 2**attempt))
-    raise AssertionError("unreachable")
-
-
-def _request_spooled(
-    url: str,
-    max_spooled_bytes: int = 64 * 1024 * 1024,
-    headers: dict[str, str] | None = None,
-    attempts: int = 8,
-    timeout: int = 120,
-    sleep: float = 1.0,
-) -> Any:
-    """GET a large payload into a SpooledTemporaryFile (retries + streaming).
-
-    Keeps the read-level retry semantics of ``_request_bytes`` without
-    buffering gigabyte-scale bodies in RAM; the file rolls over to disk
-    beyond ``max_spooled_bytes``.
-    """
-    import tempfile
-
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
-    for attempt in range(attempts):
-        spooled = tempfile.SpooledTemporaryFile(max_size=max_spooled_bytes)
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    spooled.write(chunk)
-            spooled.seek(0)
-            return spooled
-        except Exception:
-            spooled.close()
-            if attempt + 1 == attempts:
-                raise
-            time.sleep(min(180.0, sleep * 2**attempt))
-    raise AssertionError("unreachable")
-
-
 def _request_json(url: str, **kwargs: Any) -> dict[str, Any]:
-    return json.loads(_request_bytes(url, **kwargs))
+    with _request(url, **kwargs) as response:
+        return json.load(response)
 
 
 class ArticleTextExtractor(HTMLParser):
@@ -375,10 +303,7 @@ def _wiki_creation_events(start: str, end: str) -> Iterable[dict[str, Any]]:
         }
         if continuation is not None:
             parameters["lecontinue"] = continuation
-        payload = _request_json(
-            f"{WIKI_API}?{urllib.parse.urlencode({'format': 'json', 'formatversion': 2, **parameters})}",
-            sleep=0.6,
-        )
+        payload = _request_json(f"{WIKI_API}?{urllib.parse.urlencode({'format': 'json', 'formatversion': 2, **parameters})}", sleep=0.6)
         batch = payload.get("query", {}).get("logevents", [])
         yield from batch
         continuation = payload.get("continue", {}).get("lecontinue")
@@ -468,6 +393,7 @@ def build_wikitection(args: argparse.Namespace) -> None:
                 'inprop': 'url',
             })}",
             sleep=0.5,
+            attempts=8,
         )
         kept = 0
         for page in payload.get("query", {}).get("pages", []):
@@ -564,9 +490,8 @@ def build_newstection(args: argparse.Namespace) -> None:
     for month in args.months:
         year, month_number = month.split("-")
         year_month_path = f"{year}/{month_number}"
-        listing = gzip.decompress(
-            _request_bytes(CCNEWS_PATHS.format(year_month_path=year_month_path), sleep=1.0, timeout=60)
-        ).decode("utf-8")
+        with _request(CCNEWS_PATHS.format(year_month_path=year_month_path), sleep=1.0, timeout=60) as response:
+            listing = gzip.decompress(response.read()).decode("utf-8")
         paths = [line.strip() for line in listing.splitlines() if line.strip()]
         print(f"{month}: {len(paths)} segments", flush=True)
         segment_paths.extend(paths)
@@ -635,67 +560,66 @@ def _collect_news_segment(
     needed: int,
 ) -> int:
     usable = 0
-    stream = gzip.GzipFile(
-        fileobj=_request_spooled(CCNEWS_BASE + segment, sleep=1.0, timeout=300)
-    )
-    for record in ArchiveIterator(stream):
-        if usable >= needed:
-            break
-        if record.rec_type != "response":
-            continue
-        http_headers = record.http_headers
-        if http_headers is None or http_headers.get_statuscode() != "200":
-            continue
-        content_type = (http_headers.get_header("Content-Type") or "").lower()
-        if "text/html" not in content_type and "application/xhtml" not in content_type:
-            continue
-        url = record.rec_headers.get_header("WARC-Target-URI") or ""
-        path = urllib.parse.urlparse(url).path
-        if not path or path == "/" or _SKIP_URL.search(path):
-            continue
-        host = urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
-        if not host:
-            continue
-        canonical = f"{host}{path}"
-        if canonical in seen_url:
-            continue
-        body = record.content_stream().read()
-        encoding = (http_headers.get_header("Content-Encoding") or "").lower()
-        if "gzip" in encoding:
-            try:
-                body = gzip.decompress(body)
-            except OSError:
+    with _request(CCNEWS_BASE + segment, sleep=1.0, timeout=300) as response:
+        stream = gzip.GzipFile(fileobj=response)
+        for record in ArchiveIterator(stream):
+            if usable >= needed:
+                break
+            if record.rec_type != "response":
                 continue
-        title, text = _html_to_article(body)
-        text = text[: args.max_chars]
-        if not _usable_text(
-            text, args.min_chars, args.max_chars, min_long_paragraphs=5
-        ):
-            continue
-        digest = _sha256_hex(text.encode("utf-8"))
-        if digest in seen_text:
-            continue
-        if dup_index.is_duplicate(text):
-            continue
-        seen_text.add(digest)
-        seen_url.add(canonical)
-        dup_index.add(text)
-        capture_time = record.rec_headers.get_header("WARC-Date") or ""
-        records.append(
-            {
-                "record_id": f"newstection:{digest[:16]}",
-                "source": host,
-                "title": title or host,
-                "creation_timestamp": capture_time,
-                "snapshot_revision": 0,
-                "snapshot_timestamp": capture_time,
-                "canonical_url": url,
-                "text_sha256": digest,
-                "text": text,
-                "segment": segment,
-            }
-        )
-        usable += 1
+            http_headers = record.http_headers
+            if http_headers is None or http_headers.get_statuscode() != "200":
+                continue
+            content_type = (http_headers.get_header("Content-Type") or "").lower()
+            if "text/html" not in content_type and "application/xhtml" not in content_type:
+                continue
+            url = record.rec_headers.get_header("WARC-Target-URI") or ""
+            path = urllib.parse.urlparse(url).path
+            if not path or path == "/" or _SKIP_URL.search(path):
+                continue
+            host = urllib.parse.urlparse(url).netloc.lower().removeprefix("www.")
+            if not host:
+                continue
+            canonical = f"{host}{path}"
+            if canonical in seen_url:
+                continue
+            body = record.content_stream().read()
+            encoding = (http_headers.get_header("Content-Encoding") or "").lower()
+            if "gzip" in encoding:
+                try:
+                    body = gzip.decompress(body)
+                except OSError:
+                    continue
+            title, text = _html_to_article(body)
+            text = text[: args.max_chars]
+            if not _usable_text(
+                text, args.min_chars, args.max_chars, min_long_paragraphs=5
+            ):
+                continue
+            digest = _sha256_hex(text.encode("utf-8"))
+            if digest in seen_text:
+                continue
+            if dup_index.is_duplicate(text):
+                continue
+            seen_text.add(digest)
+            seen_url.add(canonical)
+            dup_index.add(text)
+            capture_time = record.rec_headers.get_header("WARC-Date") or ""
+            records.append(
+                {
+                    "record_id": f"newstection:{digest[:16]}",
+                    "source": host,
+                    "title": title or host,
+                    "creation_timestamp": capture_time,
+                    "snapshot_revision": 0,
+                    "snapshot_timestamp": capture_time,
+                    "canonical_url": url,
+                    "text_sha256": digest,
+                    "text": text,
+                    "segment": segment,
+                }
+            )
+            usable += 1
     return usable
 
 
@@ -727,7 +651,8 @@ def _arxiv_atom_entries(
             })}"
         )
         try:
-            payload = _request_bytes(url, sleep=sleep, timeout=90)
+            with _request(url, sleep=sleep, timeout=90) as response:
+                payload = response.read()
         except Exception:
             # the arXiv API intermittently 500s on deep pagination; back off
             # hard and degrade to partial candidate lists instead of dying
@@ -862,7 +787,9 @@ def _fetch_arxiv_fulltext(arxiv_id: str) -> bytes | None:
     for template in (ARXIV_HTML, AR5IV_HTML):
         url = template.format(arxiv_id=arxiv_id)
         try:
-            return _request_bytes(url, sleep=2.0, timeout=90, attempts=4)
+            with _request(url, sleep=2.0, timeout=90) as response:
+                if response.status == 200:
+                    return response.read()
         except HTTPError as error:
             if error.code == 404:
                 continue
