@@ -874,3 +874,9 @@ def evaluate_activation_audit(
             "detector_seed_count": int(detector_seeds),
         },
     }
+
+
+# Public aliases: sd_window composes on these building blocks.
+weighted_pool = _weighted_pool
+transcript_summary = _transcript_summary
+conditioned_activation_features = _conditioned_activation_features
