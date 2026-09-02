@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
@@ -719,6 +720,7 @@ def evaluate_activation_audit(
     include_direct_scores: bool = True,
     comparison_baselines: tuple[str, ...] | None = None,
     selected_token_cap: int | None = None,
+    transcript_dump_path: Path | None = None,
 ) -> dict[str, Any]:
     selected = cap_selected_positions(
         bottom_k_indices(draft["token_logp"], min_k_fraction),
@@ -774,6 +776,25 @@ def evaluate_activation_audit(
         }
 
     q_selected = gather_tokens(draft["token_logp"], selected)
+    if transcript_dump_path is not None:
+        # Persist the raw per-selected-token transcript so offline scorer
+        # packages (protocol_scorers) can recompute without re-running the
+        # verifier simulation. counts invert the Jeffreys smoothing exactly.
+        raw_counts = np.rint(acceptance * (transcript_repeats + 1) - 0.5).astype(
+            np.int16
+        )
+        transcript_dump_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(
+            transcript_dump_path,
+            selected_positions=selected.astype(np.int32),
+            accept_counts=raw_counts,
+            observed_rate=acceptance,
+            exact_alpha=exact_alpha,
+            q_selected_logp=q_selected,
+            repeats=np.int32(transcript_repeats),
+            test_index=test.astype(np.int64),
+            labels=labels.astype(np.int64),
+        )
     direct_scores = (
         {
             "draft_min_k_logp": q_selected.mean(axis=1)[test],
