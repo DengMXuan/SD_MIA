@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import random
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from pypdf import PdfReader
 
 
 @dataclass(frozen=True)
@@ -43,128 +39,9 @@ class SFTRecord:
         )
 
 
-def clean_pdf_text(raw: str) -> list[str]:
-    raw = raw.replace("\f", "\n\n")
-    raw = re.sub(r"-\n(?=[a-z])", "", raw)
-    raw = re.sub(r"(?<!\n)\n(?!\n)", " ", raw)
-    paragraphs = re.split(r"\n\s*\n+", raw)
-    result: list[str] = []
-    for paragraph in paragraphs:
-        paragraph = re.sub(r"\s+", " ", paragraph).strip()
-        if not (260 <= len(paragraph) <= 5000):
-            continue
-        printable = sum(
-            ch.isalpha() or ch.isspace() or ch in ".,;:()[]-'" for ch in paragraph
-        )
-        if printable / max(1, len(paragraph)) < 0.78:
-            continue
-        if paragraph.lower().startswith(("references ", "acknowledg", "appendix ")):
-            continue
-        result.append(paragraph)
-    return result
-
-
-def read_pdf_paragraphs(path: Path) -> list[str]:
-    reader = PdfReader(str(path))
-    text = "\n\n".join(page.extract_text() or "" for page in reader.pages)
-    return clean_pdf_text(text)
-
-
 def _hash_ids(ids: list[int]) -> str:
     payload = b"".join(int(token_id).to_bytes(4, "little", signed=False) for token_id in ids)
     return hashlib.sha256(payload).hexdigest()
-
-
-def _record(source: str, index: int, ids: list[int]) -> SFTRecord:
-    digest = _hash_ids(ids)
-    return SFTRecord(
-        record_id=f"{source}:{index}:{digest[:16]}",
-        source=source,
-        response_ids=tuple(ids),
-        response_hash=digest,
-    )
-
-
-def build_controlled_split(
-    root: Path,
-    tokenizer: Any,
-    response_tokens: int,
-    n_per_class: int,
-    n_aux: int,
-    seed: int,
-) -> tuple[list[SFTRecord], list[SFTRecord], list[SFTRecord], dict[str, Any]]:
-    pdf_dir = root / "papers" / "edge-cloud-speculative-decoding"
-    pdfs = sorted(path for path in pdf_dir.glob("*.pdf") if path.is_file())
-    if not pdfs:
-        raise RuntimeError(f"No source PDFs under {pdf_dir}")
-
-    by_doc: dict[str, list[SFTRecord]] = {}
-    seen: set[str] = set()
-    for pdf in pdfs:
-        records: list[SFTRecord] = []
-        for paragraph in read_pdf_paragraphs(pdf):
-            ids = tokenizer(paragraph, add_special_tokens=False).input_ids
-            for start in range(0, len(ids) - response_tokens + 1, response_tokens):
-                chunk = list(ids[start : start + response_tokens])
-                digest = _hash_ids(chunk)
-                if digest in seen:
-                    continue
-                seen.add(digest)
-                records.append(_record(pdf.name, len(records), chunk))
-        by_doc[pdf.name] = records
-
-    members: list[SFTRecord] = []
-    nonmembers: list[SFTRecord] = []
-    auxiliary: list[SFTRecord] = []
-    allocation: dict[str, dict[str, int]] = {}
-    for doc_idx, (name, records) in enumerate(by_doc.items()):
-        shuffled = list(records)
-        random.Random(seed + 1009 * (doc_idx + 1)).shuffle(shuffled)
-        counts = {"member": 0, "nonmember": 0, "auxiliary": 0}
-        for index, record in enumerate(shuffled):
-            bucket = index % 3
-            if bucket == 0:
-                members.append(record)
-                counts["member"] += 1
-            elif bucket == 1:
-                nonmembers.append(record)
-                counts["nonmember"] += 1
-            else:
-                auxiliary.append(record)
-                counts["auxiliary"] += 1
-        allocation[name] = counts
-
-    rng = random.Random(seed + 77)
-    rng.shuffle(members)
-    rng.shuffle(nonmembers)
-    rng.shuffle(auxiliary)
-    if len(members) < n_per_class or len(nonmembers) < n_per_class:
-        raise RuntimeError(
-            f"Insufficient controlled records: {len(members)} members, "
-            f"{len(nonmembers)} nonmembers"
-        )
-    if len(auxiliary) < n_aux:
-        raise RuntimeError(f"Insufficient auxiliary records: {len(auxiliary)}")
-
-    metadata = {
-        "source_pdf_count": len(pdfs),
-        "unique_chunk_count": len(seen),
-        "available_counts": {
-            "member": len(members),
-            "nonmember": len(nonmembers),
-            "auxiliary": len(auxiliary),
-        },
-        "per_document_allocation": allocation,
-        "response_tokens": response_tokens,
-        "raw_text_persisted": False,
-        "sft_format": "user_prompt_to_assistant_response; prompt labels masked",
-    }
-    return (
-        members[:n_per_class],
-        nonmembers[:n_per_class],
-        auxiliary[:n_aux],
-        metadata,
-    )
 
 
 def prompt_prefix_ids(record: SFTRecord, tokenizer: Any) -> list[int]:

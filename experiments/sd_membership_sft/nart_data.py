@@ -18,8 +18,62 @@ import random
 from pathlib import Path
 from typing import Any
 
-from .data import SFTRecord
-from .public_data import _cross_split_ngram_audit, _hash_ids
+from .data import SFTRecord, _hash_ids
+
+
+def _token_ngrams(record: SFTRecord, n: int) -> set[tuple[int, ...]]:
+    prompt = list(record.prompt_ids or ())
+    tokens = prompt + list(record.response_ids)
+    return {tuple(tokens[index : index + n]) for index in range(len(tokens) - n + 1)}
+
+
+def _cross_split_ngram_audit(
+    splits: list[list[SFTRecord]], n: int = 13
+) -> dict[str, Any]:
+    owners: dict[tuple[int, ...], list[tuple[int, int]]] = {}
+    sizes: dict[tuple[int, int], int] = {}
+    for split_index, records in enumerate(splits):
+        for record_index, record in enumerate(records):
+            grams = _token_ngrams(record, n)
+            sizes[(split_index, record_index)] = len(grams)
+            for gram in grams:
+                owners.setdefault(gram, []).append((split_index, record_index))
+
+    pair_counts: dict[tuple[tuple[int, int], tuple[int, int]], int] = {}
+    shared_ngrams = 0
+    for gram_owners in owners.values():
+        split_ids = {owner[0] for owner in gram_owners}
+        if len(split_ids) < 2:
+            continue
+        shared_ngrams += 1
+        for left_index, left in enumerate(gram_owners):
+            for right in gram_owners[left_index + 1 :]:
+                if left[0] == right[0]:
+                    continue
+                key = (left, right) if left < right else (right, left)
+                pair_counts[key] = pair_counts.get(key, 0) + 1
+
+    maximum = 0.0
+    maximum_pair: tuple[tuple[int, int], tuple[int, int]] | None = None
+    for pair, count in pair_counts.items():
+        denominator = max(1, min(sizes[pair[0]], sizes[pair[1]]))
+        fraction = count / denominator
+        if fraction > maximum:
+            maximum = fraction
+            maximum_pair = pair
+    if maximum > 0.80:
+        raise RuntimeError(
+            "Cross-split 13-gram overlap exceeds the preregistered 80% threshold"
+        )
+    return {
+        "n": n,
+        "unique_ngrams": len(owners),
+        "cross_split_shared_ngrams": shared_ngrams,
+        "maximum_pair_overlap_fraction": maximum,
+        "maximum_pair_indices": maximum_pair,
+        "threshold": 0.80,
+        "gate": "PASS",
+    }
 
 
 NART_PROMPT = (

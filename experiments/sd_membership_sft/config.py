@@ -13,9 +13,9 @@ class Config:
     gpu: int = 0
     target_model: str = "Qwen/Qwen3-8B-Base"
     draft_model: str = "Qwen/Qwen3-1.7B-Base"
-    # "legacy" keeps the original PDF-derived 64-token chunk pipeline; the NART
-    # benchmarks load a frozen post-cutoff pool (see nart_data.BENCHMARK_TOKEN_BANDS).
-    benchmark: str = "legacy"
+    # NART benchmark to run; each loads a frozen post-cutoff pool
+    # (see nart_data.BENCHMARK_TOKEN_BANDS).
+    benchmark: str = "newstection"
     # Optional explicit pool override; defaults to
     # experiments/data/nart_benchmarks/<benchmark>/pool.jsonl.
     pool_path: Path | None = None
@@ -30,17 +30,17 @@ class Config:
     # documents (up to 512/2048 tokens) it keeps the budget at 26*24=624 bits.
     selected_token_cap: int = 26
     response_tokens: int = 64
-    n_per_class: int = 160
-    n_aux: int = 160
-    audit_train_per_class: int = 48
+    n_per_class: int = 2000
+    n_aux: int = 2000
+    audit_train_per_class: int = 128
     target_epochs: int = 1
     target_batch_size: int = 2
-    target_grad_accum: int = 4
-    target_lr: float = 2e-4
+    target_grad_accum: int = 8
+    target_lr: float = 2e-5
     draft_batch_size: int = 2
-    draft_grad_accum: int = 4
-    draft_lr: float = 2e-4
-    distill_steps: int = 80
+    draft_grad_accum: int = 8
+    draft_lr: float = 2e-5
+    distill_steps: int = 384
     distill_temperature: float = 2.0
     lora_r: int = 8
     lora_alpha: int = 16
@@ -52,7 +52,9 @@ class Config:
     run_auxiliary_draft: bool = True
     run_member_draft: bool = True
     save_adapters: bool = True
-    output_dir: Path = Path("experiments/results/qwen3_sft/qwen3_1p7b_to_8b_epoch1")
+    output_dir: Path = Path(
+        "experiments/results/nart_sft/newstection_qwen3_8b_epoch1"
+    )
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)

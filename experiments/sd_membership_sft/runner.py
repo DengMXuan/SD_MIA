@@ -14,7 +14,7 @@ from transformers import AutoTokenizer
 
 from .audit import make_audit_split, run_audit
 from .config import Config
-from .data import build_controlled_split, records_metadata
+from .data import records_metadata
 from .draver_activation import (
     evaluate_activation_audit,
     extract_draft_activation_outputs,
@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--draft-lr", type=float)
     parser.add_argument(
         "--benchmark",
-        choices=["legacy", "wikitection", "newstection", "arxivtection"],
+        choices=["wikitection", "newstection", "arxivtection"],
     )
     parser.add_argument("--trainer", choices=["lora", "full"])
     parser.add_argument("--optimizer", choices=["adamw", "adamw8bit"])
@@ -189,15 +189,13 @@ def render_markdown(
         return f"{values[0]:.4f} → {values[-1]:.4f}"
 
     lines = [
-        (
-            "# NART-Style Full-Parameter SFT Edge–Cloud SD Membership Audit"
-            if cfg.benchmark != "legacy" and cfg.trainer == "full"
-            else "# Qwen3 Instruction-SFT Edge–Cloud SD Membership Audit"
-        ),
+        "# NART-Style Full-Parameter SFT Edge–Cloud SD Membership Audit"
+        if cfg.trainer == "full"
+        else "# NART-Style LoRA SFT Edge–Cloud SD Membership Audit",
         "",
         "## Material Passport",
         "",
-        f"- Experiment ID: `{'qwen3' if cfg.benchmark == 'legacy' else cfg.benchmark}-sft-{cfg.seed}-epoch{cfg.target_epochs}`",
+        f"- Experiment ID: `{cfg.benchmark}-sft-{cfg.seed}-epoch{cfg.target_epochs}`",
         "- Status: COMPLETED",
         "- Verification status: single-seed controlled experiment",
         f"- Training objective: {'full-parameter' if cfg.trainer == 'full' else 'LoRA'} "
@@ -207,7 +205,7 @@ def render_markdown(
         f"(budget {cfg.selected_token_cap * cfg.transcript_repeats} bits/record at "
         f"{cfg.transcript_repeats} repeats)",
         "- Signal boundary: draft white-box features plus intended verifier feedback",
-        f"- Raw text persisted: {'pool only (public post-cutoff corpus)' if cfg.benchmark != 'legacy' else 'no'}",
+        f"- Raw text persisted: pool only (public post-cutoff corpus)",
         "",
         "## Model and SFT setting",
         "",
@@ -221,47 +219,27 @@ def render_markdown(
         ),
         f"- Member records: {cfg.n_per_class}; nonmember records: {cfg.n_per_class}",
         f"- Auxiliary distillation records: {cfg.n_aux}",
-        *(
-            [
-                f"- Assistant response length: {cfg.response_tokens} source tokens plus EOS",
-                "- SFT response: source paragraph chunk; prompt: source title and fixed technical-writing instruction",
-            ]
-            if cfg.benchmark == "legacy"
-            else [
-                f"- SFT response: full document continuation ({cfg.benchmark} token band) plus EOS",
-                "- SFT prompt: NART fixed prompt with topic line; only document tokens contribute loss",
-            ]
-        ),
+        f"- SFT response: full document continuation ({cfg.benchmark} token band) plus EOS",
+        "- SFT prompt: NART fixed prompt with topic line; only document tokens contribute loss",
         "",
         "## Data controls",
         "",
     ]
-    if cfg.benchmark == "legacy":
-        lines.extend(
-            [
-                f"- Source PDFs: {metadata['source_pdf_count']}",
-                f"- Unique response chunks: {metadata['unique_chunk_count']}",
-                "- Member/nonmember allocation is source-stratified, shuffled, and "
-                "globally hash-deduplicated",
-                "- Auxiliary records are disjoint from both audit classes",
-            ]
-        )
-    else:
-        window = metadata.get("creation_interval_inclusive") or {}
-        lines.extend(
-            [
-                f"- Frozen pool: `{metadata['pool_path']}` "
-                f"(sha256 {metadata['pool_sha256'][:16]}, {metadata['pool_records']} documents)",
-                f"- Creation window: {window.get('start')} .. {window.get('end')}; "
-                f"{metadata.get('timestamp_semantics')}",
-                f"- Token band: {metadata['token_band']['min_tokens']}.."
-                f"{metadata['token_band']['max_tokens']} tokens per document; "
-                f"{metadata['band_dropped_documents']} dropped below band",
-                f"- License: {metadata.get('license')}",
-                f"- Provenance: {metadata.get('provenance')}",
-                "- Member/nonmember/auxiliary allocation is shuffled and hash-deduplicated",
-                f"- Cross-split 13-gram gate: "
-                f"{metadata['cross_split_ngram_audit']['gate']}",
+    window = metadata.get("creation_interval_inclusive") or {}
+    lines.extend(
+        [
+            f"- Frozen pool: `{metadata['pool_path']}` "
+            f"(sha256 {metadata['pool_sha256'][:16]}, {metadata['pool_records']} documents)",
+            f"- Creation window: {window.get('start')} .. {window.get('end')}; "
+            f"{metadata.get('timestamp_semantics')}",
+            f"- Token band: {metadata['token_band']['min_tokens']}.."
+            f"{metadata['token_band']['max_tokens']} tokens per document; "
+            f"{metadata.get('band_dropped_documents')} dropped below band",
+            f"- License: {metadata.get('license')}",
+            f"- Provenance: {metadata.get('provenance')}",
+            "- Member/nonmember/auxiliary allocation is shuffled and hash-deduplicated",
+            f"- Cross-split 13-gram gate: "
+            f"{metadata['cross_split_ngram_audit']['gate']}",
             ]
         )
     lines.extend(
@@ -378,27 +356,17 @@ def main() -> None:
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    if cfg.benchmark == "legacy":
-        members, nonmembers, auxiliary, data_metadata = build_controlled_split(
-            root,
-            tokenizer,
-            cfg.response_tokens,
-            cfg.n_per_class,
-            cfg.n_aux,
-            cfg.data_seed,
-        )
-    else:
-        pool = cfg.pool_path if cfg.pool_path is not None else nart_pool_path(cfg.benchmark)
-        if not pool.is_absolute():
-            pool = root / pool
-        members, nonmembers, auxiliary, data_metadata = build_nart_split(
-            cfg.benchmark,
-            pool,
-            tokenizer,
-            cfg.n_per_class,
-            cfg.n_aux,
-            cfg.data_seed,
-        )
+    pool = cfg.pool_path if cfg.pool_path is not None else nart_pool_path(cfg.benchmark)
+    if not pool.is_absolute():
+        pool = root / pool
+    members, nonmembers, auxiliary, data_metadata = build_nart_split(
+        cfg.benchmark,
+        pool,
+        tokenizer,
+        cfg.n_per_class,
+        cfg.n_aux,
+        cfg.data_seed,
+    )
     candidates = members + nonmembers
     full_finetune = cfg.trainer == "full"
     checkpoint_dir = "checkpoints" if full_finetune else "adapters"
@@ -589,6 +557,7 @@ def main() -> None:
             seed=cfg.audit_seed,
             few_shot_per_class=(),
             selected_token_cap=cfg.selected_token_cap,
+            transcript_dump_path=output_dir / "raw_transcript_draver.npz",
         )
         for name, row in draver_result["metrics"].items():
             metrics[f"draver_act/{name}"] = row

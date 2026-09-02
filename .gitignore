@@ -28,24 +28,13 @@ dist/
 
 # Local logs and temporary experiment files
 *.log
-experiments/results/**/_*smoke*/
-experiments/results/**/checkpoint-*/
 wandb/
 runs/
 mlruns/
 tensorboard/
 *.tfevents.*
 
-# Generated dataset snapshots; manifests remain versioned for provenance
-experiments/data/**/*.jsonl
-experiments/data/**/*.parquet
-experiments/data/**/*.arrow
-experiments/data/**/*.npy
-experiments/data/**/*.npz
-!experiments/data/fineweb_cc-main-2025-26.jsonl
-
 # Model checkpoints and adapter weights are reproducible artifacts, not source
-experiments/results/**/adapters/
 *.safetensors
 *.bin
 *.pt
@@ -58,4 +47,7 @@ experiments/results/**/adapters/
 # Local literature and research notes
 /papers/
 /research/
-experiments/results/**/method_probe/**/paraphrase_texts.json
+
+# Experiment datasets and run artifacts stay out of version control
+experiments/data/
+experiments/results/
