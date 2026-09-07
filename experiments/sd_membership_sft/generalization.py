@@ -1,13 +1,13 @@
-"""NART-style generalization check for a fine-tuned run.
+"""Generalization check for a fine-tuned run.
 
 Replays the run's data split (same pool, tokenizer, sizes, and seed as
 training) and measures generation quality on document continuations:
 
-1. NART Table X protocol (Tan et al., NDSS 2026): the fine-tuned target model
-   generates continuations for member and nonmember documents under the NART
-   prompt; BLEU-4 / ROUGE-1 / ROUGE-L are compared between the two classes.
-   NART reports member-vs-nonmember differences below 0.03 as evidence of
-   stable generation quality without overfitting; this module reproduces that
+1. No-overfitting protocol: the fine-tuned target model generates
+   continuations for member and nonmember documents under the fixed
+   instruction prompt; BLEU-4 / ROUGE-1 / ROUGE-L are compared between the
+   two classes. Member-vs-nonmember differences below 0.03 count as stable
+   generation quality without overfitting; this module computes that
    comparison with bootstrap CIs and a soft gate.
 2. Base-vs-fine-tuned comparison: the same samples are scored with the
    pre-fine-tuning base target, so quality degradation caused by fine-tuning
@@ -36,7 +36,7 @@ from rouge_score import rouge_scorer
 from transformers import AutoTokenizer
 
 from .data import SFTRecord
-from .nart_data import build_nart_split, pool_path as nart_pool_path
+from .splits import build_split, pool_path
 from .training import load_causal_lm, set_seed
 
 
@@ -60,13 +60,23 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_run_config(run_dir: Path) -> Any:
+    import dataclasses
+
     from .config import Config
 
     artifact = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
     values = dict(artifact["config"])
+    # Older run dirs predate config slimming and may carry removed fields.
+    known = {field.name for field in dataclasses.fields(Config)}
+    values = {key: value for key, value in values.items() if key in known}
     if values.get("pool_path"):
         values["pool_path"] = Path(values["pool_path"])
-    return Config(**values)
+    cfg = Config(**values)
+    if cfg.pool_path is not None and not Path(cfg.pool_path).exists():
+        # Older run dirs record pool paths from before the pools directory
+        # was renamed; fall back to the current default pool.
+        cfg.pool_path = pool_path(cfg.benchmark)
+    return cfg
 
 
 def load_finetuned_model(run_dir: Path, model_id: str, device: torch.device) -> Any:
@@ -280,8 +290,8 @@ def summarize_model_scores(
     seed: int,
     gap_threshold: float,
 ) -> dict[str, Any]:
-    """Build the NART no-overfitting gaps and the base-vs-tuned deltas."""
-    nart_gaps: dict[str, Any] = {}
+    """Build the no-overfitting gaps and the base-vs-tuned deltas."""
+    gaps: dict[str, Any] = {}
     gate_pass = True
     for metric in metrics:
         gap = paired_bootstrap_delta(
@@ -292,7 +302,7 @@ def summarize_model_scores(
         )
         passed = abs(gap["delta"]) < gap_threshold
         gate_pass = gate_pass and passed
-        nart_gaps[metric] = {
+        gaps[metric] = {
             **gap,
             "member_mean": float(tuned["member"][metric].mean()),
             "nonmember_mean": float(tuned["nonmember"][metric].mean()),
@@ -321,8 +331,8 @@ def summarize_model_scores(
             }
 
     return {
-        "nart_member_minus_nonmember": nart_gaps,
-        "nart_overfitting_gate": "PASS" if gate_pass else "FAIL",
+        "member_minus_nonmember": gaps,
+        "overfitting_gate": "PASS" if gate_pass else "FAIL",
         "base_minus_tuned": degradation,
     }
 
@@ -335,7 +345,7 @@ def render_markdown(
 ) -> str:
     metrics = ("bleu4", "rouge1", "rougeL")
     lines = [
-        "# Generalization Check (NART Table X protocol)",
+        "# Generalization Check (generation-quality protocol)",
         "",
         f"- Run directory: `{run_dir}`",
         f"- Evaluated model: `{model_name}`",
@@ -347,14 +357,14 @@ def render_markdown(
         "",
         "## Fine-tuned model: member vs nonmember generation quality",
         "",
-        "NART reports member/nonmember differences < 0.03 as no-overfitting "
+        "Member/nonmember differences < 0.03 count as no-overfitting "
         "evidence; the gate here is soft (advisory).",
         "",
         "| Metric | Member | Nonmember | Gap (95% CI) | Gate |",
         "|---|---:|---:|---:|---|",
     ]
     for metric in metrics:
-        row = summary["nart_member_minus_nonmember"][metric]
+        row = summary["member_minus_nonmember"][metric]
         lines.append(
             f"| {metric} | {row['member_mean']:.4f} | {row['nonmember_mean']:.4f} "
             f"| {row['delta']:+.4f} [{row['ci95_low']:+.4f}, {row['ci95_high']:+.4f}] "
@@ -363,7 +373,7 @@ def render_markdown(
     lines.extend(
         [
             "",
-            f"Overall no-overfitting gate: **{summary['nart_overfitting_gate']}**",
+            f"Overall no-overfitting gate: **{summary['overfitting_gate']}**",
             "",
             "## Base vs fine-tuned generation quality",
             "",
@@ -395,7 +405,7 @@ def main() -> None:
     cfg = load_run_config(run_dir)
     if cfg.benchmark == "legacy":
         raise RuntimeError(
-            "The generalization check requires an NART benchmark run, not legacy PDF data"
+            "The generalization check requires a pool-benchmark run, not legacy PDF data"
         )
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available; run with the approved host GPU access")
@@ -412,11 +422,11 @@ def main() -> None:
     pool = (
         args.pool_path
         if args.pool_path is not None
-        else (cfg.pool_path if cfg.pool_path is not None else nart_pool_path(cfg.benchmark))
+        else (cfg.pool_path if cfg.pool_path is not None else pool_path(cfg.benchmark))
     )
     if not pool.is_absolute():
         pool = ROOT / pool
-    members, nonmembers, _auxiliary, split_metadata = build_nart_split(
+    members, nonmembers, _auxiliary, split_metadata = build_split(
         cfg.benchmark,
         pool,
         tokenizer,
@@ -517,7 +527,7 @@ def main() -> None:
         render_markdown(run_dir, cfg.target_model, summary, protocol),
         encoding="utf-8",
     )
-    print(json.dumps({"nart_overfitting_gate": summary["nart_overfitting_gate"]}, indent=2))
+    print(json.dumps({"overfitting_gate": summary["overfitting_gate"]}, indent=2))
 
 
 if __name__ == "__main__":

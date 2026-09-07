@@ -1,1 +1,1 @@
-"""Reproducible experiment modules for edge-cloud membership evaluation."""
+"""Reproducible dataset-construction and fine-tuning experiment modules."""

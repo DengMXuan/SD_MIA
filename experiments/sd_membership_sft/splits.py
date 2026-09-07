@@ -1,12 +1,12 @@
-"""Load a frozen NART benchmark pool into the controlled three-class split.
+"""Load a frozen benchmark pool into the controlled three-class split.
 
-The pool (see ``nart_benchmarks``) holds raw post-cutoff documents with
-provenance. Loading re-tokenizes per target model, applies the NART token band
+The pool (see ``pools``) holds raw post-cutoff documents with provenance.
+Loading re-tokenizes per target model, applies the per-pool token band
 (128..512 for WikiTection/NewsTection, 1024..2048 for ArXivTection), deduplicates
 on token IDs, and splits member/nonmember/auxiliary exactly as
 ``build_public_snapshot_split`` does, including the 13-gram cross-split gate.
 
-Records use the NART Figure-3 prompt with the document as the continuation;
+Records use the fixed instruction prompt with the document as the continuation;
 ``make_sft_example`` masks the prompt so only document tokens contribute loss.
 """
 
@@ -76,12 +76,12 @@ def _cross_split_ngram_audit(
     }
 
 
-NART_PROMPT = (
+SFT_PROMPT = (
     "You are a helpful assistant. Below is a given topic and related contexts. "
     "Please continue writing or analyze the contexts.\nTopic: {topic}\nContext: "
 )
 
-DATA_ROOT = Path("experiments/data/nart_benchmarks")
+DATA_ROOT = Path("experiments/data/pools")
 
 BENCHMARK_TOKEN_BANDS: dict[str, tuple[int, int]] = {
     "wikitection": (128, 512),
@@ -94,7 +94,7 @@ def pool_path(benchmark: str) -> Path:
     return DATA_ROOT / benchmark / "pool.jsonl"
 
 
-def build_nart_split(
+def build_split(
     benchmark: str,
     path: Path,
     tokenizer: Any,
@@ -109,7 +109,7 @@ def build_nart_split(
     raw_bytes = path.read_bytes()
     actual_sha = hashlib.sha256(raw_bytes).hexdigest()
     if actual_sha != manifest["jsonl_sha256"]:
-        raise RuntimeError("NART pool hash does not match its manifest")
+        raise RuntimeError("Pool hash does not match its manifest")
     if manifest.get("benchmark") != benchmark:
         raise RuntimeError(
             f"Pool manifest declares benchmark {manifest.get('benchmark')!r}, expected {benchmark!r}"
@@ -123,7 +123,7 @@ def build_nart_split(
     documents = [json.loads(line) for line in raw_bytes.decode("utf-8").splitlines() if line]
     required = 2 * n_per_class + n_aux
     if len(documents) < required:
-        raise RuntimeError(f"Need {required} NART documents, found {len(documents)}")
+        raise RuntimeError(f"Need {required} pool documents, found {len(documents)}")
 
     random.Random(seed).shuffle(documents)
     required = 2 * n_per_class + n_aux
@@ -156,7 +156,7 @@ def build_nart_split(
         if len(response_ids) < min_tokens:
             dropped_band += 1
             continue
-        prompt_text = NART_PROMPT.format(topic=str(document.get("title", "a public document")))
+        prompt_text = SFT_PROMPT.format(topic=str(document.get("title", "a public document")))
         prompt_ids = list(tokenizer(prompt_text, add_special_tokens=False).input_ids)
         response_hash = _hash_ids(response_ids)
         if response_hash in response_hashes:
@@ -165,8 +165,8 @@ def build_nart_split(
             skipped_token_duplicates += 1
             continue
         candidate = SFTRecord(
-            record_id=f"nart:{benchmark}:{response_hash[:16]}",
-            source=str(document.get("source", document.get("canonical_url", "nart"))),
+            record_id=f"sft:{benchmark}:{response_hash[:16]}",
+            source=str(document.get("source", document.get("canonical_url", "pool"))),
             response_ids=tuple(response_ids),
             response_hash=response_hash,
             prompt_ids=tuple(prompt_ids),
@@ -233,7 +233,7 @@ def build_nart_split(
         "target_sft_uses": "member only",
         "exact_token_deduplication": True,
         "raw_text_persisted_in_pool": True,
-        "prompt_mode": "nart_fixed_prompt_continuation",
+        "prompt_mode": "fixed_prompt_continuation",
         "cross_split_ngram_audit": ngram_audit,
     }
     return members, nonmembers, auxiliary, metadata

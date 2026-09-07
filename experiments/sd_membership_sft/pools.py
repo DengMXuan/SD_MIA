@@ -1,20 +1,19 @@
-"""Construct frozen NART-style benchmark pools: WikiTection, NewsTection, ArXivTection.
+"""Construct frozen post-cutoff benchmark pools: WikiTection, NewsTection, ArXivTection.
 
-The construction follows NART (Tan et al., NDSS 2026): every pool document must
-postdate the pretraining cutoff of every candidate target model, so that a
-fine-tuned "member" record cannot already sit in the pretraining corpus. The
-default window 2026-05-01..2026-08-29 postdates Qwen3-8B (2025-07), Granite 4.0
-(released 2025-10), Qwen3.5 (released 2026-02) and Qwen3.6 (released 2026-04,
-assumed cutoff <= 2026-03).
+Every pool document must postdate the pretraining cutoff of every candidate
+target model, so that a fine-tuned "member" record cannot already sit in the
+pretraining corpus. The default window 2026-05-01..2026-08-29 postdates
+Qwen3-8B (2025-07), Granite 4.0 (released 2025-10), Qwen3.5 (released 2026-02)
+and Qwen3.6 (released 2026-04, assumed cutoff <= 2026-03).
 
 Each subcommand writes ``pool.jsonl`` plus a SHA-256-anchored
-``pool.manifest.json`` under ``experiments/data/nart_benchmarks/<name>/``.
+``pool.manifest.json`` under ``experiments/data/pools/<name>/``.
 Raw text is persisted because the pool must be re-tokenized per target model;
 all sources are public corpora with per-record provenance URLs.
 
 Per-model token banding, hash deduplication against token IDs, and the
 member/nonmember/auxiliary three-class split happen at load time in
-``nart_data.build_nart_split``, not here; this module only freezes documents.
+``splits.build_split``, not here; this module only freezes documents.
 """
 
 from __future__ import annotations
@@ -41,7 +40,7 @@ from warcio.archiveiterator import ArchiveIterator
 
 
 USER_AGENT = "SD-MIA-research/0.1 (controlled academic benchmark)"
-DATA_ROOT = Path("experiments/data/nart_benchmarks")
+DATA_ROOT = Path("experiments/data/pools")
 DEFAULT_WINDOW = ("2026-05-01T00:00:00Z", "2026-08-29T23:59:59Z")
 NEWS_MONTHS = ("2026-05", "2026-06", "2026-07", "2026-08")
 WIKI_API = "https://en.wikipedia.org/w/api.php"
@@ -51,10 +50,10 @@ ARXIV_API = "https://export.arxiv.org/api/query"
 ARXIV_HTML = "https://arxiv.org/html/{arxiv_id}"
 AR5IV_HTML = "https://ar5iv.labs.arxiv.org/html/{arxiv_id}"
 
-NART_PROVENANCE = (
-    "NART-style post-cutoff benchmark (Tan et al., NDSS 2026); window postdates "
-    "the Qwen3-8B 2025-07 cutoff and all repo target models, assuming the "
-    "Qwen3.6 cutoff <= 2026-03 from its 2026-04-15 release"
+POOL_PROVENANCE = (
+    "Post-cutoff benchmark pool; window postdates the Qwen3-8B 2025-07 cutoff "
+    "and all repo target models, assuming the Qwen3.6 cutoff <= 2026-03 from "
+    "its 2026-04-15 release"
 )
 
 
@@ -467,7 +466,7 @@ def build_wikitection(args: argparse.Namespace) -> None:
             "creation_interval_inclusive": {"start": args.window_start, "end": args.window_end},
             "timestamp_semantics": "page first-creation time (MediaWiki create log)",
             "license": "CC BY-SA 4.0; per-page attribution URLs in JSONL",
-            "provenance": NART_PROVENANCE,
+            "provenance": POOL_PROVENANCE,
             "selection": {
                 "creation_events_considered": len(events),
                 "minimum_clean_characters": args.min_chars,
@@ -536,7 +535,7 @@ def build_newstection(args: argparse.Namespace) -> None:
             "timestamp_semantics": "CC-NEWS warc capture time, not original publication time",
             "license": "CC-NEWS is distributed by Common Crawl for research; "
             "source URLs retained for provenance",
-            "provenance": NART_PROVENANCE,
+            "provenance": POOL_PROVENANCE,
             "selection": {
                 "segments_queued": len(segment_paths),
                 "minimum_clean_characters": args.min_chars,
@@ -771,7 +770,7 @@ def build_arxivtection(args: argparse.Namespace) -> None:
             "timestamp_semantics": "arXiv submission date (v1)",
             "license": "arXiv per-paper licenses; abstracts and metadata under "
             "arXiv terms; source pages retained for provenance",
-            "provenance": NART_PROVENANCE,
+            "provenance": POOL_PROVENANCE,
             "selection": {
                 "candidates_considered": len(entries),
                 "minimum_clean_characters": args.min_chars,

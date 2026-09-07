@@ -1,3 +1,14 @@
+"""Plain small-model draft: fine-tune the target and its draft LMs on post-cutoff pool data.
+
+Draft approach 1 of 3 (see :mod:`drafts`): the deployment adapts a plain
+small causal LM (default Qwen3-1.7B-Base) rather than a specialized
+drafter head. The pipeline builds the controlled split from a frozen
+pool, fine-tunes the target on member records, distills an
+auxiliary-only draft (member-blind, deployment-aligned), optionally
+fine-tunes a member-data draft (boundary condition), and saves
+everything under ``--output-dir``.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -8,22 +19,15 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from transformers import AutoTokenizer
 
-from .audit import make_audit_split, run_audit
-from .config import Config
-from .data import records_metadata
-from .draver_activation import (
-    evaluate_activation_audit,
-    extract_draft_activation_outputs,
-)
-from .nart_data import build_nart_split, pool_path as nart_pool_path
-from .training import (
+from ..config import Config
+from ..data import records_metadata
+from ..splits import build_split, pool_path
+from ..training import (
     add_lora,
     distill_on_auxiliary,
-    extract_features,
     load_causal_lm,
     save_trained_model,
     set_seed,
@@ -38,19 +42,14 @@ def parse_args() -> argparse.Namespace:
         ("gpu", int),
         ("seed", int),
         ("data-seed", int),
-        ("audit-seed", int),
         ("target-epochs", int),
         ("n-per-class", int),
         ("n-aux", int),
-        ("audit-train-per-class", int),
-        ("response-tokens", int),
         ("target-batch-size", int),
         ("target-grad-accum", int),
         ("draft-batch-size", int),
         ("draft-grad-accum", int),
         ("distill-steps", int),
-        ("bootstrap-repeats", int),
-        ("selected-token-cap", int),
         ("target-model", str),
         ("draft-model", str),
     ]:
@@ -69,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         "--skip-training",
         action="store_true",
         default=None,
-        help="load saved checkpoints instead of fine-tuning (resume/redo analysis)",
+        help="load saved checkpoints instead of fine-tuning (resume)",
     )
     parser.add_argument("--skip-trained-drafts", action="store_true", default=None)
     parser.add_argument("--no-save-adapters", action="store_true", default=None)
@@ -99,55 +98,10 @@ def load_config(args: argparse.Namespace) -> Config:
     return Config(**values)
 
 
-def build_signal_summary(
-    metrics: dict[str, dict[str, float]],
-    draver_result: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Headline SD-scenario signals on the shared audit test split.
-
-    Every score uses only draft-side white-box access plus protocol
-    feedback (the target stays black-box), so every row is
-    attacker-observable under the edge-cloud threat model.
-    """
-    prefix = next(
-        (
-            key.split("/")[0]
-            for key in metrics
-            if key.endswith("/honest_accept_rate_selected")
-        ),
-        None,
-    )
-    sd_signals = [
-        ("Verifier transcript: accept rate (624-bit)", f"{prefix}/honest_accept_rate_selected"),
-        ("Verifier transcript: acceptance tomography", f"{prefix}/acceptance_tomography_qmin"),
-    ]
-    if draver_result is not None:
-        sd_signals.extend(
-            [
-                ("Transcript-only detector (triplet)", "draver_act/transcript_only_triplet"),
-                ("DraVer-Act (residual, proposed)", "draver_act/draver_act_residual_triplet"),
-            ]
-        )
-
-    rows = []
-    for label, key in sd_signals:
-        row = metrics.get(key)
-        if row is None:
-            continue
-        rows.append({"signal": label, "key": key, **row})
-    return {
-        "rows": rows,
-        "draver_act_available": draver_result is not None,
-    }
-
-
 def render_markdown(
     cfg: Config,
     metadata: dict[str, Any],
     training: dict[str, Any],
-    metrics: dict[str, dict[str, float]],
-    budget: dict[str, float],
-    comparison: dict[str, Any] | None = None,
 ) -> str:
     def trace(values: list[float]) -> str:
         if not values:
@@ -157,23 +111,18 @@ def render_markdown(
         return f"{values[0]:.4f} → {values[-1]:.4f}"
 
     lines = [
-        "# NART-Style Full-Parameter SFT Edge–Cloud SD Membership Audit"
+        "# Full-Parameter SFT Run"
         if cfg.trainer == "full"
-        else "# NART-Style LoRA SFT Edge–Cloud SD Membership Audit",
+        else "# LoRA SFT Run",
         "",
         "## Material Passport",
         "",
         f"- Experiment ID: `{cfg.benchmark}-sft-{cfg.seed}-epoch{cfg.target_epochs}`",
         "- Status: COMPLETED",
-        "- Verification status: single-seed controlled experiment",
         f"- Training objective: {'full-parameter' if cfg.trainer == 'full' else 'LoRA'} "
         f"instruction SFT ({cfg.optimizer}); prompt labels masked with `-100`",
         f"- Benchmark: {cfg.benchmark}",
-        f"- Transcript position cap: {cfg.selected_token_cap} "
-        f"(budget {cfg.selected_token_cap * cfg.transcript_repeats} bits/record at "
-        f"{cfg.transcript_repeats} repeats)",
-        "- Signal boundary: draft white-box features plus intended verifier feedback",
-        f"- Raw text persisted: pool only (public post-cutoff corpus)",
+        "- Raw text persisted: pool only (public post-cutoff corpus)",
         "",
         "## Model and SFT setting",
         "",
@@ -188,7 +137,7 @@ def render_markdown(
         f"- Member records: {cfg.n_per_class}; nonmember records: {cfg.n_per_class}",
         f"- Auxiliary distillation records: {cfg.n_aux}",
         f"- SFT response: full document continuation ({cfg.benchmark} token band) plus EOS",
-        "- SFT prompt: NART fixed prompt with topic line; only document tokens contribute loss",
+        "- SFT prompt: fixed instruction prompt with topic line; only document tokens contribute loss",
         "",
         "## Data controls",
         "",
@@ -220,61 +169,19 @@ def render_markdown(
         f"- Member-data draft SFT loss: {trace(training['member_draft_sft_loss'])}",
         f"- Peak allocated GPU memory: {training['peak_gpu_memory_gib']:.2f} GiB",
         "",
-        "## Held-out membership-audit results",
+        "## Interpretation boundary",
         "",
-        "Higher AUC is better; 0.5 is random. Learned probes use only the audit-calibration split.",
+        "This is a controlled instruction-SFT run on a public post-cutoff corpus; "
+        "membership is defined by the training assignment, not by pretraining exposure.",
+        (
+            "LoRA is used to make the 8B target fit on one A100; results therefore "
+            "describe adapter-based SFT."
+            if cfg.trainer == "lora"
+            else "Full-parameter fine-tuning (lr 2e-5, effective batch 16) "
+            "with a bitsandbytes paged 8-bit AdamW on one A100-80GB."
+        ),
         "",
-        "| Signal | AUC (95% bootstrap CI) | TPR@1%FPR | TPR@5%FPR |",
-        "|---|---:|---:|---:|",
     ]
-    )
-    for name, row in sorted(metrics.items()):
-        lines.append(
-            f"| `{name}` | {row['auc']:.3f} [{row['auc_ci95_low']:.3f}, {row['auc_ci95_high']:.3f}] "
-            f"| {row['tpr_at_1pct_fpr']:.3f} | {row['tpr_at_5pct_fpr']:.3f} |"
-        )
-    if comparison is not None and comparison["rows"]:
-        lines.extend(
-            [
-                "",
-                "## SD-scenario signals (shared audit test split)",
-                "",
-                "All signals use only draft white-box access plus SD protocol "
-                "feedback; the target model stays black-box.",
-                "",
-                "| Signal | AUC (95% CI) | TPR@1%FPR | TPR@5%FPR |",
-                "|---|---:|---:|---:|",
-            ]
-        )
-        for row in comparison["rows"]:
-            lines.append(
-                f"| {row['signal']} "
-                f"| {row['auc']:.4f} [{row['auc_ci95_low']:.4f}, {row['auc_ci95_high']:.4f}] "
-                f"| {row['tpr_at_1pct_fpr']:.4f} | {row['tpr_at_5pct_fpr']:.4f} |"
-            )
-    lines.extend(
-        [
-            "",
-            "## Transcript query budget",
-            "",
-            f"- q-min selection: median {budget['qmin_median_bits']:.0f} bits, "
-            f"P95 {budget['qmin_p95_bits']:.0f}",
-            f"- random selection: median {budget['random_median_bits']:.0f} bits, "
-            f"P95 {budget['random_p95_bits']:.0f}",
-            "",
-            "## Interpretation boundary",
-            "",
-            "This is a controlled SFT-membership experiment, not a claim about Qwen3 pretraining-data membership.",
-            (
-                "LoRA is used to make the 8B target fit on one A100; results therefore "
-                "describe adapter-based SFT."
-                if cfg.trainer == "lora"
-                else "Full-parameter NART-style fine-tuning (lr 2e-5, effective batch 16) "
-                "with a bitsandbytes paged 8-bit AdamW on one A100-80GB."
-            ),
-            "The transcript is a local semantic verifier simulation, not a deployment measurement.",
-            "",
-        ]
     )
     return "\n".join(lines)
 
@@ -282,12 +189,10 @@ def render_markdown(
 def main() -> None:
     args = parse_args()
     cfg = load_config(args)
-    if cfg.audit_train_per_class >= cfg.n_per_class:
-        raise ValueError("audit_train_per_class must be smaller than n_per_class")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available; run with the approved host GPU access")
 
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     output_dir = cfg.output_dir if cfg.output_dir.is_absolute() else root / cfg.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     if cfg.save_adapters:
@@ -303,10 +208,10 @@ def main() -> None:
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    pool = cfg.pool_path if cfg.pool_path is not None else nart_pool_path(cfg.benchmark)
+    pool = cfg.pool_path if cfg.pool_path is not None else pool_path(cfg.benchmark)
     if not pool.is_absolute():
         pool = root / pool
-    members, nonmembers, auxiliary, data_metadata = build_nart_split(
+    members, nonmembers, auxiliary, data_metadata = build_split(
         cfg.benchmark,
         pool,
         tokenizer,
@@ -314,7 +219,6 @@ def main() -> None:
         cfg.n_aux,
         cfg.data_seed,
     )
-    candidates = members + nonmembers
     full_finetune = cfg.trainer == "full"
     checkpoint_dir = "checkpoints" if full_finetune else "adapters"
 
@@ -322,7 +226,7 @@ def main() -> None:
     resume = bool(args.skip_training)
     target_ckpt = output_dir / checkpoint_dir / "target"
     if resume and target_ckpt.exists():
-        from .generalization import load_draft_model, load_finetuned_model
+        from ..generalization import load_finetuned_model
 
         target = load_finetuned_model(output_dir, cfg.target_model, device)
         target.eval()
@@ -352,26 +256,13 @@ def main() -> None:
         )
         if cfg.save_adapters:
             save_trained_model(target, output_dir / checkpoint_dir / "target")
-    target_features = extract_features(
-        target, candidates, tokenizer, device, cfg.target_batch_size
-    )
 
-    base_draft = load_causal_lm(cfg.draft_model, device)
-    base_features = extract_features(
-        base_draft, candidates, tokenizer, device, cfg.draft_batch_size
-    )
-    del base_draft
-    gc.collect()
-    torch.cuda.empty_cache()
-
-    draft_features = {"base_draft": base_features}
-    draft_activation_features = None
     aux_distill_loss: list[float] = []
     member_draft_sft_loss: list[float] = []
     if cfg.run_auxiliary_draft:
         aux_ckpt = output_dir / checkpoint_dir / "draft_auxiliary_distilled"
         if resume and aux_ckpt.exists():
-            from .generalization import load_draft_model
+            from ..generalization import load_draft_model
 
             auxiliary_draft = load_draft_model(
                 output_dir, cfg.draft_model, "draft_auxiliary_distilled", device
@@ -405,13 +296,6 @@ def main() -> None:
                     auxiliary_draft,
                     output_dir / checkpoint_dir / "draft_auxiliary_distilled",
                 )
-        draft_features["aux_distilled_draft"] = extract_features(
-            auxiliary_draft, candidates, tokenizer, device, cfg.draft_batch_size
-        )
-        if cfg.benchmark != "legacy":
-            draft_activation_features = extract_draft_activation_outputs(
-                auxiliary_draft, candidates, tokenizer, device, cfg.draft_batch_size
-            )
         del auxiliary_draft
         gc.collect()
         torch.cuda.empty_cache()
@@ -419,7 +303,7 @@ def main() -> None:
     if cfg.run_member_draft:
         member_ckpt = output_dir / checkpoint_dir / "draft_member_sft"
         if resume and member_ckpt.exists():
-            from .generalization import load_draft_model
+            from ..generalization import load_draft_model
 
             member_draft = load_draft_model(
                 output_dir, cfg.draft_model, "draft_member_sft", device
@@ -452,57 +336,10 @@ def main() -> None:
                 save_trained_model(
                     member_draft, output_dir / checkpoint_dir / "draft_member_sft"
                 )
-        draft_features["member_sft_draft"] = extract_features(
-            member_draft, candidates, tokenizer, device, cfg.draft_batch_size
-        )
         del member_draft
         gc.collect()
         torch.cuda.empty_cache()
 
-    # Direct-verifier baselines were removed: the threat model keeps the
-    # target black-box (draft white-box + protocol feedback only), so no
-    # score may read the target's logits directly.
-
-    audit_split = make_audit_split(
-        len(members), len(nonmembers), cfg.audit_train_per_class, cfg.audit_seed
-    )
-    audit_labels = np.concatenate(
-        [
-            np.ones(len(members), dtype=np.int64),
-            np.zeros(len(nonmembers), dtype=np.int64),
-        ]
-    )
-    metrics, budget, raw_scores = run_audit(
-        members,
-        nonmembers,
-        target_features,
-        draft_features,
-        cfg,
-        selected_token_cap=cfg.selected_token_cap,
-        split=audit_split,
-    )
-
-    draver_result = None
-    if draft_activation_features is not None:
-        draver_result = evaluate_activation_audit(
-            draft_activation_features,
-            target_features,
-            audit_labels,
-            calibration=audit_split[0],
-            test=audit_split[1],
-            min_k_fraction=cfg.min_k_fraction,
-            transcript_repeats=cfg.transcript_repeats,
-            bootstrap_repeats=cfg.bootstrap_repeats,
-            detector_seeds=3,
-            seed=cfg.audit_seed,
-            few_shot_per_class=(),
-            selected_token_cap=cfg.selected_token_cap,
-            transcript_dump_path=output_dir / "raw_transcript_draver.npz",
-        )
-        for name, row in draver_result["metrics"].items():
-            metrics[f"draver_act/{name}"] = row
-
-    comparison = build_signal_summary(metrics, draver_result)
     training = {
         "target_sft_loss": target_sft_loss,
         "aux_distill_loss": aux_distill_loss,
@@ -514,15 +351,13 @@ def main() -> None:
     artifact = {
         "material_passport": {
             "experiment_id": (
-                f"{'qwen3' if cfg.benchmark == 'legacy' else cfg.benchmark}"
-                f"-sft-{cfg.seed}-epoch{cfg.target_epochs}"
+                f"{cfg.benchmark}-sft-{cfg.seed}-epoch{cfg.target_epochs}"
             ),
             "status": "COMPLETED",
-            "verification_status": "ANALYZED_SINGLE_SEED_CONTROLLED_SFT",
+            "verification_status": "COMPLETED_CONTROLLED_SFT_RUN",
             "benchmark": cfg.benchmark,
             "trainer": cfg.trainer,
             "optimizer": cfg.optimizer,
-            "selected_token_cap": cfg.selected_token_cap,
         },
         "config": cfg.as_dict(),
         "data": data_metadata,
@@ -532,20 +367,17 @@ def main() -> None:
             "auxiliary": records_metadata(auxiliary),
         },
         "training": training,
-        "metrics": metrics,
-        "signal_summary": comparison,
-        "query_budget": budget,
     }
     (output_dir / "results.json").write_text(
         json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (output_dir / "RESULTS.md").write_text(
-        render_markdown(cfg, data_metadata, training, metrics, budget, comparison),
+        render_markdown(cfg, data_metadata, training),
         encoding="utf-8",
     )
     print(
         json.dumps(
-            {"output_dir": str(output_dir), "training": training, "budget": budget},
+            {"output_dir": str(output_dir), "training": training},
             indent=2,
             ensure_ascii=False,
         ),

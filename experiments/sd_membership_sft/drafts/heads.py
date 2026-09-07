@@ -1,4 +1,4 @@
-"""Drafter heads for the EAGLE-3 / MTP protocol fine-tuning track.
+"""Drafter-head loading for the EAGLE-3 / MTP draft approaches.
 
 Two head families are supported, both hidden-conditioned (class-B speculators
 in the DraVer-X sense): they consume verifier hidden states, so the client

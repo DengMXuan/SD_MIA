@@ -1,7 +1,7 @@
 [project]
 name = "sd-mia"
 version = "0.1.0"
-description = "Controlled membership-audit experiments for edge-cloud speculative decoding"
+description = "Controlled post-cutoff instruction-SFT dataset construction and fine-tuning"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "accelerate>=1.6,<2",
@@ -9,9 +9,6 @@ dependencies = [
     "huggingface-hub>=1.5,<3",
     "numpy>=2,<3",
     "peft>=0.15,<1",
-    "pyarrow>=21,<24",
-    "pydantic>=2,<3",
-    "pypdf>=5.4,<7",
     "rouge-score>=0.1.2",
     "sacrebleu>=2.6.0",
     "safetensors>=0.5,<1",

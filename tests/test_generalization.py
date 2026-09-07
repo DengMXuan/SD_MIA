@@ -32,7 +32,7 @@ class StubTokenizer:
 
 def _record(tokens: int, index: int = 0) -> SFTRecord:
     return SFTRecord(
-        record_id=f"nart:test:{index}",
+        record_id=f"sft:test:{index}",
         source="example.org",
         response_ids=tuple(range(1000, 1000 + tokens)),
         response_hash=f"hash{index}",
@@ -77,7 +77,7 @@ def test_build_eval_samples_skips_short_documents() -> None:
         records, tokenizer, samples=10, context_tokens=256, gen_tokens=128, seed=3
     )
     assert len(samples) == 4
-    assert all(sample["record_id"] != "nart:test:99" for sample in samples)
+    assert all(sample["record_id"] != "sft:test:99" for sample in samples)
 
 
 def test_paired_bootstrap_delta_detects_shift() -> None:
@@ -107,9 +107,9 @@ def test_summarize_model_scores_gate_and_degradation() -> None:
     passing = summarize_model_scores(
         tuned, base, GenerationQualityScorer.METRICS, bootstrap_repeats=100, seed=1, gap_threshold=0.03
     )
-    assert passing["nart_overfitting_gate"] == "PASS"
+    assert passing["overfitting_gate"] == "PASS"
     for metric in GenerationQualityScorer.METRICS:
-        row = passing["nart_member_minus_nonmember"][metric]
+        row = passing["member_minus_nonmember"][metric]
         assert row["gate"] == "PASS"
     # base was better: relative drop positive
     assert passing["base_minus_tuned"]["member/bleu4"]["relative_drop"] > 0
@@ -122,8 +122,8 @@ def test_summarize_model_scores_gate_and_degradation() -> None:
     failing = summarize_model_scores(
         tuned_bad, base, GenerationQualityScorer.METRICS, bootstrap_repeats=100, seed=1, gap_threshold=0.03
     )
-    assert failing["nart_overfitting_gate"] == "FAIL"
-    assert failing["nart_member_minus_nonmember"]["bleu4"]["gate"] == "FAIL"
+    assert failing["overfitting_gate"] == "FAIL"
+    assert failing["member_minus_nonmember"]["bleu4"]["gate"] == "FAIL"
 
 
 def _tiny_qwen2(seed: int):

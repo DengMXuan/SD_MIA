@@ -6,12 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from experiments.sd_membership_sft.audit import bottom_k_indices, cap_selected_positions
 from experiments.sd_membership_sft.data import SFTRecord, make_sft_example
-from experiments.sd_membership_sft.nart_data import (
+from experiments.sd_membership_sft.splits import (
     BENCHMARK_TOKEN_BANDS,
-    NART_PROMPT,
-    build_nart_split,
+    SFT_PROMPT,
+    build_split,
 )
 
 
@@ -76,33 +75,13 @@ def _fake_documents(count: int, words: int = 300) -> tuple[list[str], list[str]]
     return titles, texts
 
 
-def test_cap_selected_positions_pins_transcript_budget() -> None:
-    import numpy as np
-
-    token_logp_np = np.asarray([[-float(value) / 10.0 for value in range(512)]], dtype=np.float32)
-    selected = bottom_k_indices(token_logp_np, 0.20)
-    assert selected.shape == (1, 103)  # ceil(512 * 0.2)
-
-    capped = cap_selected_positions(selected, token_logp_np, 26)
-    assert capped.shape == (1, 26)
-    kept = set(capped[0].tolist())
-    assert kept.issubset(set(selected[0].tolist()))
-    # the kept positions must be the least-likely ones within the min-k set
-    excluded = [position for position in selected[0].tolist() if position not in kept]
-    assert token_logp_np[0][sorted(kept)].max() <= token_logp_np[0][excluded].min() + 1e-6
-
-    # cap above the selection width is a no-op (legacy 64-token records)
-    legacy_selected = bottom_k_indices(token_logp_np[:, :64], 0.20)
-    assert cap_selected_positions(legacy_selected, token_logp_np[:, :64], 26) is legacy_selected
-
-
-def test_build_nart_split_disjoint_classes_and_ngram_gate(tmp_path: Path) -> None:
+def test_build_split_disjoint_classes_and_ngram_gate(tmp_path: Path) -> None:
     titles, texts = _fake_documents(30)
     pool = tmp_path / "pool.jsonl"
     _write_pool(pool, texts, titles)
     tokenizer = StubTokenizer()
 
-    members, nonmembers, auxiliary, metadata = build_nart_split(
+    members, nonmembers, auxiliary, metadata = build_split(
         "wikitection", pool, tokenizer, n_per_class=8, n_aux=8, seed=7
     )
 
@@ -122,18 +101,18 @@ def test_build_nart_split_disjoint_classes_and_ngram_gate(tmp_path: Path) -> Non
     }
     assert metadata["band_dropped_documents"] == 0  # loop stops once 24 records exist
     for record in members + nonmembers + auxiliary:
-        assert record.prompt_text == NART_PROMPT.format(topic=record.topic)
+        assert record.prompt_text == SFT_PROMPT.format(topic=record.topic)
         assert record.prompt_ids is not None
 
 
-def test_build_nart_split_drops_documents_under_token_band(tmp_path: Path) -> None:
+def test_build_split_drops_documents_under_token_band(tmp_path: Path) -> None:
     short_titles, short_texts = _fake_documents(4, words=20)
     titles, texts = _fake_documents(24)
     pool = tmp_path / "pool.jsonl"
     _write_pool(pool, texts + short_texts, titles + short_titles)
     tokenizer = StubTokenizer()
 
-    members, nonmembers, auxiliary, metadata = build_nart_split(
+    members, nonmembers, auxiliary, metadata = build_split(
         "wikitection", pool, tokenizer, n_per_class=8, n_aux=8, seed=7
     )
 
@@ -142,7 +121,7 @@ def test_build_nart_split_drops_documents_under_token_band(tmp_path: Path) -> No
     assert all(len(record.response_ids) >= 128 for record in members)
 
 
-def test_build_nart_split_rejects_tampered_pool(tmp_path: Path) -> None:
+def test_build_split_rejects_tampered_pool(tmp_path: Path) -> None:
     titles, texts = _fake_documents(24)
     pool = tmp_path / "pool.jsonl"
     _write_pool(pool, texts, titles)
@@ -151,28 +130,28 @@ def test_build_nart_split_rejects_tampered_pool(tmp_path: Path) -> None:
     pool.with_suffix(".manifest.json").write_text(json.dumps(manifest))
 
     with pytest.raises(RuntimeError, match="hash does not match"):
-        build_nart_split("wikitection", pool, StubTokenizer(), 8, 8, seed=7)
+        build_split("wikitection", pool, StubTokenizer(), 8, 8, seed=7)
 
 
-def test_build_nart_split_rejects_wrong_benchmark(tmp_path: Path) -> None:
+def test_build_split_rejects_wrong_benchmark(tmp_path: Path) -> None:
     titles, texts = _fake_documents(24)
     pool = tmp_path / "pool.jsonl"
     _write_pool(pool, texts, titles)
 
     with pytest.raises(RuntimeError, match="benchmark"):
-        build_nart_split("arxivtection", pool, StubTokenizer(), 8, 8, seed=7)
+        build_split("arxivtection", pool, StubTokenizer(), 8, 8, seed=7)
 
 
-def test_make_sft_example_masks_nart_prompt() -> None:
+def test_make_sft_example_masks_fixed_prompt() -> None:
     tokenizer = StubTokenizer()
     record = SFTRecord(
-        record_id="nart:test:abc",
+        record_id="sft:test:abc",
         source="example.org",
         response_ids=tuple(tokenizer("alpha beta gamma").input_ids),
         response_hash="abc",
-        prompt_ids=tuple(tokenizer(NART_PROMPT.format(topic="Topic X")).input_ids),
+        prompt_ids=tuple(tokenizer(SFT_PROMPT.format(topic="Topic X")).input_ids),
         prompt_hash="def",
-        prompt_text=NART_PROMPT.format(topic="Topic X"),
+        prompt_text=SFT_PROMPT.format(topic="Topic X"),
         topic="Topic X",
     )
     example = make_sft_example(record, tokenizer)

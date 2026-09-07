@@ -9,30 +9,23 @@ from typing import Any
 class Config:
     seed: int = 20260824
     data_seed: int = 20260824
-    audit_seed: int = 20260824
     gpu: int = 0
     target_model: str = "Qwen/Qwen3-8B-Base"
     draft_model: str = "Qwen/Qwen3-1.7B-Base"
-    # NART benchmark to run; each loads a frozen post-cutoff pool
-    # (see nart_data.BENCHMARK_TOKEN_BANDS).
+    # Benchmark pool to run; each loads a frozen post-cutoff pool
+    # (see splits.BENCHMARK_TOKEN_BANDS)..
     benchmark: str = "newstection"
     # Optional explicit pool override; defaults to
-    # experiments/data/nart_benchmarks/<benchmark>/pool.jsonl.
+    # experiments/data/pools/<benchmark>/pool.jsonl.
     pool_path: Path | None = None
-    # "lora" fine-tunes adapters; "full" fine-tunes every parameter with NART-style
+    # "lora" fine-tunes adapters; "full" fine-tunes every parameter with mainline
     # hyperparameters (lr 2e-5, effective batch 16, 3 epochs, bf16).
     trainer: str = "lora"
     # "adamw" is the standard fp32-state optimizer; "adamw8bit" swaps in
     # bitsandbytes PagedAdamW8bit so an 8B target fits on one A100-80GB.
     optimizer: str = "adamw"
-    # Cap on transcript-probed positions per record after min-k selection. For
-    # legacy 64-token records min-k 20% is 13 <= 26 so this is a no-op; for NART
-    # documents (up to 512/2048 tokens) it keeps the budget at 26*24=624 bits.
-    selected_token_cap: int = 26
-    response_tokens: int = 64
     n_per_class: int = 2000
     n_aux: int = 2000
-    audit_train_per_class: int = 128
     target_epochs: int = 1
     target_batch_size: int = 2
     target_grad_accum: int = 8
@@ -45,15 +38,11 @@ class Config:
     lora_r: int = 8
     lora_alpha: int = 16
     lora_dropout: float = 0.05
-    min_k_fraction: float = 0.20
-    transcript_repeats: int = 24
-    transcript_levels: int = 5
-    bootstrap_repeats: int = 500
     run_auxiliary_draft: bool = True
     run_member_draft: bool = True
     save_adapters: bool = True
     output_dir: Path = Path(
-        "experiments/results/nart_sft/newstection_qwen3_8b_epoch1"
+        "experiments/results/sft_runs/newstection_qwen3_8b_epoch1"
     )
 
     def as_dict(self) -> dict[str, Any]:

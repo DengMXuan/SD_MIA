@@ -1,1 +1,1 @@
-"""Qwen3 instruction-SFT membership-audit experiment."""
+"""Qwen3 controlled instruction-SFT fine-tuning experiment."""
