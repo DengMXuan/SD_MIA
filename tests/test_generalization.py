@@ -124,3 +124,84 @@ def test_summarize_model_scores_gate_and_degradation() -> None:
     )
     assert failing["nart_overfitting_gate"] == "FAIL"
     assert failing["nart_member_minus_nonmember"]["bleu4"]["gate"] == "FAIL"
+
+
+def _tiny_qwen2(seed: int):
+    import torch
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    torch.manual_seed(seed)
+    config = AutoConfig.for_model(
+        "qwen2",
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+    )
+    return AutoModelForCausalLM.from_config(config).to(torch.bfloat16)
+
+
+def _first_attention_weight(model):
+    """First q_proj weight; unwraps peft's lora.Linear via base_layer."""
+    for name, module in model.named_modules():
+        if name.endswith("self_attn.q_proj"):
+            base_layer = getattr(module, "base_layer", module)
+            return base_layer.weight
+    raise AssertionError("no self_attn.q_proj module found")
+
+
+def test_load_draft_model_full_checkpoint_returns_checkpoint_weights(tmp_path) -> None:
+    """Regression: a full (non-adapter) draft checkpoint must actually load.
+
+    load_draft_model used to return the untouched base model whenever the
+    saved draft was a full checkpoint, silently discarding the fine-tuned
+    weights (affected --skip-training resume and --include-drafts).
+    """
+    import torch
+
+    from experiments.sd_membership_sft.generalization import load_draft_model
+
+    base = _tiny_qwen2(seed=0)
+    base_dir = tmp_path / "base"
+    base.save_pretrained(base_dir)
+
+    tuned = _tiny_qwen2(seed=1)
+    checkpoint = tmp_path / "run" / "checkpoints" / "draft_member_sft"
+    tuned.save_pretrained(checkpoint)
+    assert not (checkpoint / "adapter_config.json").exists()
+
+    loaded = load_draft_model(
+        tmp_path / "run", str(base_dir), "draft_member_sft", torch.device("cpu")
+    )
+
+    assert torch.equal(_first_attention_weight(loaded), _first_attention_weight(tuned))
+    assert not torch.equal(_first_attention_weight(loaded), _first_attention_weight(base))
+    assert loaded.config.use_cache is True
+
+
+def test_load_draft_model_adapter_checkpoint_wraps_base(tmp_path) -> None:
+    """The adapter path must keep loading the base plus the LoRA weights."""
+    import torch
+    from peft import PeftModel
+
+    from experiments.sd_membership_sft.generalization import load_draft_model
+    from experiments.sd_membership_sft.training import add_lora
+
+    base = _tiny_qwen2(seed=0)
+    base_dir = tmp_path / "base"
+    base.save_pretrained(base_dir)
+
+    adapted = add_lora(_tiny_qwen2(seed=0), r=4, alpha=8, dropout=0.0)
+    adapter_dir = tmp_path / "run" / "adapters" / "draft_auxiliary_distilled"
+    adapted.save_pretrained(adapter_dir)
+    assert (adapter_dir / "adapter_config.json").exists()
+
+    loaded = load_draft_model(
+        tmp_path / "run", str(base_dir), "draft_auxiliary_distilled", torch.device("cpu")
+    )
+
+    assert isinstance(loaded, PeftModel)
+    # the wrapped base weights are frozen and identical to the base model
+    assert torch.equal(_first_attention_weight(loaded), _first_attention_weight(base))

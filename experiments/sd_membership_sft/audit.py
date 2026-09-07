@@ -38,9 +38,9 @@ def make_audit_split(
     """Audit calibration/test split shared by every audit path.
 
     Uses ``seed + 30`` so existing runs keep the exact split they were
-    produced with. Direct-verifier baselines, the SD transcript scores, and
-    the DraVer-Act detector must all evaluate on the same test records for
-    paired comparisons to be valid.
+    produced with. The SD transcript scores and the DraVer-Act detector
+    must evaluate on the same test records for paired comparisons to be
+    valid.
     """
     rng = np.random.default_rng(seed + 30)
     positive = rng.permutation(n_members)
@@ -50,75 +50,6 @@ def make_audit_split(
     rng.shuffle(train)
     rng.shuffle(test)
     return train, test
-
-
-def window_based_comparison(
-    target_logp: np.ndarray,
-    reference_logp: np.ndarray,
-    w_min: int = 2,
-    w_max: int = 40,
-    n_window_sizes: int = 10,
-) -> np.ndarray:
-    """WBC attack score (Chen et al., USENIX Security 2026).
-
-    Reimplemented from the paper's Equations 10 and 12; official code is
-    github.com/Stry233/WBC. With token losses defined as l = -logp, the
-    per-token loss difference is Delta_j = l_R_j - l_T_j = logp_T_j -
-    logp_R_j. For each geometrically spaced window size w, the statistic is
-    the fraction of sliding windows whose Delta sum is positive; the final
-    score averages the statistic across sizes. Hyperparameters follow the
-    paper's ablation optimum: w_min=2, w_max=40, |W|=10, stride 1.
-
-    ``target_logp`` and ``reference_logp`` are [records, positions] arrays
-    with NaN padding; NaN positions are excluded via a zero-padded delta
-    cumsum over each row's valid prefix.
-    """
-    delta = target_logp - reference_logp
-    rows, width = delta.shape
-    scores = np.full(rows, np.nan, dtype=np.float64)
-    sizes = [
-        int(round(w_min * (w_max / w_min) ** (k / (n_window_sizes - 1))))
-        for k in range(n_window_sizes)
-    ]
-    for row in range(rows):
-        valid = np.isfinite(delta[row])
-        count = int(valid.sum())
-        if count == 0:
-            continue
-        values = np.where(valid, delta[row], 0.0)[:count]
-        cumsum = np.concatenate([[0.0], np.cumsum(values)])
-        statistics = []
-        for w in sizes:
-            if w > count:
-                continue
-            window_sums = cumsum[w:] - cumsum[:-w]
-            statistics.append(float(np.mean(window_sums > 0.0)))
-        if statistics:
-            scores[row] = float(np.mean(statistics))
-    return scores
-
-
-def min_k_prob(target_logp: np.ndarray, fraction: float) -> np.ndarray:
-    """Min-K% Prob attack score (Shi et al., ICLR 2024).
-
-    Reimplemented per the paper (official code github.com/swj0419/detect-
-    pretrain-code): mean log-probability of the k% least-likely tokens.
-    """
-    selected = bottom_k_indices(target_logp, fraction)
-    return np.nanmean(gather_positions(target_logp, selected), axis=1)
-
-
-def reference_loss_diff(
-    target_logp: np.ndarray, reference_logp: np.ndarray
-) -> np.ndarray:
-    """Reference-based global loss-difference score.
-
-    The standard fine-tuned-MIA baseline the WBC paper compares against:
-    mean over document tokens of (reference loss - target loss) = mean
-    Delta_j, i.e. WBC's signal without windowing or sign aggregation.
-    """
-    delta = target_logp - reference_logp
-    return np.nanmean(np.where(np.isfinite(delta), delta, np.nan), axis=1)
 
 
 def gather_positions(values: np.ndarray, positions: np.ndarray) -> np.ndarray:
@@ -301,12 +232,6 @@ def add_draft_metrics(
     draft_min = np.nanmean(gather_positions(draft["token_logp"], selected), axis=1)
     draft_entropy = -np.nanmean(draft["entropy"], axis=1)
     draft_grad = -np.nanmean(gather_positions(draft["grad_proxy"], selected), axis=1)
-    greedy = np.nanmean(gather_positions(target["top1_match"], selected), axis=1)
-    oracle_qselected = np.nanmean(gather_positions(target["token_logp"], selected), axis=1)
-    target_selected = bottom_k_indices(target["token_logp"], min_k_fraction)
-    true_target_min = np.nanmean(
-        gather_positions(target["token_logp"], target_selected), axis=1
-    )
 
     tomo_logp, honest_accept, query_bits = transcript_tomography(
         target["token_logp"],
@@ -341,12 +266,9 @@ def add_draft_metrics(
         f"{prefix}/draft_min20_logp": draft_min,
         f"{prefix}/draft_negative_entropy": draft_entropy,
         f"{prefix}/draft_negative_grad_proxy": draft_grad,
-        f"{prefix}/greedy_verifier_match_selected": greedy,
         f"{prefix}/honest_accept_rate_selected": honest,
         f"{prefix}/acceptance_tomography_random": random_tomo,
         f"{prefix}/acceptance_tomography_qmin": tomo,
-        f"{prefix}/oracle_target_qselected": oracle_qselected,
-        f"{prefix}/oracle_target_true_min20": true_target_min,
     }
     y_test = labels[test_idx]
     for metric_idx, (name, score) in enumerate(scores.items()):
@@ -364,7 +286,7 @@ def add_draft_metrics(
     )
 
     joint = np.column_stack(
-        [draft_mean, draft_min, draft_entropy, draft_grad, greedy, honest, tomo]
+        [draft_mean, draft_min, draft_entropy, draft_grad, honest, tomo]
     )
     joint_test = fit_logistic(joint[train_idx], labels[train_idx], joint[test_idx])
     results[f"{prefix}/joint_whitebox_transcript"] = metric_row(
@@ -388,7 +310,6 @@ def run_audit(
     draft_features: dict[str, dict[str, np.ndarray]],
     config: Any,
     selected_token_cap: int | None = None,
-    base_target_features: dict[str, np.ndarray] | None = None,
     split: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[dict[str, dict[str, float]], dict[str, float], dict[str, np.ndarray]]:
     candidates = members + nonmembers
@@ -416,29 +337,6 @@ def run_audit(
     bow = hashed_bow(ids)
     bow_test = fit_logistic(bow[train_idx], labels[train_idx], bow[test_idx])
     register("control/model_less_hashed_bow", bow_test, preindexed=True)
-
-    if base_target_features is not None:
-        # Direct verifier MIA baselines: score-based attacks on the fine-tuned
-        # target with (WBC, reference loss-diff) or without (Min-K%) the
-        # pre-fine-tuning reference model. No draft or protocol signal used.
-        register(
-            "verifier_direct/min_k_prob_k20",
-            min_k_prob(target_features["token_logp"], config.min_k_fraction),
-        )
-        register(
-            "verifier_direct/window_based_comparison",
-            window_based_comparison(
-                target_features["token_logp"],
-                base_target_features["token_logp"],
-            ),
-        )
-        register(
-            "verifier_direct/reference_loss_diff",
-            reference_loss_diff(
-                target_features["token_logp"],
-                base_target_features["token_logp"],
-            ),
-        )
 
     query_arrays: list[np.ndarray] = []
     random_query_arrays: list[np.ndarray] = []

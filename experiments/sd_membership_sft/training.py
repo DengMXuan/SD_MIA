@@ -26,14 +26,30 @@ def load_causal_lm(
     revision: str | None = None,
     local_files_only: bool = False,
 ) -> PreTrainedModel:
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        revision=revision,
-        local_files_only=local_files_only,
-        dtype=torch.bfloat16,
-        low_cpu_mem_usage=True,
-        attn_implementation="eager",
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            revision=revision,
+            local_files_only=local_files_only,
+            dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+            attn_implementation="eager",
+        )
+    except ValueError as error:
+        # wrapper architectures (e.g. qwen3_5 ConditionalGeneration) are not in
+        # the causal-LM map; load the full multimodal wrapper for text-only use
+        if "Unrecognized" not in str(error) and "does not appear to have" not in str(error):
+            raise
+        from transformers import AutoModelForImageTextToText
+
+        model = AutoModelForImageTextToText.from_pretrained(
+            model_id,
+            revision=revision,
+            local_files_only=local_files_only,
+            dtype=torch.bfloat16,
+            low_cpu_mem_usage=True,
+            attn_implementation="eager",
+        )
     model.to(device)
     model.config.use_cache = False
     return model

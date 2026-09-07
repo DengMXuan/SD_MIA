@@ -2,7 +2,7 @@
 
 Consumes ``.npz`` dumps produced by ``transcript_replay`` and computes, for
 every (selection strategy x verifier budget) cell, the P0 scorer battery plus
-direct-verifier baselines, then reports:
+attacker-observable diagnostics, then reports:
 
 - AUC with bootstrap CI, TPR@0.1%/1%/5% FPR and an 80%-power minimal
   detectable AUC effect (2.8 x bootstrap SE) per scorer;
@@ -12,7 +12,10 @@ direct-verifier baselines, then reports:
 - cross-seed aggregates for conditions replayed under multiple training seeds.
 
 Everything is offline numpy: one replay dump serves all selections, budgets
-(first-R' bit slices) and scorers.
+(first-R' bit slices) and scorers. The threat model is draft white-box plus
+protocol feedback only; no score reads the target's logits directly (alpha is
+the R->inf limit of the acceptance channel, attacker-observable in
+expectation).
 """
 
 from __future__ import annotations
@@ -27,11 +30,8 @@ import numpy as np
 
 from .audit import (
     bootstrap_auc_ci,
-    min_k_prob,
-    reference_loss_diff,
     tpr_at_fpr,
     auc_rank,
-    window_based_comparison,
 )
 from .draver_activation import paired_bootstrap_delta
 from .protocol_scorers import (
@@ -169,8 +169,6 @@ def evaluate_dump(path: Path) -> dict:
     draft_logp = data["draft_logp"]
     draft_entropy = data["draft_entropy"]
     target_logp = data["target_logp"]
-    base_target_logp = data["base_target_logp"]
-    top1_match = data["target_top1_match"]
     bits = data["accept_bits"]
     labels = data["labels"]
     train_idx = data["train_idx"]
@@ -188,31 +186,22 @@ def evaluate_dump(path: Path) -> dict:
         "meta": meta,
         "source": str(path),
         "cells": [],
-        "direct_baselines": {},
+        "diagnostics": {},
     }
 
-    # Direct-verifier baselines: score-based attacks with (WBC, reference
-    # loss-diff) or without (Min-K%) oracle access to the fine-tuned target.
+    # Attacker-observable diagnostics: draft white-box min-k plus the exact
+    # acceptance expectation (R->inf limit of the protocol channel).
     draft_selected = np.argsort(
         np.where(valid, draft_logp, np.inf), axis=1, kind="mergesort"
-    )[:, : max(1, int(math.ceil(valid.shape[1] * 0.2)))]
-    target_selected = np.argsort(
-        np.where(valid, target_logp, np.inf), axis=1, kind="mergesort"
     )[:, : max(1, int(math.ceil(valid.shape[1] * 0.2)))]
     direct = {
         "draft_only_min_k20": np.nanmean(
             np.take_along_axis(draft_logp, draft_selected, axis=1), axis=1
         ),
-        "target_min_k20_oracle": np.nanmean(
-            np.take_along_axis(target_logp, target_selected, axis=1), axis=1
-        ),
-        "wbc_direct": window_based_comparison(target_logp, base_target_logp),
-        "reference_loss_diff": reference_loss_diff(target_logp, base_target_logp),
         "oracle_mean_alpha_all_positions": np.nanmean(alpha, axis=1),
-        "greedy_match_mean_all_positions": np.nanmean(top1_match, axis=1),
     }
     for name, score in direct.items():
-        results["direct_baselines"][name] = metric_row(y_test, score[test_idx], seed)
+        results["diagnostics"][name] = metric_row(y_test, score[test_idx], seed)
 
     counts_full = bits.sum(axis=-1).astype(np.int64)
     selection_seeds = {"mink20": 11, "entropy_low": 12, "random_k": 13, "all": 14}
@@ -307,13 +296,13 @@ def render_markdown(per_file: list[dict], aggregates: list[dict]) -> str:
                 f"## {Path(item['source']).parent.name} — epochs={meta['target_epochs']} "
                 f"seed={meta['seed']} n/class={meta['n_per_class']}",
                 "",
-                "### Direct-verifier baselines (oracle target access; upper anchors)",
+                "### Attacker-observable diagnostics",
                 "",
-                "| Baseline | AUC [95% CI] | TPR@1%FPR |",
+                "| Diagnostic | AUC [95% CI] | TPR@1%FPR |",
                 "|---|---|---:|",
             ]
         )
-        for name, row in item["direct_baselines"].items():
+        for name, row in item["diagnostics"].items():
             lines.append(
                 f"| `{name}` | {row['auc']:.3f} [{row['auc_ci95_low']:.3f}, {row['auc_ci95_high']:.3f}] "
                 f"| {row['tpr_at_1pct_fpr']:.3f} |"

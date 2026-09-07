@@ -91,7 +91,7 @@ def load_finetuned_model(run_dir: Path, model_id: str, device: torch.device) -> 
 def load_draft_model(
     run_dir: Path, model_id: str, name: str, device: torch.device
 ) -> Any:
-    model = load_causal_lm(model_id, device)
+    """Load a saved draft variant, transparently handling LoRA and full runs."""
     for directory in ("checkpoints", "adapters"):
         path = run_dir / directory / name
         if not path.exists():
@@ -99,7 +99,10 @@ def load_draft_model(
         if (path / "adapter_config.json").exists():
             from peft import PeftModel
 
-            model = PeftModel.from_pretrained(model, str(path), is_trainable=False)
+            base = load_causal_lm(model_id, device)
+            model = PeftModel.from_pretrained(base, str(path), is_trainable=False)
+        else:
+            model = load_causal_lm(str(path), device)
         model.eval()
         model.config.use_cache = True
         return model
@@ -223,13 +226,24 @@ def paired_bootstrap_delta(
     repeats: int,
     seed: int,
 ) -> dict[str, float]:
-    """CI for mean(left) - mean(right) over paired resamples."""
+    """CI for mean(left) - mean(right).
+
+    Equal-length inputs are resampled with shared indices (paired); unequal
+    lengths (e.g. member vs nonmember after per-class length filtering)
+    are resampled independently.
+    """
     rng = np.random.default_rng(seed)
-    count = len(left)
     deltas = np.empty(repeats, dtype=np.float64)
-    for repeat in range(repeats):
-        index = rng.integers(0, count, size=count)
-        deltas[repeat] = left[index].mean() - right[index].mean()
+    if len(left) == len(right):
+        count = len(left)
+        for repeat in range(repeats):
+            index = rng.integers(0, count, size=count)
+            deltas[repeat] = left[index].mean() - right[index].mean()
+    else:
+        for repeat in range(repeats):
+            left_index = rng.integers(0, len(left), size=len(left))
+            right_index = rng.integers(0, len(right), size=len(right))
+            deltas[repeat] = left[left_index].mean() - right[right_index].mean()
     return {
         "delta": float(left.mean() - right.mean()),
         "ci95_low": float(np.quantile(deltas, 0.025)),

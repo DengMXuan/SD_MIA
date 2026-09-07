@@ -18,7 +18,6 @@ from .data import records_metadata
 from .draver_activation import (
     evaluate_activation_audit,
     extract_draft_activation_outputs,
-    paired_bootstrap_delta,
 )
 from .nart_data import build_nart_split, pool_path as nart_pool_path
 from .training import (
@@ -100,19 +99,15 @@ def load_config(args: argparse.Namespace) -> Config:
     return Config(**values)
 
 
-def build_baseline_comparison(
-    cfg: Config,
+def build_signal_summary(
     metrics: dict[str, dict[str, float]],
-    raw_scores: dict[str, np.ndarray],
     draver_result: dict[str, Any] | None,
-    labels: np.ndarray,
-    test_idx: np.ndarray,
 ) -> dict[str, Any]:
-    """Direct-verifier MIA baselines vs SD-scenario signals, same test split.
+    """Headline SD-scenario signals on the shared audit test split.
 
-    Baselines (score-based attacks on the fine-tuned target, no draft or
-    protocol signal) and the SD transcript/DraVer-Act detectors all score the
-    shared audit test records, so paired bootstrap deltas are valid.
+    Every score uses only draft-side white-box access plus protocol
+    feedback (the target stays black-box), so every row is
+    attacker-observable under the edge-cloud threat model.
     """
     prefix = next(
         (
@@ -133,42 +128,15 @@ def build_baseline_comparison(
                 ("DraVer-Act (residual, proposed)", "draver_act/draver_act_residual_triplet"),
             ]
         )
-    baselines = [
-        ("Min-K% Prob (k=0.2)", "verifier_direct/min_k_prob_k20"),
-        ("WBC (w=2..40, |W|=10)", "verifier_direct/window_based_comparison"),
-        ("Reference loss-diff (global)", "verifier_direct/reference_loss_diff"),
-    ]
 
     rows = []
-    for group, entries in (("SD", sd_signals), ("direct baseline", baselines)):
-        for label, key in entries:
-            row = metrics.get(key)
-            if row is None:
-                continue
-            rows.append({"group": group, "signal": label, "key": key, **row})
-
-    deltas: dict[str, dict[str, float]] = {}
-    if draver_result is not None:
-        labels_test = labels[test_idx]
-        headline = (
-            ("DraVer-Act", draver_result["scores"]["draver_act_residual_triplet"]),
-            ("Transcript-only (triplet)", draver_result["scores"]["transcript_only_triplet"]),
-        )
-        for sd_label, sd_score in headline:
-            for baseline_label, baseline_key in baselines:
-                baseline_score = raw_scores.get(baseline_key)
-                if baseline_score is None:
-                    continue
-                deltas[f"{sd_label} - {baseline_label}"] = paired_bootstrap_delta(
-                    labels_test,
-                    sd_score,
-                    baseline_score,
-                    cfg.bootstrap_repeats,
-                    cfg.audit_seed + 900,
-                )
+    for label, key in sd_signals:
+        row = metrics.get(key)
+        if row is None:
+            continue
+        rows.append({"signal": label, "key": key, **row})
     return {
         "rows": rows,
-        "paired_deltas": deltas,
         "draver_act_available": draver_result is not None,
     }
 
@@ -269,42 +237,21 @@ def render_markdown(
         lines.extend(
             [
                 "",
-                "## Direct-verifier baselines vs SD-scenario signals",
+                "## SD-scenario signals (shared audit test split)",
                 "",
-                "All signals score the same audit test records. Direct baselines "
-                "attack the fine-tuned verifier without any draft or protocol "
-                "signal (Min-K% Prob: Shi et al. ICLR 2024; WBC: Chen et al. "
-                "USENIX Security 2026, w=2..40, |W|=10; reference loss-diff: "
-                "the global-average baseline WBC compares against). SD signals "
-                "additionally use speculative-decoding information.",
+                "All signals use only draft white-box access plus SD protocol "
+                "feedback; the target model stays black-box.",
                 "",
-                "| Group | Signal | AUC (95% CI) | TPR@1%FPR | TPR@5%FPR |",
-                "|---|---|---:|---:|---:|",
+                "| Signal | AUC (95% CI) | TPR@1%FPR | TPR@5%FPR |",
+                "|---|---:|---:|---:|",
             ]
         )
         for row in comparison["rows"]:
             lines.append(
-                f"| {row['group']} | {row['signal']} "
+                f"| {row['signal']} "
                 f"| {row['auc']:.4f} [{row['auc_ci95_low']:.4f}, {row['auc_ci95_high']:.4f}] "
                 f"| {row['tpr_at_1pct_fpr']:.4f} | {row['tpr_at_5pct_fpr']:.4f} |"
             )
-        if comparison["paired_deltas"]:
-            lines.extend(
-                [
-                    "",
-                    "Paired AUC deltas (positive = the SD signal beats the direct "
-                    "baseline on the same test records):",
-                    "",
-                    "| SD signal | Baseline | Delta AUC (95% CI) |",
-                    "|---|---|---:|",
-                ]
-            )
-            for name, delta in comparison["paired_deltas"].items():
-                sd_label, baseline_label = name.split(" - ", 1)
-                lines.append(
-                    f"| {sd_label} | {baseline_label} "
-                    f"| {delta['delta_auc']:+.4f} [{delta['ci95_low']:+.4f}, {delta['ci95_high']:+.4f}] |"
-                )
     lines.extend(
         [
             "",
@@ -512,15 +459,9 @@ def main() -> None:
         gc.collect()
         torch.cuda.empty_cache()
 
-    # Direct-verifier baselines need the pre-fine-tuning target's per-token
-    # losses as the reference signal (WBC, reference loss-diff).
-    base_target_model = load_causal_lm(cfg.target_model, device)
-    base_target_features = extract_features(
-        base_target_model, candidates, tokenizer, device, cfg.target_batch_size
-    )
-    del base_target_model
-    gc.collect()
-    torch.cuda.empty_cache()
+    # Direct-verifier baselines were removed: the threat model keeps the
+    # target black-box (draft white-box + protocol feedback only), so no
+    # score may read the target's logits directly.
 
     audit_split = make_audit_split(
         len(members), len(nonmembers), cfg.audit_train_per_class, cfg.audit_seed
@@ -538,7 +479,6 @@ def main() -> None:
         draft_features,
         cfg,
         selected_token_cap=cfg.selected_token_cap,
-        base_target_features=base_target_features,
         split=audit_split,
     )
 
@@ -562,9 +502,7 @@ def main() -> None:
         for name, row in draver_result["metrics"].items():
             metrics[f"draver_act/{name}"] = row
 
-    comparison = build_baseline_comparison(
-        cfg, metrics, raw_scores, draver_result, audit_labels, audit_split[1]
-    )
+    comparison = build_signal_summary(metrics, draver_result)
     training = {
         "target_sft_loss": target_sft_loss,
         "aux_distill_loss": aux_distill_loss,
@@ -595,7 +533,7 @@ def main() -> None:
         },
         "training": training,
         "metrics": metrics,
-        "baseline_comparison": comparison,
+        "signal_summary": comparison,
         "query_budget": budget,
     }
     (output_dir / "results.json").write_text(
