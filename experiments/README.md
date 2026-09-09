@@ -20,6 +20,10 @@ experiments/
 │       ├── mtp.py               # 3/3 checkpoint's native MTP head
 │       ├── common.py            # pair registry, CLI scaffolding, run-config writer
 │       └── heads.py             # drafter-head loading for EAGLE-3 / MTP
+├── baseline/
+│   ├── run.py                    # target-only MIA baseline runner
+│   ├── methods.py                # pure score/statistic implementations
+│   └── README.md                 # methods, provenance, and usage
 ├── data/pools/                  # frozen pools (pool.jsonl + SHA-256 manifest each)
 └── results/
     ├── sft_runs/                # plain-draft run directories
@@ -30,8 +34,11 @@ Membership is defined by the controlled data construction: member,
 nonmember, and auxiliary records are drawn from the same frozen
 post-cutoff pool by shuffled, hash-deduplicated assignment. The
 membership-scoring and attack-method code that used to live in this
-package has been removed; what remains builds the data and fine-tunes
-the models.
+package has been removed; the target-only baseline suite now lives in
+[`baseline/README.md`](baseline/README.md). It loads only the saved
+fine-tuned target (with adapter base weights when reconstruction is
+necessary), never scores an unfine-tuned target or draft model, and reports
+all scalar scores in a common member-positive direction.
 
 All commands below are run from the repository root. Prefix with
 `CUDA_VISIBLE_DEVICES=<n>` to pin a physical GPU (its logical index is
