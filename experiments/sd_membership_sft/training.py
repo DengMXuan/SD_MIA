@@ -25,6 +25,7 @@ def load_causal_lm(
     device: torch.device,
     revision: str | None = None,
     local_files_only: bool = False,
+    attn_implementation: str = "eager",
 ) -> PreTrainedModel:
     try:
         model = AutoModelForCausalLM.from_pretrained(
@@ -33,7 +34,7 @@ def load_causal_lm(
             local_files_only=local_files_only,
             dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
-            attn_implementation="eager",
+            attn_implementation=attn_implementation,
         )
     except ValueError as error:
         # wrapper architectures (e.g. qwen3_5 ConditionalGeneration) are not in
@@ -48,7 +49,7 @@ def load_causal_lm(
             local_files_only=local_files_only,
             dtype=torch.bfloat16,
             low_cpu_mem_usage=True,
-            attn_implementation="eager",
+            attn_implementation=attn_implementation,
         )
     model.to(device)
     model.config.use_cache = False

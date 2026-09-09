@@ -79,7 +79,12 @@ def load_run_config(run_dir: Path) -> Any:
     return cfg
 
 
-def load_finetuned_model(run_dir: Path, model_id: str, device: torch.device) -> Any:
+def load_finetuned_model(
+    run_dir: Path,
+    model_id: str,
+    device: torch.device,
+    attn_implementation: str = "eager",
+) -> Any:
     """Load the fine-tuned target, transparently handling LoRA and full runs."""
     for directory in ("checkpoints", "adapters"):
         path = run_dir / directory / "target"
@@ -88,10 +93,12 @@ def load_finetuned_model(run_dir: Path, model_id: str, device: torch.device) -> 
         if (path / "adapter_config.json").exists():
             from peft import PeftModel
 
-            base = load_causal_lm(model_id, device)
+            base = load_causal_lm(model_id, device, attn_implementation=attn_implementation)
             model = PeftModel.from_pretrained(base, str(path), is_trainable=False)
         else:
-            model = load_causal_lm(str(path), device)
+            model = load_causal_lm(
+                str(path), device, attn_implementation=attn_implementation
+            )
         model.eval()
         model.config.use_cache = True
         return model
@@ -99,7 +106,11 @@ def load_finetuned_model(run_dir: Path, model_id: str, device: torch.device) -> 
 
 
 def load_draft_model(
-    run_dir: Path, model_id: str, name: str, device: torch.device
+    run_dir: Path,
+    model_id: str,
+    name: str,
+    device: torch.device,
+    attn_implementation: str = "eager",
 ) -> Any:
     """Load a saved draft variant, transparently handling LoRA and full runs."""
     for directory in ("checkpoints", "adapters"):
@@ -109,10 +120,12 @@ def load_draft_model(
         if (path / "adapter_config.json").exists():
             from peft import PeftModel
 
-            base = load_causal_lm(model_id, device)
+            base = load_causal_lm(model_id, device, attn_implementation=attn_implementation)
             model = PeftModel.from_pretrained(base, str(path), is_trainable=False)
         else:
-            model = load_causal_lm(str(path), device)
+            model = load_causal_lm(
+                str(path), device, attn_implementation=attn_implementation
+            )
         model.eval()
         model.config.use_cache = True
         return model

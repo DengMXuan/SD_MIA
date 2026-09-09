@@ -1,6 +1,7 @@
 """Unit tests for the acceptance-gap membership-audit helpers."""
 
 import numpy as np
+import torch
 
 from experiments.sd_membership_sft.pq_gap_mia import (
     log_ratio_score,
@@ -8,6 +9,7 @@ from experiments.sd_membership_sft.pq_gap_mia import (
     prob_space_score,
     rank_auc,
     sampled_acceptance_score,
+    selected_token_logprobs,
     tpr_at_fpr,
 )
 
@@ -84,3 +86,17 @@ class TestScores:
         first = sampled_acceptance_score(logp, logq, 16, np.random.default_rng(7))
         second = sampled_acceptance_score(logp, logq, 16, np.random.default_rng(7))
         assert first == second
+
+
+def test_selected_token_logprobs_normalizes_bfloat16_logits_in_float32() -> None:
+    logits = torch.tensor(
+        [[[1.25, -0.5, 2.75, 0.125], [0.5, 1.5, -1.0, 2.0]]],
+        dtype=torch.bfloat16,
+    )
+    labels = torch.tensor([[2, 3]], dtype=torch.long)
+    actual = selected_token_logprobs(logits, labels, sequence_chunk=1)
+    expected = torch.log_softmax(logits.float(), dim=-1).gather(
+        -1, labels.unsqueeze(-1)
+    ).squeeze(-1)
+    assert actual.dtype == torch.float32
+    assert torch.allclose(actual, expected, atol=1e-6, rtol=1e-6)

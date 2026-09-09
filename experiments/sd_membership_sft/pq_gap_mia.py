@@ -50,16 +50,14 @@ from typing import Any
 
 import numpy as np
 import torch
-from transformers import AutoTokenizer
-
 from .data import SFTRecord, collate_sft, make_sft_example
 from .generalization import (
     load_draft_model,
     load_finetuned_model,
     load_run_config,
 )
-from .logpq_distribution import verify_shared_tokenizer, verify_split_against_run
-from .splits import build_split, pool_path
+from .scoring_common import prepare_scoring_records
+from .directional_mia import order_statistic_threshold
 from .training import set_seed
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -117,6 +115,7 @@ def sampled_acceptance_score(
 
 
 SCORE_NAMES = ("log_ratio", "prob_space", "mean_alpha", "sampled_acceptance")
+LOGSUMEXP_SEQUENCE_CHUNK = 64
 
 
 def score_functions(repeats: int, rng: np.random.Generator) -> dict[str, Any]:
@@ -128,6 +127,33 @@ def score_functions(repeats: int, rng: np.random.Generator) -> dict[str, Any]:
             logp, logq, repeats, rng
         ),
     }
+
+
+def selected_token_logprobs(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    sequence_chunk: int = LOGSUMEXP_SEQUENCE_CHUNK,
+) -> torch.Tensor:
+    """Compute selected-token log-probabilities with an FP32 normalizer.
+
+    Qwen checkpoints are normally loaded in BF16.  Calling ``logsumexp`` on
+    BF16 logits makes the vocabulary normalizer itself low precision, which is
+    especially harmful for the p-q difference used by this experiment.  The
+    full vocabulary is converted in sequence chunks so the FP32 operation does
+    not require an additional full-length FP32 logits tensor.
+    """
+    if sequence_chunk <= 0:
+        raise ValueError("sequence_chunk must be positive")
+    selected = logits.gather(
+        -1, labels.clamp_min(0).unsqueeze(-1)
+    ).squeeze(-1).float()
+    normalizer = torch.empty_like(selected, dtype=torch.float32)
+    for start in range(0, logits.shape[1], sequence_chunk):
+        end = min(start + sequence_chunk, logits.shape[1])
+        normalizer[:, start:end] = torch.logsumexp(
+            logits[:, start:end, :].float(), dim=-1
+        )
+    return selected - normalizer
 
 
 # --------------------------------------------------------------- metrics ---
@@ -147,8 +173,8 @@ def rank_auc(member: np.ndarray, nonmember: np.ndarray) -> float:
 
 
 def tpr_at_fpr(member: np.ndarray, nonmember: np.ndarray, fpr: float) -> float:
-    """TPR at an empirical FPR: threshold = the (1-fpr) nonmember quantile."""
-    threshold = np.quantile(nonmember, 1.0 - fpr)
+    """TPR at an empirical FPR using a discrete upper-tail threshold."""
+    threshold = order_statistic_threshold(nonmember, fpr)
     return float(np.mean(member > threshold))
 
 
@@ -194,6 +220,7 @@ def record_logprobabilities(
     tokenizer: Any,
     device: torch.device,
     batch_size: int,
+    empty_cache_each_batch: bool = False,
 ) -> list[np.ndarray]:
     """Per-record log-probability arrays over response tokens (+ EOS)."""
     model.eval()
@@ -216,14 +243,14 @@ def record_logprobabilities(
         ).logits[:, :-1]
         labels = batch["labels"][:, 1:]
         valid = labels.ne(-100)
-        logp = (
-            logits.float()
-            .log_softmax(dim=-1)
-            .gather(-1, labels.clamp_min(0).unsqueeze(-1))
-            .squeeze(-1)
-        )
+        # Keep the vocabulary normalizer in FP32.  It is computed in sequence
+        # chunks to avoid materializing a full FP32 vocabulary tensor.
+        logp = selected_token_logprobs(logits, labels)
         for row, index in enumerate(indices):
             outputs[index] = logp[row][valid[row]].to(torch.float32).cpu().numpy()
+        del logits, logp, labels, valid, batch
+        if empty_cache_each_batch and device.type == "cuda":
+            torch.cuda.empty_cache()
     if any(output is None for output in outputs):
         raise RuntimeError("Forward pass left records unscored")
     return [output for output in outputs if output is not None]
@@ -292,7 +319,7 @@ def render_markdown(
         "score includes the p ≥ q side that finite accept bits censor away.",
         f"- Sampled ablation: R = {protocol['repeats']} Bernoulli verification "
         "rounds per token, score = mean observed accept rate.",
-        "- Thresholds: TPR@FPR thresholds are empirical nonmember quantiles; "
+        "- Thresholds: TPR@FPR thresholds use discrete nonmember order statistics; "
         f"CIs are {protocol['bootstrap_repeats']} record-level bootstrap "
         "(95%).",
         "",
@@ -344,24 +371,10 @@ def main() -> None:
     output_dir = output_dir if output_dir.is_absolute() else ROOT / output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.draft_model)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    verify_shared_tokenizer(cfg.target_model, cfg.draft_model)
-
-    pool = (
-        args.pool_path
-        if args.pool_path is not None
-        else (cfg.pool_path if cfg.pool_path is not None else pool_path(cfg.benchmark))
-    )
-    if not pool.is_absolute():
-        pool = ROOT / pool
-    members, nonmembers, _auxiliary, _metadata = build_split(
-        cfg.benchmark, pool, tokenizer, cfg.n_per_class, cfg.n_aux, cfg.data_seed
-    )
-    verify_split_against_run(members, nonmembers, run_dir)
-    records = members + nonmembers
-    labels = np.array([1] * len(members) + [0] * len(nonmembers), dtype=np.int64)
+    cfg, prepared = prepare_scoring_records(run_dir, cfg, args.pool_path)
+    tokenizer = prepared.tokenizer
+    members, nonmembers = prepared.members, prepared.nonmembers
+    records, labels = prepared.records, prepared.labels
 
     logp_by_role: dict[str, list[np.ndarray]] = {}
     for role in ("target", *(role for role, _label in DRAFT_ROLES)):
