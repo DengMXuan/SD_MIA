@@ -1,29 +1,50 @@
 # Target-only MIA baselines
 
-The default below evaluates SFT checkpoints. For pretrained Pythia 6.9B with
-MIMIR, use `--pretraining-manifest` as described in
-[the pretraining guide](../pretraining/README.md).
+This package evaluates either a saved controlled-SFT target or a frozen
+pretrained Pythia/MIMIR target. For Pythia, use `--pretraining-manifest` as
+described in [the pretraining guide](../pretraining/README.md).
 
-This package evaluates the controlled SFT run with the saved, fine-tuned
-target model only. It never loads a draft checkpoint, a reference model, or a
-separately scored pre-SFT target. For a LoRA run, Transformers/PEFT must
-instantiate the adapter's base weights to reconstruct the fine-tuned target;
-the base is not scored as a second model and is not used as a reference.
+For controlled SFT, the runner evaluates the saved fine-tuned target only. It
+never loads a draft checkpoint, a reference model, or a separately scored
+pre-SFT target. For a LoRA run, Transformers/PEFT must instantiate the
+adapter's base weights to reconstruct the fine-tuned target; the base is not
+scored as a second model and is not used as a reference. In pretraining mode,
+the manifest's pretrained target is intentionally the model being evaluated;
+the Pythia draft is still not loaded by this baseline runner.
 
-## Run
+## Run one condition
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 UV_CACHE_DIR=/tmp/sd-mia-uv-cache \
-  uv run --no-sync python -m experiments.baseline.run \
+CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.baseline.run \
   --run-dir experiments/results/sft_runs/newstection_qwen3_8b_epoch1 \
-  --gpu 0 \
-  --methods all \
-  --output-dir experiments/results/baseline/newstection_epoch1
+  --gpu 0 --methods all \
+  --output-dir experiments/results/baseline/newstection_qwen3_8b_epoch1
 ```
 
+`CUDA_VISIBLE_DEVICES=1` is only an example: it maps physical GPU 1 to logical
+`cuda:0` for this process. Use a free GPU and keep `--gpu 0` after pinning it.
 Use a comma-separated subset such as `--methods loss,min_k_prob,min_k_pp`
-when generation-based methods are not needed. The output contains
-`baseline_metrics.json`, `baseline_scores.npz`, and `BASELINE_RESULTS.md`.
+when generation-based methods are not needed. The default runner uses eager
+attention, generation batch size 8, one untimed warmup record per method and
+seed `20260824`; all of these are recorded in the protocol. To select SDPA
+explicitly, add `--attn-implementation sdpa` after validating it for the target
+checkpoint.
+
+For controlled SFT, the complete matrix is:
+
+```text
+experiments/results/baseline/
+├── wikitection_qwen3_8b_epoch1/
+├── wikitection_qwen3_8b_epoch3/
+├── newstection_qwen3_8b_epoch1/
+├── newstection_qwen3_8b_epoch3/
+├── arxivtection_qwen3_8b_epoch1/
+└── arxivtection_qwen3_8b_epoch3/
+```
+
+Each condition is 2,000 members + 2,000 nonmembers, with 2,000 disjoint
+auxiliary records. Run one process per free GPU; do not reuse an output
+directory that already contains a completed report.
 
 ## Implemented methods
 
@@ -111,6 +132,19 @@ launch from Bash with `set -o pipefail` and `2>&1 | tee /path/to/unique-run.log`
 Stage ETA is operational monitoring. The method-level cost table below is the
 measurement to use for comparisons.
 
+While a run is active, inspect the newest execution directory:
+
+```bash
+RUN=experiments/results/baseline/newstection_qwen3_8b_epoch1
+cat "$RUN"/executions/*/status.json
+tail -f experiments/results/baseline/logs/newstection_qwen3_8b_epoch1.log
+```
+
+The status file is operational only: a long model call can exceed the
+configured progress interval. Python exceptions write `failed` plus a
+traceback; SIGKILL, host failure and kernel OOM must be checked through the
+process/system logs.
+
 ## Cost and efficiency (recorded automatically)
 
 Each run records exactly three headline metrics, also shown in
@@ -159,9 +193,29 @@ and the execution directory's cost JSON/Markdown refresh after each method.
 `export_completed` restores costs together with scores after a later failure.
 Old archives lacking measurements do not receive invented zero-cost values.
 
+## Matrix aggregation and SaMIA shards
+
+`aggregate_report.py` validates a complete six-condition matrix and writes a
+cross-condition Markdown/JSON report. Its current contract expects the
+historical parallel layout `<benchmark>_epoch{1,3}_parallel/`, with complete
+`baseline_metrics.json` and `baseline_scores.npz` containing all 11 methods:
+
+```bash
+./.venv/bin/python -m experiments.baseline.aggregate_report \
+  --results-root experiments/results/baseline \
+  --report experiments/results/baseline/QWEN3_BASELINE_RESULTS.md \
+  --json experiments/results/baseline/qwen3_baseline_report.json
+```
+
+The ordinary single-process layout above intentionally omits the `_parallel`
+suffix. Do not point this validator at a partially completed condition; use
+the per-condition reports until all six inputs satisfy its contract.
+`merge_samia.py` is a separate utility for contiguous `part*` SaMIA shards;
+it requires complete ranges 0..4000 and validates the 2,000/2,000 labels.
+
 ## Pretraining experiments and historical Wiki preparation
 
-The cost definitions and future Pythia 6.9B / MIMIR protocol are documented in
+The cost definitions and Pythia 6.9B / MIMIR protocol are documented in
 `research/预训练成员评估与成本指标设计_2026-09-10.md`. The runner accepts a frozen MIMIR `--pretraining-manifest` as an alternative
 to `--run-dir`; see `../pretraining/README.md` for the Pythia target/draft workflow.
 MIMIR labels are preserved and no SFT template or EOS is inserted.

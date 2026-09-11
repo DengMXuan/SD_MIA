@@ -1,12 +1,18 @@
 # Experiments
 
-Pretrained Pythia 6.9B / 1.4B with MIMIR is supported by
-[the pretraining workflow](pretraining/README.md), including all baselines and M1.
-The controlled-SFT workflow below remains separate.
+This directory contains two independent membership-audit tracks: controlled
+post-cutoff instruction-SFT experiments with Qwen3 targets, and pretrained
+Pythia 6.9B / 1.4B evaluation using frozen MIMIR labels. It also contains the
+target-only baseline suite and the offline SD p/q, PQ-gap, directional and M1
+analyses. Generated pools, checkpoints, caches and reports live under
+`experiments/data/` and `experiments/results/`; both are intentionally ignored
+by Git.
 
-Controlled post-cutoff instruction-SFT experiments: dataset collection,
-processing, model download/loading, fine-tuning, and post-training quality
-checks. Experiment code is separated from generated artifacts:
+All commands below run from the repository root. When
+`CUDA_VISIBLE_DEVICES=<n>` is set, that physical GPU becomes logical `cuda:0`
+inside the process, so use `--gpu 0` in the command.
+
+The controlled-SFT source layout is:
 
 ```text
 experiments/
@@ -25,28 +31,44 @@ experiments/
 │       ├── common.py            # pair registry, CLI scaffolding, run-config writer
 │       └── heads.py             # drafter-head loading for EAGLE-3 / MTP
 ├── baseline/
-│   ├── run.py                    # target-only MIA baseline runner
-│   ├── methods.py                # pure score/statistic implementations
-│   └── README.md                 # methods, provenance, and usage
+│   ├── run.py                    # target-only 11-method MIA runner
+│   ├── methods.py                # score/statistic implementations
+│   ├── costs.py, runtime.py      # cost accounting and durable progress
+│   ├── export_completed.py       # recovery without model inference
+│   ├── aggregate_report.py       # completed parallel-matrix report
+│   └── README.md                 # methods, provenance, recovery and costs
+├── pretraining/
+│   ├── prepare.py                # freeze MIMIR records and manifest
+│   ├── extract.py                # Pythia p/q and M1 Q/H caches
+│   ├── evaluate_baselines.py     # baseline metrics on M1 partitions
+│   └── README.md                 # Pythia/MIMIR workflow
 ├── data/pools/                  # frozen pools (pool.jsonl + SHA-256 manifest each)
 └── results/
     ├── sft_runs/                # plain-draft run directories
     └── protocol_ft/             # EAGLE-3 / MTP run directories (historical root name)
 ```
 
+The main controlled-SFT matrix is three pools × target epochs 1 and 3:
+
+| Benchmark | Response token band | Target output |
+|---|---:|---|
+| WikiTection | 128–512 | `results/sft_runs/wikitection_qwen3_8b_epoch{1,3}` |
+| NewsTection | 128–512 | `results/sft_runs/newstection_qwen3_8b_epoch{1,3}` |
+| ArXivTection | 1024–2048 | `results/sft_runs/arxivtection_qwen3_8b_epoch{1,3}` |
+
+The standard split has 2,000 members, 2,000 nonmembers and 2,000 auxiliary
+records per condition. The target-only baseline matrix evaluates those six
+saved Qwen3-8B targets with 11 methods; its commands and output contract are
+documented in [`baseline/README.md`](baseline/README.md).
+
 Membership is defined by the controlled data construction: member,
 nonmember, and auxiliary records are drawn from the same frozen
 post-cutoff pool by shuffled, hash-deduplicated assignment. The
-membership-scoring and attack-method code that used to live in this
-package has been removed; the target-only baseline suite now lives in
-[`baseline/README.md`](baseline/README.md). It loads only the saved
+target-only baseline suite lives in [`baseline/README.md`](baseline/README.md).
+It loads only the saved
 fine-tuned target (with adapter base weights when reconstruction is
 necessary), never scores an unfine-tuned target or draft model, and reports
 all scalar scores in a common member-positive direction.
-
-All commands below are run from the repository root. Prefix with
-`CUDA_VISIBLE_DEVICES=<n>` to pin a physical GPU (its logical index is
-then `cuda:0`, selected via `--gpu 0`).
 
 ## 1. Collect and freeze the benchmark pools
 
@@ -199,6 +221,71 @@ quality. Results are written to `GENERALIZATION.md` /
 `generalization.json` inside the run directory. `generalization.py` also
 provides the model loaders (`load_run_config`, `load_finetuned_model`,
 `load_draft_model`) reused by all three draft approaches.
+
+## 4. Target-only baseline matrix
+
+The baseline runner scores only the saved fine-tuned target for each condition;
+it does not load a draft, reference model or separately scored pre-SFT target.
+The six standard output directories are:
+
+```text
+experiments/results/baseline/
+├── wikitection_qwen3_8b_epoch1/
+├── wikitection_qwen3_8b_epoch3/
+├── newstection_qwen3_8b_epoch1/
+├── newstection_qwen3_8b_epoch3/
+├── arxivtection_qwen3_8b_epoch1/
+└── arxivtection_qwen3_8b_epoch3/
+```
+
+Run one process per free GPU, using `--gpu 0` after pinning the physical GPU:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.baseline.run \
+  --run-dir experiments/results/sft_runs/wikitection_qwen3_8b_epoch1 \
+  --gpu 0 --methods all \
+  --output-dir experiments/results/baseline/wikitection_qwen3_8b_epoch1
+```
+
+`--methods all` runs Loss, Min-K% Prob, Min-K%++, ReCaLL, ICP-MIA, PETAL,
+SEAD, WS, RS, BT and SaMIA. Each method is timed independently while one
+target model remains resident. A completed condition contains
+`baseline_metrics.json`, `baseline_scores.npz`, `BASELINE_RESULTS.md`,
+`baseline_costs.json` and `BASELINE_COSTS.md`; the execution directory also
+keeps per-method recovery artifacts and `status.json`/`progress.jsonl`.
+See [`baseline/README.md`](baseline/README.md) for score definitions,
+monitoring, recovery and matrix aggregation.
+
+## 5. SD p/q and M1 analyses
+
+The SD analysis is separate from target-only baselines. It compares the saved
+target distribution `p` with the saved draft distribution `q` under the fixed
+SFT prompt and response-token contract. `score_role.py` scores one role per
+process, `merge_role_logs.py` verifies record/checkpoint provenance and builds
+`pq_gap_token_logps.npz`, and `pq_gap_mia.py` computes gap and acceptance
+scores. `directional_mia.py` then computes signed, negative-part and fixed
+window scores offline; `aggregate_directional.py` combines the six conditions.
+
+For M1, `m1_extract.py` verifies a fresh draft `q` pass against the cached
+probabilities before releasing Q/H features. Qwen3-1.7B uses decoder blocks
+7/14/21/28 (one-based); Pythia uses 6/12/18/24. `m1_fit.py` performs the
+conditional fit and detector selection on the frozen partitions, while
+`m1_evaluate.py` aggregates reports and can run the CPU-only B0/B1/B2
+probability baselines. These analyses write under
+`experiments/results/sft_runs/` and never change the SFT checkpoints.
+
+For the exact role-scoring and merge commands, see the examples in the module
+docstrings and the generated `RESULTS.md` files under the corresponding
+result root.
+
+## 6. Pretraining/MIMIR track
+
+The Pythia workflow is independent of controlled SFT: MIMIR train/test labels
+are externally supplied, the token contract is raw completion without an
+instruction template or appended EOS, and the Pythia draft is not an
+auxiliary-distilled draft. Follow [`pretraining/README.md`](pretraining/README.md)
+for freezing the manifest, running all baselines, extracting p/q/Q/H and
+evaluating M1 on the same calibration/test records.
 
 ## Tests
 
