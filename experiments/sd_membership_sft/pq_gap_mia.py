@@ -221,6 +221,7 @@ def record_logprobabilities(
     device: torch.device,
     batch_size: int,
     empty_cache_each_batch: bool = False,
+    progress: Any = None,
 ) -> list[np.ndarray]:
     """Per-record log-probability arrays over response tokens (+ EOS)."""
     model.eval()
@@ -229,7 +230,10 @@ def record_logprobabilities(
         range(len(examples)), key=lambda index: len(examples[index]["input_ids"])
     )
     outputs: list[np.ndarray | None] = [None] * len(examples)
-    for start in range(0, len(order), batch_size):
+    starts = list(range(0, len(order), batch_size))
+    if progress is not None:
+        starts = progress.track(starts, "token probability scoring", unit="batches")
+    for start in starts:
         indices = order[start : start + batch_size]
         rows = [examples[index] for index in indices]
         batch = {

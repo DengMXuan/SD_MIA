@@ -5,6 +5,7 @@ import torch
 from experiments.baseline.methods import (
     geometric_windows,
     icp_score,
+    mean_log_likelihood,
     min_k_plus_plus_score,
     min_k_prob_score,
     petal_score,
@@ -39,6 +40,41 @@ def test_min_k_scores_are_member_positive():
     nonmember_min_k_pp_scores = [nonmember_min_k_pp, -4.75]
     assert rank_auc(member_min_k_scores, nonmember_min_k_scores) == pytest.approx(1.0)
     assert rank_auc(member_min_k_pp_scores, nonmember_min_k_pp_scores) == pytest.approx(1.0)
+
+
+def test_probability_style_baselines_keep_member_positive_pair_order():
+    member_logp = np.asarray([-0.15, -0.20, -0.30, -0.40])
+    nonmember_logp = np.asarray([-3.0, -3.5, -4.0, -5.0])
+
+    member_scores = {
+        "loss": mean_log_likelihood(member_logp),
+        "min_k_prob": min_k_prob_score(member_logp, 50),
+        "min_k_pp": min_k_plus_plus_score(
+            member_logp, np.zeros(4), np.ones(4), 50
+        ),
+        "petal": petal_score(
+            member_logp, member_logp, slope=1.0, intercept=0.0
+        )[0],
+    }
+    nonmember_scores = {
+        "loss": mean_log_likelihood(nonmember_logp),
+        "min_k_prob": min_k_prob_score(nonmember_logp, 50),
+        "min_k_pp": min_k_plus_plus_score(
+            nonmember_logp, np.zeros(4), np.ones(4), 50
+        ),
+        "petal": petal_score(
+            nonmember_logp, nonmember_logp, slope=1.0, intercept=0.0
+        )[0],
+    }
+
+    assert set(member_scores) == set(nonmember_scores)
+    assert all(
+        member_scores[name] > nonmember_scores[name] for name in member_scores
+    )
+    assert all(
+        rank_auc([member_scores[name]], [nonmember_scores[name]]) == pytest.approx(1.0)
+        for name in member_scores
+    )
 
 
 def test_relative_scores_follow_paper_orientation():

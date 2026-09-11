@@ -21,6 +21,7 @@ class SFTRecord:
     source_char_count: int = 0
     source_timestamp: str = ""
     source_revision: int = 0
+    append_eos: bool = True
 
     @property
     def prompt(self) -> str:
@@ -72,7 +73,7 @@ def make_sft_example(record: SFTRecord, tokenizer: Any) -> dict[str, list[int]]:
     prefix_ids = prompt_prefix_ids(record, tokenizer)
 
     response_ids = list(record.response_ids)
-    if tokenizer.eos_token_id is not None:
+    if record.append_eos and tokenizer.eos_token_id is not None:
         response_ids.append(int(tokenizer.eos_token_id))
     input_ids = list(prefix_ids) + response_ids
     labels = [-100] * len(prefix_ids) + response_ids

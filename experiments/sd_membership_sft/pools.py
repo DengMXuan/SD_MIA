@@ -27,6 +27,7 @@ import json
 import random
 import re
 import threading
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -57,6 +58,24 @@ POOL_PROVENANCE = (
 )
 
 
+# Wiki API pacing is process-wide, including retries from all worker threads.
+_WIKI_LOCK = threading.Lock()
+_WIKI_NEXT_REQUEST = 0.0
+_WIKI_INTERVAL = 7.5  # 8/min: below the unidentified-client quota of 10/min.
+_WIKI_CACHE: Path | None = None
+
+
+def _pace_wiki() -> None:
+    global _WIKI_NEXT_REQUEST
+    while True:
+        with _WIKI_LOCK:
+            delay = _WIKI_NEXT_REQUEST - time.monotonic()
+            if delay <= 0:
+                _WIKI_NEXT_REQUEST = time.monotonic() + _WIKI_INTERVAL
+                return
+        time.sleep(min(delay, 1.0))
+
+
 def _request(
     url: str,
     headers: dict[str, str] | None = None,
@@ -66,6 +85,8 @@ def _request(
 ) -> Any:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
     for attempt in range(attempts):
+        if url.startswith(WIKI_API):
+            _pace_wiki()
         try:
             return urllib.request.urlopen(request, timeout=timeout)
         except HTTPError as error:
@@ -73,6 +94,12 @@ def _request(
                 raise
             retry_after = error.headers.get("Retry-After")
             delay = float(retry_after) if retry_after else min(120.0, sleep * 2**attempt)
+            if url.startswith(WIKI_API) and error.code in (429, 503):
+                global _WIKI_NEXT_REQUEST
+                delay = max(5.0, delay)
+                with _WIKI_LOCK:
+                    _WIKI_NEXT_REQUEST = max(_WIKI_NEXT_REQUEST, time.monotonic() + delay)
+                print(f"wiki_api_retry status={error.code} wait_seconds={delay} attempt={attempt + 1}", flush=True)
             time.sleep(delay)
         except Exception:
             if attempt + 1 == attempts:
@@ -82,8 +109,20 @@ def _request(
 
 
 def _request_json(url: str, **kwargs: Any) -> dict[str, Any]:
+    cached = None
+    if url.startswith(WIKI_API) and _WIKI_CACHE is not None:
+        cached = _WIKI_CACHE / f"{_sha256_hex(url.encode())}.json"
+        if cached.exists():
+            return json.loads(cached.read_text(encoding="utf-8"))
     with _request(url, **kwargs) as response:
-        return json.load(response)
+        payload = json.load(response)
+    if url.startswith(WIKI_API) and "error" in payload:
+        raise RuntimeError(f"Wikipedia API error: {payload['error']}")
+    if cached is not None:
+        temporary = cached.with_suffix(f".{threading.get_ident()}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(cached)
+    return payload
 
 
 class ArticleTextExtractor(HTMLParser):
@@ -311,13 +350,13 @@ def _wiki_creation_events(start: str, end: str) -> Iterable[dict[str, Any]]:
         time.sleep(0.5)
 
 
-def _fetch_wiki_fulltext(page_id: int) -> str | None:
+def _fetch_wiki_fulltext(page_id: int, revision_id: int | None = None) -> str | None:
     """Rendered full text via action=parse; TextExtracts caps exchars at 1200."""
     payload = _request_json(
         f"{WIKI_API}?{urllib.parse.urlencode({
             'format': 'json', 'formatversion': 2,
             'action': 'parse',
-            'pageid': page_id,
+            **({'oldid': revision_id} if revision_id is not None else {'pageid': page_id}),
             'prop': 'text',
             'redirects': 0,
         })}",
@@ -336,8 +375,28 @@ def _wiki_page_record(
     creation: dict[str, Any],
     min_chars: int,
     max_chars: int,
+    snapshot_at: str | None = None,
 ) -> dict[str, Any] | None:
-    text = _fetch_wiki_fulltext(int(page["pageid"]))
+    page = dict(page)
+    revision_id = None
+    if snapshot_at is not None:
+        payload = _request_json(f"{WIKI_API}?{urllib.parse.urlencode({
+            'format': 'json', 'formatversion': 2, 'action': 'query',
+            'pageids': page['pageid'], 'prop': 'revisions',
+            'rvstart': snapshot_at, 'rvdir': 'older', 'rvlimit': 1,
+            'rvprop': 'ids|timestamp|size',
+        })}", sleep=0.6)
+        pages = payload.get('query', {}).get('pages', [])
+        revisions = pages[0].get('revisions', []) if pages else []
+        if not revisions:
+            return None
+        revision = revisions[0]
+        if revision['timestamp'] > snapshot_at or int(revision.get('size', 0)) < 1200:
+            return None
+        revision_id = int(revision['revid'])
+        page['lastrevid'] = revision_id
+        page['touched'] = revision['timestamp']
+    text = _fetch_wiki_fulltext(int(page["pageid"]), revision_id)
     time.sleep(0.25)
     if text is None or not _usable_text(text, min_chars, max_chars):
         return None
@@ -347,6 +406,7 @@ def _wiki_page_record(
         "source": "en.wikipedia.org",
         "title": page["title"],
         "creation_timestamp": creation["timestamp"],
+        "page_id": int(page["pageid"]),
         "snapshot_revision": int(page.get("lastrevid", 0)),
         "snapshot_timestamp": page.get("touched", ""),
         "canonical_url": page.get("fullurl", ""),
@@ -356,15 +416,73 @@ def _wiki_page_record(
     }
 
 
+def _select_wiki_records(records, tokenizer, count, seed):
+    """Reuse the SFT tokenizer gates without assigning random audit labels."""
+    from .data import _hash_ids
+    from .splits import build_split
+    if len(records) < count:
+        return None
+    with tempfile.TemporaryDirectory(prefix="wiki-token-selection-") as directory:
+        path = Path(directory) / "pool.jsonl"
+        payload = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records)
+        path.write_text(payload, encoding="utf-8")
+        path.with_suffix('.manifest.json').write_text(json.dumps({
+            'benchmark': 'wikitection', 'jsonl_sha256': _sha256_hex(payload.encode()),
+        }), encoding="utf-8")
+        try:
+            _, _, selected, _ = build_split('wikitection', path, tokenizer, 0, count, seed)
+        except RuntimeError as error:
+            if "documents survive" not in str(error):
+                raise
+            print(f"token_selection: {error}; collecting more", flush=True)
+            return None
+    by_hash = {}
+    for row in records:
+        ids = tokenizer(row['text'], add_special_tokens=False, truncation=True, max_length=512).input_ids
+        by_hash.setdefault(_hash_ids(list(ids)), row)
+    chosen = [by_hash[record.response_hash] for record in selected]
+    # Freeze an order whose next seeded build_split reproduces this exact
+    # accepted order, including the order-sensitive template-overlap gate.
+    permutation = list(range(count))
+    random.Random(seed).shuffle(permutation)
+    frozen = [None] * count
+    for index, original_index in enumerate(permutation):
+        frozen[original_index] = chosen[index]
+    return frozen
+
+
 def build_wikitection(args: argparse.Namespace) -> None:
+    global _WIKI_CACHE, _WIKI_INTERVAL, USER_AGENT
+    _WIKI_INTERVAL = getattr(args, "request_interval", 7.5)
+    if _WIKI_INTERVAL <= 0:
+        raise ValueError("request interval must be positive")
+    contact = getattr(args, "contact", None)
+    if contact:
+        USER_AGENT = f"SD-MIA-research/0.1 ({contact})"
+    elif _WIKI_INTERVAL < 6.0:
+        raise ValueError("without a real --contact use at least 6 seconds between requests")
+    snapshot_at = getattr(args, "snapshot_at", None)
+    output_path = getattr(args, "output_path", None) or DATA_ROOT / "wikitection" / "pool.jsonl"
+    if snapshot_at and output_path.resolve() == (DATA_ROOT / "wikitection" / "pool.jsonl").resolve():
+        raise ValueError("historical Wiki pool requires a separate --output-path")
+    _WIKI_CACHE = getattr(args, "cache_dir", None) or output_path.parent / "api_cache"
+    _WIKI_CACHE.mkdir(parents=True, exist_ok=True)
+    print(f"wiki_api interval_seconds={_WIKI_INTERVAL} cache={_WIKI_CACHE}", flush=True)
     events: list[dict[str, Any]] = []
     for event in _wiki_creation_events(args.window_start, args.window_end):
         events.append(event)
+        if len(events) % 500 == 0:
+            print(f"creation_events={len(events)}/{args.candidate_limit}", flush=True)
         if len(events) >= args.candidate_limit:
             break
     print(f"creation events: {len(events)}", flush=True)
 
+    selection_tokenizer = None
+    if getattr(args, "selection_tokenizer", None):
+        from transformers import AutoTokenizer
+        selection_tokenizer = AutoTokenizer.from_pretrained(args.selection_tokenizer, local_files_only=True)
     records: list[dict[str, Any]] = []
+    selected_records = None
     seen_text: set[str] = set()
     dup_index = NearDuplicateIndex()
     event_by_page = {int(event["pageid"]): event for event in events if event.get("pageid")}
@@ -379,7 +497,7 @@ def build_wikitection(args: argparse.Namespace) -> None:
     info_chunks = [
         page_ids[start : start + 50] for start in range(0, len(page_ids), 50)
     ]
-    info_workers = max(1, min(args.parallel, 16))
+    info_workers = max(1, min(args.parallel, 3))
     scanned = 0
 
     def _prefilter(chunk: list[int]) -> int:
@@ -408,8 +526,9 @@ def build_wikitection(args: argparse.Namespace) -> None:
     with ThreadPoolExecutor(max_workers=info_workers) as executor:
         futures = [executor.submit(_prefilter, chunk) for chunk in info_chunks]
         for index, future in enumerate(as_completed(futures), start=1):
+            future.result()
             scanned += len(info_chunks[index - 1]) if index - 1 < len(info_chunks) else 0
-            if index % 200 == 0 or index == len(futures):
+            if index % 10 == 0 or index == len(futures):
                 print(
                     f"prefiltered_chunks={index}/{len(futures)} survivors={len(survivors)}",
                     flush=True,
@@ -419,11 +538,14 @@ def build_wikitection(args: argparse.Namespace) -> None:
     # Phase 2: full-text renders across a large worker pool, submitted in
     # chunks so the queue stays bounded and we can stop as soon as the target
     # record count is reached.
-    workers = max(1, args.parallel)
+    workers = max(1, min(args.parallel, 3))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for chunk_start in range(0, len(survivors), workers * 4):
             if len(records) >= args.records:
-                break
+                selected_records = (records[:args.records] if selection_tokenizer is None else
+                                    _select_wiki_records(records, selection_tokenizer, args.records, args.seed))
+                if selected_records is not None:
+                    break
             chunk = survivors[chunk_start : chunk_start + workers * 4]
             futures = [
                 executor.submit(
@@ -432,6 +554,7 @@ def build_wikitection(args: argparse.Namespace) -> None:
                     event_by_page[int(page["pageid"])],
                     args.min_chars,
                     args.max_chars,
+                    snapshot_at,
                 )
                 for page in chunk
             ]
@@ -449,6 +572,12 @@ def build_wikitection(args: argparse.Namespace) -> None:
                 f"tried={min(chunk_start + len(chunk), len(survivors))} usable={len(records)}",
                 flush=True,
             )
+    if selected_records is None and selection_tokenizer is not None:
+        selected_records = _select_wiki_records(records, selection_tokenizer, args.records, args.seed)
+        if selected_records is None:
+            raise RuntimeError("Not enough token-filtered Wiki records; increase candidate limit and reuse API cache")
+    if selected_records is not None:
+        records = selected_records
     for record in records:
         del record["_text_digest"]
     if len(records) < args.records:
@@ -457,7 +586,7 @@ def build_wikitection(args: argparse.Namespace) -> None:
         )
     records = records[: args.records]
     _write_pool(
-        DATA_ROOT / "wikitection" / "pool.jsonl",
+        output_path,
         records,
         {
             "benchmark": "wikitection",
@@ -466,7 +595,18 @@ def build_wikitection(args: argparse.Namespace) -> None:
             "creation_interval_inclusive": {"start": args.window_start, "end": args.window_end},
             "timestamp_semantics": "page first-creation time (MediaWiki create log)",
             "license": "CC BY-SA 4.0; per-page attribution URLs in JSONL",
-            "provenance": POOL_PROVENANCE,
+            "provenance": (
+                "Historical Wikipedia temporal membership proxy; pre-cutoff date does not verify training inclusion"
+                if snapshot_at else POOL_PROVENANCE
+            ),
+            "snapshot_at": snapshot_at,
+            "selection_tokenizer": getattr(args, "selection_tokenizer", None),
+            "label_semantics": "presumed_member_temporal_proxy" if snapshot_at else "post_cutoff_pool",
+            "historical_render_caveat": (
+                "Pinned main-page revision; MediaWiki may expand current transcluded templates. "
+                "Page availability, redirect and disambiguation prefilter use current metadata."
+                if snapshot_at else None
+            ),
             "selection": {
                 "creation_events_considered": len(events),
                 "minimum_clean_characters": args.min_chars,
@@ -902,9 +1042,15 @@ def parse_args() -> argparse.Namespace:
     wiki = subparsers.add_parser(
         "wiki", parents=[common], help="freeze the WikiTection pool"
     )
+    wiki.add_argument("--output-path", type=Path, help="separate destination for an alternative Wiki pool")
+    wiki.add_argument("--snapshot-at", help="latest allowed historical revision, ISO UTC timestamp")
     wiki.add_argument("--records", type=int, default=6600)
     wiki.add_argument("--candidate-limit", type=int, default=200_000)
-    wiki.add_argument("--parallel", type=int, default=48)
+    wiki.add_argument("--parallel", type=int, default=3, help="Wiki API concurrency is capped at 3")
+    wiki.add_argument("--request-interval", type=float, default=7.5, help="global minimum seconds between requests")
+    wiki.add_argument("--selection-tokenizer", help="locally cached tokenizer; collect until records pass existing 128–512 token gates")
+    wiki.add_argument("--contact", help="real public project contact URL or email for User-Agent")
+    wiki.add_argument("--cache-dir", type=Path, help="persistent successful API response cache")
     wiki.set_defaults(handler=build_wikitection)
 
     news = subparsers.add_parser(

@@ -55,3 +55,19 @@ base, auxiliary-distilled, or member-SFT draft.
 An evaluation that ranks member records above matched nonmember records using a
 specified combination of draft white-box features and protocol feedback.
 _Avoid_: privacy proof, production attack rate
+
+## Pretraining membership audits
+
+**Pretraining member / nonmember**: labels supplied by the MIMIR benchmark
+(Pile train / held-out test provenance), not the controlled-SFT random assignment.
+The prepared manifest freezes these labels, source hashes and token positions.
+A benchmark membership label does not additionally prove per-token exposure in
+every intermediate Pythia checkpoint.
+
+**Pretrained draft**: the unadapted Pythia 1.4B checkpoint paired with Pythia 6.9B.
+Both were trained on The Pile; this role (`draft_pretrained`) must not be described
+as member-blind auxiliary distillation or as member-SFT adaptation.
+
+**Raw completion audit**: the first real text token supplies context; subsequent
+text tokens are scored, with no synthetic SFT instruction or appended EOS. This
+is a separate protocol from the instruction-SFT response masking above.

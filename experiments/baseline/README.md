@@ -1,5 +1,9 @@
 # Target-only MIA baselines
 
+The default below evaluates SFT checkpoints. For pretrained Pythia 6.9B with
+MIMIR, use `--pretraining-manifest` as described in
+[the pretraining guide](../pretraining/README.md).
+
 This package evaluates the controlled SFT run with the saved, fine-tuned
 target model only. It never loads a draft checkpoint, a reference model, or a
 separately scored pre-SFT target. For a LoRA run, Transformers/PEFT must
@@ -75,3 +79,112 @@ artifacts:
 
 The exact repository status, formulas, and unavailable official-code cases
 are recorded in the companion research note under `research/`.
+
+## Progress and completed-method recovery
+
+New runs print timestamped stage progress (record/batch counts, rate and stage
+ETA), with `--progress-interval 30` controlling updates **between** records or
+batches. A long model call can exceed this interval. The same events are flushed
+to `OUTPUT/executions/<UTC-time>-<unique-id>/progress.jsonl`; `status.json` holds
+the latest event. Python exceptions and interrupts include their traceback and
+completed-method list. SIGKILL, host failure and kernel OOM cannot execute a
+Python exception handler; an unfinished status then requires checking the process
+and system logs. This does not retrofit already-running Python processes.
+
+Each method is saved immediately after its final score as an atomic `<method>.npz`
+in that execution directory, containing labels, ordered record IDs, scores and
+`protocol_json` and `cost_json`. Methods execute independently and each is saved
+as soon as scoring and cost measurement finish. In-progress methods are not checkpointed,
+and this is not automatic resume. Normal completion also retains the original
+combined `baseline_metrics.json`, `baseline_scores.npz` and report output.
+
+Recover completed methods after a later failure, without loading a model:
+
+```bash
+./.venv/bin/python -m experiments.baseline.export_completed \
+  --execution-dir experiments/results/baseline/YOUR_RUN/executions/EXECUTION_ID \
+  --output-dir experiments/results/baseline/YOUR_RUN/recovered
+```
+
+Use a fresh recovery directory. To capture library warnings and all stderr too,
+launch from Bash with `set -o pipefail` and `2>&1 | tee /path/to/unique-run.log`.
+Stage ETA is operational monitoring. The method-level cost table below is the
+measurement to use for comparisons.
+
+## Cost and efficiency (recorded automatically)
+
+Each run records exactly three headline metrics, also shown in
+`BASELINE_RESULTS.md` and `BASELINE_COSTS.md`:
+
+| Metric | Definition |
+|---|---|
+| `amortized_ms_per_record` | Method preparation/calibration + scoring + postprocessing time, divided by **all** audited member and nonmember records. CUDA is synchronized at both timing boundaries. |
+| `target_sequences_per_record` | Teacher-forced sequences plus generated sequences (expanded over batches and repeated samples), divided by audit records. These are logical sequence queries, not API requests or autoregressive decoder steps. |
+| `tokens_per_record` | Nonpadding input tokens plus actual generated tokens, divided by audit records. Input prompts count once per returned generation sequence. Generation counts through the first EOS inclusive, excluding padding afterwards; even tokens later trimmed for scoring still cost work. |
+
+Lower is better. Token counts are a workload proxy, not FLOPs: input/prefill and
+autoregressive generation can have different time costs. Batch-amortized time is
+not single-request latency. Raw totals and separate input/generated token counts
+are retained to make the three metrics auditable and permit weighted aggregation.
+
+For fair method comparisons, `--methods all` now loads the model **once** and
+runs each method independently, with its own scorer/cache. Shared teacher-forced
+statistics and WS/RS/BT reference generations are recomputed for each dependent
+method. Therefore costs do not become zero or change merely because another
+method was requested first. This takes more total time than the former shared
+execution. A single-method command follows the same path.
+
+One untimed teacher-forced warmup record precedes each method by default
+(`--cost-warmup-records 1`; use 0 to disable). Model/data loading and result-file
+serialization are excluded; method-specific setup/calibration and progress
+bookkeeping are included. Warmup resets the sampling seed before measurement.
+Generation-specific initialization is included in the method's amortized time.
+Compare on the same records, auxiliary pool, model, precision, hardware, batch
+size and sampling settings, with similar GPU contention. These settings and the
+device/dtype are recorded in `protocol.cost_measurement`.
+
+Examples of accounting:
+
+- Loss, Min-K and Min-K++ each need one scoring sequence per audit record.
+- ReCaLL also queries the context-conditioned record; ICP includes every selected
+  probe query, plus its index/retrieval time.
+- PETAL includes its auxiliary calibration forwards, amortized across audit N.
+- SEAD's local logits sampling is **not** counted as repeated model queries.
+- WS/RS each include their own reference generation; BT additionally includes
+  rewriting; SaMIA includes all `--samia-samples` returned sequences.
+
+`baseline_metrics.json` contains a `costs` entry; `baseline_costs.json` provides
+the same comparison separately. Each completed-method NPZ stores `cost_json`,
+and the execution directory's cost JSON/Markdown refresh after each method.
+`export_completed` restores costs together with scores after a later failure.
+Old archives lacking measurements do not receive invented zero-cost values.
+
+## Pretraining experiments and historical Wiki preparation
+
+The cost definitions and future Pythia 6.9B / MIMIR protocol are documented in
+`research/预训练成员评估与成本指标设计_2026-09-10.md`. The runner accepts a frozen MIMIR `--pretraining-manifest` as an alternative
+to `--run-dir`; see `../pretraining/README.md` for the Pythia target/draft workflow.
+MIMIR labels are preserved and no SFT template or EOS is inserted.
+
+For historical Wiki preparation (CPU/API only):
+
+```bash
+bash experiments/baseline/collect_wiki2023.sh
+```
+
+It uses a cached Qwen3-8B-Base tokenizer, the existing text and token gates,
+a separate 2023 pool and the original WikiTection epoch1 nonmember split.
+The final `experiments/data/audits/wiki_temporal_qwen3_8b/audit.jsonl` contains
+2000 historical positive proxies + 2000 preserved negative records. Creation
+and main-page revision times must be in 2023. The manifest anchors provenance,
+counts and the cross-split overlap check. Historical rendering may expand current
+templates; dates do not prove inclusion in Qwen training.
+
+The default request rate is 8/minute with concurrency <=3, honoring global
+Retry-After cooldowns. This takes hours. Successful API responses survive in
+`experiments/data/pools/wiki2023/api_cache/`; re-running reuses them. The wrapper
+writes `build.log`, `collector.pid`, and a final `exit_code` in that directory.
+Exit code 0 means collection and audit preparation both finished successfully.
+For a real publicly usable contact, pass `--contact 'YOUR_CONTACT'` and a chosen
+`--request-interval`; do not invent a contact or evade rate limits. Logs exclude
+headers and credentials. A completed audit will not be silently overwritten.

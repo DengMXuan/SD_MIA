@@ -169,6 +169,11 @@ def _validate_probability_provenance(
 ) -> None:
     """Verify the cache source chain instead of trusting IDs and lengths alone."""
 
+    if feature_manifest.get("training_regime") == "pretraining":
+        from ..pretraining.cache import validate_cache_provenance
+        validate_cache_provenance(feature_dir, probability_dir, feature_manifest, probability_manifest, role)
+        return
+
     required_feature = (
         "benchmark",
         "epoch",
@@ -588,8 +593,8 @@ def partition_manifest(
     return {
         "split_seed": split_seed,
         "nuisance_seed": nuisance_seed,
-        "split_indices_compatibility": "directional_mia.split_indices(labels, 20260824)",
-        "nuisance_rule": "train nonmembers permuted with nuisance_seed; first 400=N0, last 400=D; N0 permuted with the continued RNG, first 300=Nmu, last 100=Ns",
+        "split_indices_compatibility": "frozen record IDs; counts recorded below",
+        "nuisance_rule": "disjoint nonmember Nmu/Ns subsets of nuisance_fit; exact IDs/counts recorded below",
         "partitions": {
             name: {
                 "indices": values.tolist(),
@@ -1962,6 +1967,7 @@ def run_experiment(args: argparse.Namespace) -> dict[str, Any]:
         output_dir,
         args.partition_manifest,
     )
+    frozen_settings = json.loads(frozen_partition_path.read_text(encoding="utf-8"))
     partitions = make_partitions(
         data.labels,
         data.record_ids,
@@ -2198,6 +2204,11 @@ def run_experiment(args: argparse.Namespace) -> dict[str, Any]:
     report = {
         "protocol": {
             "fit_version": FIT_VERSION,
+            "training_regime": data.feature_manifest.get("training_regime", "controlled_sft"),
+            "models": data.feature_manifest.get("models"),
+            "token_contract": data.feature_manifest.get("token_contract"),
+            "dataset_manifest": data.feature_manifest.get("dataset_manifest"),
+            "selected_blocks_zero_based": data.feature_manifest.get("selected_blocks_zero_based"),
             "role": data.role,
             "feature_dir": str(feature_dir),
             "probability_dir": str(probability_dir),
@@ -2209,8 +2220,8 @@ def run_experiment(args: argparse.Namespace) -> dict[str, Any]:
             "activation_mode": args.activation_mode,
             "conditional_family": args.conditional_family,
             "detector_families": list(requested_families),
-            "split_seed": SPLIT_SEED,
-            "nuisance_seed": NUISANCE_SEED,
+            "split_seed": frozen_settings.get("split_seed", SPLIT_SEED),
+            "nuisance_seed": frozen_settings.get("nuisance_seed", NUISANCE_SEED),
             "detector_seeds": list(DETECTOR_SEEDS),
             "bootstrap_repeats": 0 if args.no_bootstrap else args.bootstrap_repeats,
             "fit_device": str(device),
@@ -2305,7 +2316,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--feature-dir", type=Path, required=True)
     parser.add_argument("--probability-dir", type=Path, required=True)
-    parser.add_argument("--role", required=True, choices=("draft_auxiliary_distilled", "draft_member_sft"))
+    parser.add_argument("--role", required=True, choices=("draft_auxiliary_distilled", "draft_member_sft", "draft_pretrained"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--partition-manifest",

@@ -1,5 +1,9 @@
 # Experiments
 
+Pretrained Pythia 6.9B / 1.4B with MIMIR is supported by
+[the pretraining workflow](pretraining/README.md), including all baselines and M1.
+The controlled-SFT workflow below remains separate.
+
 Controlled post-cutoff instruction-SFT experiments: dataset collection,
 processing, model download/loading, fine-tuning, and post-training quality
 checks. Experiment code is separated from generated artifacts:

@@ -33,6 +33,7 @@ from .data import SFTRecord, collate_sft, make_sft_example, prompt_prefix_ids
 from .generalization import load_draft_model, load_run_config
 from .m1_features import (
     ACTIVATION_FEATURE_NAMES,
+    ACTIVATION_STAT_NAMES,
     M1_FEATURE_NAMES,
     Q_FEATURE_NAMES,
     SELECTED_BLOCKS,
@@ -138,7 +139,7 @@ def _records_fingerprint(records: list[SFTRecord]) -> str:
 
 
 def _find_decoder_layers(model: torch.nn.Module) -> tuple[torch.nn.ModuleList, str]:
-    """Find the Qwen decoder ``ModuleList`` through PEFT or LM wrappers."""
+    """Find Qwen/GPT-NeoX decoder blocks through PEFT or LM wrappers."""
 
     expected = int(getattr(getattr(model, "config", None), "num_hidden_layers", -1))
     candidates: list[tuple[str, torch.nn.ModuleList]] = []
@@ -148,15 +149,19 @@ def _find_decoder_layers(model: torch.nn.Module) -> tuple[torch.nn.ModuleList, s
         if not module:
             continue
         first = module[0]
-        if hasattr(first, "self_attn") and hasattr(first, "input_layernorm"):
+        if (hasattr(first, "self_attn") or hasattr(first, "attention")) and hasattr(first, "input_layernorm"):
             candidates.append((name, module))
     if len(candidates) != 1:
         names = [name for name, _ in candidates]
         raise RuntimeError(
-            "Could not uniquely identify the Qwen decoder layers; "
+            "Could not uniquely identify decoder layers; "
             f"expected {expected} layers, candidates={names}"
         )
     return candidates[0][1], candidates[0][0]
+
+
+def selected_blocks_for_model(model):
+    return (5, 11, 17, 23) if getattr(model.config, "model_type", None) == "gpt_neox" else SELECTED_BLOCKS
 
 
 def _validate_checkpoint(model: torch.nn.Module) -> tuple[torch.nn.ModuleList, str]:
@@ -164,12 +169,13 @@ def _validate_checkpoint(model: torch.nn.Module) -> tuple[torch.nn.ModuleList, s
     layers, layer_path = _find_decoder_layers(model)
     actual_layers = int(getattr(config, "num_hidden_layers", -1))
     hidden_size = int(getattr(config, "hidden_size", -1))
-    if actual_layers != 28 or hidden_size != 2048:
+    expected_layers = 24 if getattr(config, "model_type", None) == "gpt_neox" else 28
+    if actual_layers != expected_layers or hidden_size != 2048:
         raise RuntimeError(
-            "M1 is registered for Qwen3-1.7B hidden states with 28 layers and "
+            "M1 supports Qwen3-1.7B (28 layers) or Pythia-1.4B (24 layers), "
             f"hidden size 2048, got layers={actual_layers}, hidden_size={hidden_size}"
         )
-    if max(SELECTED_BLOCKS) >= len(layers):
+    if max(selected_blocks_for_model(model)) >= len(layers):
         raise RuntimeError(f"Selected block exceeds checkpoint depth: {len(layers)}")
     return layers, layer_path
 
@@ -303,6 +309,8 @@ def extract_qh_features(
     h_output: np.ndarray,
     row_chunk: int = 128,
     empty_cache_each_batch: bool = False,
+    selected_blocks: tuple[int, ...] | None = None,
+    progress: Any = None,
 ) -> None:
     """Run the draft forward pass and fill flat FP32 Q/H arrays."""
 
@@ -310,7 +318,13 @@ def extract_qh_features(
         raise ValueError("batch_size must be positive")
     model.eval()
     order = sorted(range(len(examples)), key=lambda i: len(examples[i]["input_ids"]))
-    layers, _ = _validate_checkpoint(model)
+    if selected_blocks is None:
+        layers, _ = _validate_checkpoint(model)
+        selected_blocks = selected_blocks_for_model(model)
+    else:
+        layers, _ = _find_decoder_layers(model)
+    if len(selected_blocks) != 4 or len(set(selected_blocks)) != 4 or min(selected_blocks) < 0 or max(selected_blocks) >= len(layers):
+        raise ValueError("M1 requires four distinct in-range decoder blocks")
     handles: list[Any] = []
     capture: dict[int, torch.Tensor] = {}
     valid_mask: torch.Tensor | None = None
@@ -331,9 +345,12 @@ def extract_qh_features(
         return hook
 
     try:
-        for block in SELECTED_BLOCKS:
+        for block in selected_blocks:
             handles.append(layers[block].register_forward_hook(make_hook(block)))
-        for start in range(0, len(order), batch_size):
+        starts = list(range(0, len(order), batch_size))
+        if progress is not None:
+            starts = progress.track(starts, "draft Q/H extraction", unit="batches")
+        for start in starts:
             indices = order[start : start + batch_size]
             rows = [examples[index] for index in indices]
             batch = {
@@ -348,9 +365,9 @@ def extract_qh_features(
                 use_cache=False,
             )
             logits = outputs.logits[:, :-1]
-            if len(capture) != len(SELECTED_BLOCKS):
+            if len(capture) != len(selected_blocks):
                 raise RuntimeError(
-                    f"Expected {len(SELECTED_BLOCKS)} activation hooks, got {len(capture)}"
+                    f"Expected {len(selected_blocks)} activation hooks, got {len(capture)}"
                 )
             flat_ids = batch["labels"][:, 1:][valid_mask]
             relative_parts: list[torch.Tensor] = []
@@ -377,7 +394,7 @@ def extract_qh_features(
                 log_length,
                 row_chunk=row_chunk,
             ).cpu().numpy()
-            h_features = torch.cat([capture[block] for block in SELECTED_BLOCKS], dim=-1).numpy()
+            h_features = torch.cat([capture[block] for block in selected_blocks], dim=-1).numpy()
             cursor = 0
             for index in indices:
                 count = int(lengths[index])
@@ -485,6 +502,8 @@ def main() -> None:
         attn_implementation=args.attn_implementation,
     )
     layers, layer_path = _validate_checkpoint(model)
+    selected_blocks = selected_blocks_for_model(model)
+    activation_names = tuple(f"block{block + 1}_{stat}" for block in selected_blocks for stat in ACTIVATION_STAT_NAMES)
     model_config = getattr(model, "config", None)
     model_num_layers = int(getattr(model_config, "num_hidden_layers", len(layers)))
     model_hidden_size = int(getattr(model_config, "hidden_size", 2048))
@@ -686,12 +705,12 @@ def main() -> None:
         "prediction_position_definition": "input token position j predicts with decoder output at j-1",
         "feature_names": {
             "q": list(Q_FEATURE_NAMES),
-            "h": list(ACTIVATION_FEATURE_NAMES),
-            "combined": list(M1_FEATURE_NAMES),
+            "h": list(activation_names),
+            "combined": list(Q_FEATURE_NAMES + activation_names),
         },
-        "selected_blocks_zero_based": list(SELECTED_BLOCKS),
-        "selected_blocks_one_based": [block + 1 for block in SELECTED_BLOCKS],
-        "activation_definition": "decoder block output residual stream before final model RMSNorm",
+        "selected_blocks_zero_based": list(selected_blocks),
+        "selected_blocks_one_based": [block + 1 for block in selected_blocks],
+        "activation_definition": "decoder block output residual stream before final model normalization",
         "hook_module": layer_path,
         "model_config": {
             "num_hidden_layers": model_num_layers,
