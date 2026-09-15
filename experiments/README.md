@@ -287,12 +287,58 @@ auxiliary-distilled draft. Follow [`pretraining/README.md`](pretraining/README.m
 for freezing the manifest, running all baselines, extracting p/q/Q/H and
 evaluating M1 on the same calibration/test records.
 
+## 7. Accept-only key-token and q-corrected diagnostics
+
+The retained workflow tests the paper's accept-only mechanism in four stages:
+q-coordinate invariance (E0), exact-delta token anatomy (E1), draft-q-only
+position selection (E1b), and equal-decision active-q replay (E3). Start with
+the synthetic q-correction check:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.q_corrected_accept_only
+```
+
+Run E1 once per benchmark/epoch condition and then aggregate the six reports:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.token_signal_anatomy \
+  --benchmark wikitection --epoch 1
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.aggregate_token_signal_anatomy
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.q_only_position_anatomy
+```
+
+E3 is a position-locked offline verifier replay, not a natural serial
+speculative-decoding trajectory. Run every condition for each frozen replay
+seed; the default output path includes the seed so runs cannot overwrite one
+another:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.active_importance_replay \
+  --benchmark wikitection --epoch 1 --replay-seed 20260914
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.aggregate_active_importance_replay
+```
+
+The low-budget deployable score uses normal-q accept bits at the lowest-q
+10%/20%/50% positions, standardizes all three scores on `N_ref`, and
+calibrates their maximum on `N_cal`. Active-q results must use the joint
+q-corrected estimate in the canonical `log(p)-log(q0)` coordinate. Exact-delta
+and oracle-position variants are diagnostics only. The older
+`accept_only_mia` pipeline is retained solely as the project's own historical
+fixed-q baseline.
+
 ## Tests
 
 ```bash
 uv run --no-sync python -m pytest tests/ -q
 ```
 
-The suite covers the frozen-pool loader (three-class disjointness, token
-band, 13-gram cross-split gate) and the generalization-check scoring
-logic.
+The suite covers frozen-pool construction and generalization scoring together
+with q-coordinate correction, exact-delta anatomy, draft-q-only position
+selection, equal-budget active replay, and the retained historical fixed-q
+baseline.
