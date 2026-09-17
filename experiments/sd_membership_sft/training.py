@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, PreTrainedModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 from .data import SFTRecord, collate_sft, make_sft_example
 
@@ -54,6 +54,70 @@ def load_causal_lm(
     model.to(device)
     model.config.use_cache = False
     return model
+
+
+def load_tokenizer(
+    model_id: str,
+    revision: str | None = None,
+    local_files_only: bool = False,
+) -> Any:
+    """Load a tokenizer from a native Transformers model repository."""
+    return AutoTokenizer.from_pretrained(
+        model_id,
+        revision=revision,
+        local_files_only=local_files_only,
+    )
+
+
+def _backward_chunked_distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float,
+    chunk_size: int = 32,
+) -> float:
+    """Backpropagate the exact CE/KL objective without full-vocabulary FP32 copies.
+
+    Gemma 4 has a 262k-token vocabulary. Materializing both models' complete
+    logits and both softmax operands in FP32 can exhaust an 80 GiB worker for
+    long ArXiv examples. Compute the loss gradient a few response tokens at a
+    time, store that gradient in the logits dtype, then traverse the student
+    model graph once.
+    """
+    valid_positions = labels.ne(-100).nonzero(as_tuple=False)
+    valid_tokens = int(valid_positions.shape[0])
+    if valid_tokens == 0:
+        raise ValueError("distillation batch contains no response tokens")
+
+    student_gradient = torch.zeros_like(student_logits)
+    loss_value = 0.0
+    for start in range(0, valid_tokens, chunk_size):
+        positions = valid_positions[start : start + chunk_size]
+        batch_indices = positions[:, 0]
+        token_indices = positions[:, 1]
+        student_chunk = (
+            student_logits[batch_indices, token_indices]
+            .detach()
+            .float()
+            .requires_grad_(True)
+        )
+        teacher_chunk = teacher_logits[batch_indices, token_indices].float()
+        label_chunk = labels[batch_indices, token_indices]
+        ce = F.cross_entropy(student_chunk, label_chunk, reduction="sum")
+        kl = F.kl_div(
+            F.log_softmax(student_chunk / temperature, dim=-1),
+            F.softmax(teacher_chunk / temperature, dim=-1),
+            reduction="sum",
+        ) * (temperature**2)
+        chunk_loss = (0.20 * ce + 0.80 * kl) / valid_tokens
+        (chunk_gradient,) = torch.autograd.grad(chunk_loss, student_chunk)
+        student_gradient[batch_indices, token_indices] = chunk_gradient.to(
+            student_gradient.dtype
+        )
+        loss_value += float(chunk_loss.detach())
+
+    student_logits.backward(student_gradient)
+    return loss_value
 
 
 def add_lora(model: PreTrainedModel, r: int, alpha: int, dropout: float) -> PeftModel:
@@ -246,39 +310,37 @@ def distill_on_auxiliary(
     losses: list[float] = []
     for step in range(steps):
         indices = rng.integers(0, len(examples), size=batch_size)
-        batch = collate_sft([examples[int(index)] for index in indices], int(tokenizer.pad_token_id))
+        batch = collate_sft(
+            [examples[int(index)] for index in indices], int(tokenizer.pad_token_id)
+        )
         batch = {key: value.to(device) for key, value in batch.items()}
+        optimizer.zero_grad(set_to_none=True)
         with torch.no_grad(), _autocast(device):
             teacher_logits = target(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 use_cache=False,
-            ).logits[:, :-1].float()
+            ).logits[:, :-1]
         with _autocast(device):
             student_logits = draft(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 use_cache=False,
-            ).logits[:, :-1].float()
-            labels = batch["labels"][:, 1:]
-            valid = labels.ne(-100)
-            student_selected = student_logits[valid]
-            teacher_selected = teacher_logits[valid]
-            labels_selected = labels[valid]
-            ce = F.cross_entropy(student_selected, labels_selected)
-            kl = F.kl_div(
-                F.log_softmax(student_selected / temperature, dim=-1),
-                F.softmax(teacher_selected / temperature, dim=-1),
-                reduction="batchmean",
-            ) * (temperature**2)
-            loss = 0.20 * ce + 0.80 * kl
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+            ).logits[:, :-1]
+        loss_value = _backward_chunked_distillation_loss(
+            student_logits,
+            teacher_logits,
+            batch["labels"][:, 1:],
+            temperature,
+        )
         torch.nn.utils.clip_grad_norm_(draft.parameters(), 1.0)
         optimizer.step()
-        losses.append(float(loss.detach().cpu()))
+        losses.append(loss_value)
         if (step + 1) % max(1, steps // 4) == 0:
-            print(f"draft distill step {step + 1}/{steps}: loss={losses[-1]:.5f}", flush=True)
+            print(
+                f"draft distill step {step + 1}/{steps}: loss={losses[-1]:.5f}",
+                flush=True,
+            )
         del teacher_logits, student_logits
     del optimizer
     draft.eval()

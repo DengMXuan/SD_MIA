@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from transformers import AutoTokenizer
 
 from ..config import Config
 from ..data import records_metadata
@@ -29,6 +28,7 @@ from ..training import (
     add_lora,
     distill_on_auxiliary,
     load_causal_lm,
+    load_tokenizer,
     save_trained_model,
     set_seed,
     sft_train,
@@ -52,6 +52,8 @@ def parse_args() -> argparse.Namespace:
         ("distill-steps", int),
         ("target-model", str),
         ("draft-model", str),
+        ("target-revision", str),
+        ("draft-revision", str),
     ]:
         parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=kind)
     parser.add_argument("--pool-path", type=Path)
@@ -65,10 +67,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimizer", choices=["adamw", "adamw8bit"])
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument(
+        "--resume",
         "--skip-training",
+        dest="resume",
         action="store_true",
         default=None,
-        help="load saved checkpoints instead of fine-tuning (resume)",
+        help="reuse every complete checkpoint and train only missing stages",
     )
     parser.add_argument("--skip-trained-drafts", action="store_true", default=None)
     parser.add_argument("--no-save-adapters", action="store_true", default=None)
@@ -85,7 +89,7 @@ def load_config(args: argparse.Namespace) -> Config:
             "config",
             "skip_trained_drafts",
             "no_save_adapters",
-            "skip_training",
+            "resume",
         } or value is None:
             continue
         values[key] = value
@@ -94,6 +98,11 @@ def load_config(args: argparse.Namespace) -> Config:
         values["run_member_draft"] = False
     if args.no_save_adapters:
         values["save_adapters"] = False
+    if values["seed"] != values["data_seed"]:
+        raise ValueError(
+            "controlled model-pair conditions require --seed and --data-seed "
+            "to be identical"
+        )
     values["output_dir"] = Path(values["output_dir"])
     return Config(**values)
 
@@ -111,9 +120,9 @@ def render_markdown(
         return f"{values[0]:.4f} → {values[-1]:.4f}"
 
     lines = [
-        "# Full-Parameter SFT Run"
+        "# Full-Parameter SFT Condition"
         if cfg.trainer == "full"
-        else "# LoRA SFT Run",
+        else "# LoRA SFT Condition",
         "",
         "## Material Passport",
         "",
@@ -128,6 +137,8 @@ def render_markdown(
         "",
         f"- Target: `{cfg.target_model}`",
         f"- Draft: `{cfg.draft_model}`",
+        f"- Target revision: `{cfg.target_revision or 'default'}`",
+        f"- Draft revision: `{cfg.draft_revision or 'default'}`",
         f"- Target SFT epochs: {cfg.target_epochs}; "
         + (
             f"LoRA rank: {cfg.lora_r}"
@@ -155,35 +166,66 @@ def render_markdown(
             f"- License: {metadata.get('license')}",
             f"- Provenance: {metadata.get('provenance')}",
             "- Member/nonmember/auxiliary allocation is shuffled and hash-deduplicated",
+            f"- Condition seed: {cfg.seed}",
             f"- Cross-split 13-gram gate: "
             f"{metadata['cross_split_ngram_audit']['gate']}",
-            ]
-        )
+        ]
+    )
     lines.extend(
         [
             "",
-        "## Training trace",
-        "",
-        f"- Target SFT loss: {trace(training['target_sft_loss'])}",
-        f"- Auxiliary draft distillation loss: {trace(training['aux_distill_loss'])}",
-        f"- Member-data draft SFT loss: {trace(training['member_draft_sft_loss'])}",
-        f"- Peak allocated GPU memory: {training['peak_gpu_memory_gib']:.2f} GiB",
-        "",
-        "## Interpretation boundary",
-        "",
-        "This is a controlled instruction-SFT run on a public post-cutoff corpus; "
-        "membership is defined by the training assignment, not by pretraining exposure.",
-        (
-            "LoRA is used to make the 8B target fit on one A100; results therefore "
-            "describe adapter-based SFT."
-            if cfg.trainer == "lora"
-            else "Full-parameter fine-tuning (lr 2e-5, effective batch 16) "
-            "with a bitsandbytes paged 8-bit AdamW on one A100-80GB."
-        ),
-        "",
-    ]
+            "## Training trace",
+            "",
+            f"- Target SFT loss: {trace(training['target_sft_loss'])}",
+            f"- Auxiliary draft distillation loss: {trace(training['aux_distill_loss'])}",
+            f"- Member-data draft SFT loss: {trace(training['member_draft_sft_loss'])}",
+            f"- Peak allocated GPU memory: {training['peak_gpu_memory_gib']:.2f} GiB",
+            "",
+            "## Interpretation boundary",
+            "",
+            "This is a controlled instruction-SFT condition on a public post-cutoff "
+            "corpus; membership is defined by the training assignment, not by "
+            "pretraining exposure.",
+            (
+                "LoRA is used to make the 8B target fit on one A100; results therefore "
+                "describe adapter-based SFT."
+                if cfg.trainer == "lora"
+                else "Full-parameter fine-tuning (lr 2e-5, effective batch 16) "
+                "with a bitsandbytes paged 8-bit AdamW on one A100-80GB."
+            ),
+            "",
+        ]
     )
     return "\n".join(lines)
+
+
+def _offload_model(model: torch.nn.Module, device: torch.device) -> None:
+    """Release a trained model's CUDA allocations before loading the next model."""
+    model.to("cpu")
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def _checkpoint_complete(path: Path) -> bool:
+    """Return whether a PEFT adapter or full checkpoint finished saving."""
+    if not path.is_dir():
+        return False
+    if (path / "adapter_config.json").is_file():
+        return (path / "adapter_model.safetensors").is_file() or (
+            path / "adapter_model.bin"
+        ).is_file()
+    if not (path / "config.json").is_file():
+        return False
+    return any(
+        (path / filename).is_file()
+        for filename in (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+    )
 
 
 def main() -> None:
@@ -204,7 +246,7 @@ def main() -> None:
     set_seed(cfg.seed)
     print(f"device={torch.cuda.get_device_name(device)}", flush=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.draft_model)
+    tokenizer = load_tokenizer(cfg.draft_model, revision=cfg.draft_revision)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -223,9 +265,9 @@ def main() -> None:
     checkpoint_dir = "checkpoints" if full_finetune else "adapters"
 
     started = time.time()
-    resume = bool(args.skip_training)
+    resume = bool(args.resume)
     target_ckpt = output_dir / checkpoint_dir / "target"
-    if resume and target_ckpt.exists():
+    if resume and _checkpoint_complete(target_ckpt):
         from ..generalization import load_finetuned_model
 
         target = load_finetuned_model(output_dir, cfg.target_model, device)
@@ -233,7 +275,9 @@ def main() -> None:
         target_sft_loss: list[float] = []
         print(f"resumed target from {target_ckpt}", flush=True)
     else:
-        target = load_causal_lm(cfg.target_model, device)
+        target = load_causal_lm(
+            cfg.target_model, device, revision=cfg.target_revision
+        )
         if not full_finetune:
             target = add_lora(
                 target,
@@ -256,21 +300,21 @@ def main() -> None:
         )
         if cfg.save_adapters:
             save_trained_model(target, output_dir / checkpoint_dir / "target")
+            if not _checkpoint_complete(target_ckpt):
+                raise RuntimeError(f"target checkpoint did not finish saving: {target_ckpt}")
 
     aux_distill_loss: list[float] = []
     member_draft_sft_loss: list[float] = []
     if cfg.run_auxiliary_draft:
+        _offload_model(target, device)
         aux_ckpt = output_dir / checkpoint_dir / "draft_auxiliary_distilled"
-        if resume and aux_ckpt.exists():
-            from ..generalization import load_draft_model
-
-            auxiliary_draft = load_draft_model(
-                output_dir, cfg.draft_model, "draft_auxiliary_distilled", device
-            )
+        if resume and _checkpoint_complete(aux_ckpt):
             aux_distill_loss = []
             print(f"resumed auxiliary draft from {aux_ckpt}", flush=True)
         else:
-            auxiliary_draft = load_causal_lm(cfg.draft_model, device)
+            auxiliary_draft = load_causal_lm(
+                cfg.draft_model, device, revision=cfg.draft_revision
+            )
             if not full_finetune:
                 auxiliary_draft = add_lora(
                     auxiliary_draft,
@@ -278,6 +322,7 @@ def main() -> None:
                     cfg.lora_alpha,
                     cfg.lora_dropout,
                 )
+            target.to(device)
             aux_distill_loss = distill_on_auxiliary(
                 auxiliary_draft,
                 target,
@@ -296,22 +341,28 @@ def main() -> None:
                     auxiliary_draft,
                     output_dir / checkpoint_dir / "draft_auxiliary_distilled",
                 )
-        del auxiliary_draft
+                if not _checkpoint_complete(aux_ckpt):
+                    raise RuntimeError(
+                        f"auxiliary draft checkpoint did not finish saving: {aux_ckpt}"
+                    )
+            _offload_model(target, device)
+            del auxiliary_draft
         gc.collect()
         torch.cuda.empty_cache()
 
+    del target
+    gc.collect()
+    torch.cuda.empty_cache()
+
     if cfg.run_member_draft:
         member_ckpt = output_dir / checkpoint_dir / "draft_member_sft"
-        if resume and member_ckpt.exists():
-            from ..generalization import load_draft_model
-
-            member_draft = load_draft_model(
-                output_dir, cfg.draft_model, "draft_member_sft", device
-            )
+        if resume and _checkpoint_complete(member_ckpt):
             member_draft_sft_loss = []
             print(f"resumed member draft from {member_ckpt}", flush=True)
         else:
-            member_draft = load_causal_lm(cfg.draft_model, device)
+            member_draft = load_causal_lm(
+                cfg.draft_model, device, revision=cfg.draft_revision
+            )
             if not full_finetune:
                 member_draft = add_lora(
                     member_draft,
@@ -336,7 +387,11 @@ def main() -> None:
                 save_trained_model(
                     member_draft, output_dir / checkpoint_dir / "draft_member_sft"
                 )
-        del member_draft
+                if not _checkpoint_complete(member_ckpt):
+                    raise RuntimeError(
+                        f"member draft checkpoint did not finish saving: {member_ckpt}"
+                    )
+            del member_draft
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -354,7 +409,7 @@ def main() -> None:
                 f"{cfg.benchmark}-sft-{cfg.seed}-epoch{cfg.target_epochs}"
             ),
             "status": "COMPLETED",
-            "verification_status": "COMPLETED_CONTROLLED_SFT_RUN",
+            "verification_status": "COMPLETED_CONTROLLED_SFT_CONDITION",
             "benchmark": cfg.benchmark,
             "trainer": cfg.trainer,
             "optimizer": cfg.optimizer,

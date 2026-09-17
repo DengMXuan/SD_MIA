@@ -1,5 +1,6 @@
 """Regression checks for the SD-only cleanup and historical entry points."""
 import importlib
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -104,3 +105,36 @@ def test_archived_cli_remains_accessible_through_old_and_new_paths():
         assert "--benchmark" in result.stdout
         if name == "difficulty_accept_only":
             assert "{sequence,features,posthoc}" not in result.stdout
+
+
+def test_mainline_loads_legacy_draft_feature_manifest(tmp_path, monkeypatch):
+    from experiments.sd_membership_sft import difficulty_accept_only as current
+    from experiments.sd_membership_sft.replay_cache import ReplayData
+
+    lengths = np.array([2])
+    ids = np.array(["trusted-nonmember"])
+    data = ReplayData(np.array([0]), ids, lengths, np.array([0, 2]),
+                      np.array([-1.5, -2.5]), np.array([-2., -3.]))
+    q = np.array([[-2., .5, .2, 1., 0., 1.], [-3., .6, .3, 2., 1., 1.]])
+    for name, value in (("q", q), ("lengths", lengths), ("record_ids", ids)):
+        np.save(tmp_path / f"{name}.npy", value)
+    probability = tmp_path / "probability.npz"
+    probability.write_bytes(b"frozen probability cache")
+    checkpoint = tmp_path / "wikitection_qwen3_8b_epoch1/checkpoints/draft_auxiliary_distilled"
+    manifest = {
+        "benchmark": "wikitection", "epoch": 1,
+        "role": "draft_auxiliary_distilled", "eos_included": False,
+        "checkpoint_provenance": {"checkpoint_path": str(checkpoint)},
+        "probability_cache": {"sha256": hashlib.sha256(probability.read_bytes()).hexdigest()},
+    }
+    (tmp_path / "feature_manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(current, "RESULTS", tmp_path)
+    monkeypatch.setattr(current, "feature_root", lambda *args: tmp_path)
+    monkeypatch.setattr(current, "_paths", lambda *args: (tmp_path / "unused.npz", probability))
+    monkeypatch.setattr(current, "load_replay_data", lambda *args: data)
+    observations, labels, record_ids, features, source = current.load_feature_observations("wikitection", 1, 7)
+    np.testing.assert_array_equal(observations.logq, q[:, :1])
+    np.testing.assert_array_equal(features, q[:, 1:4])
+    np.testing.assert_array_equal(record_ids, ids)
+    assert observations.bits.shape == (2, 1, 2)
+    assert source["q_difference_max"] == 0

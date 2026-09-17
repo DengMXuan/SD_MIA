@@ -71,3 +71,22 @@
 ```
 
 新增的目录内测试检查主线与归档的导入隔离、兼容入口、公共函数复用、low-q 数值一致性和静态检测器训练一致性。清理时另外做了已有检查点、划分和组合校准结果的前后数值复核；没有改写原实验报告。
+
+## Qwen3 / Gemma 4 完整微调矩阵
+
+`retrain_model_pairs.sh` 固定生成 36 个 experiment condition：两个模型对、三个数据集、两个 target epoch 设置和三个 condition seed。每个 condition 保存 target SFT、auxiliary-data KD draft 和 member-data SFT draft 三个完整 checkpoint，共 108 个。
+
+模型 revision 固定在 `model_pair_revisions.env`。正式启动前可以只做本地缓存、tokenizer、数据池与 GPU 预检，或查看不会启动训练的完整调度计划：
+
+```bash
+# 不训练：检查模型快照、配对 tokenizer、数据池和 GPU 3–6
+experiments/sd_membership_sft/retrain_model_pairs.sh --preflight-only
+
+# 不训练：打印 Gemma smoke gate 和其余 35 个 condition
+experiments/sd_membership_sft/retrain_model_pairs.sh --dry-run
+
+# 正式执行；必须先完成 Gemma newstection/epoch1/seed1919 smoke condition
+experiments/sd_membership_sft/retrain_model_pairs.sh
+```
+
+脚本只复用已完整保存的 checkpoint。当前 smoke condition 如果已经有完整 target checkpoint，会从两个缺失的 draft 阶段继续；任一 condition 失败都会令最终命令返回非零状态，且不会把不完整矩阵标为完成。

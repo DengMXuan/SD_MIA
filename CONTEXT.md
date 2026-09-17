@@ -30,6 +30,26 @@ A user-prompt to assistant-response training example where only the assistant
 response is a training target; prompt tokens do not define membership loss.
 _Avoid_: causal-LM continuation, completion fine-tuning
 
+**Model pair**:
+A target model and its size-matched-family draft model evaluated together under
+the same controlled data condition.
+_Avoid_: model family, model variant
+
+**Draft adaptation**:
+The training relationship that produces a draft for a target, distinguished by
+whether it is auxiliary-distilled or trained on member records.
+_Avoid_: draft checkpoint when discussing the training relationship
+
+**Experiment condition**:
+One fixed combination of benchmark dataset, target SFT epoch setting, and
+random seed for a model pair.
+_Avoid_: run, trial (when referring to the controlled matrix)
+
+**Condition seed**:
+The seed that jointly identifies the controlled member/nonmember/auxiliary
+assignment and the stochastic training process for one experiment condition.
+_Avoid_: training-only seed, data-only seed
+
 ## Edge–cloud speculative decoding
 
 **Target model**:

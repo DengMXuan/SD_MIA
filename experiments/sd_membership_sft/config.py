@@ -12,6 +12,8 @@ class Config:
     gpu: int = 0
     target_model: str = "Qwen/Qwen3-8B-Base"
     draft_model: str = "Qwen/Qwen3-1.7B-Base"
+    target_revision: str | None = None
+    draft_revision: str | None = None
     # Benchmark pool to run; each loads a frozen post-cutoff pool
     # (see splits.BENCHMARK_TOKEN_BANDS)..
     benchmark: str = "newstection"

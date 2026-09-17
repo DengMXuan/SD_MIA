@@ -33,11 +33,9 @@ import numpy as np
 import sacrebleu
 import torch
 from rouge_score import rouge_scorer
-from transformers import AutoTokenizer
-
 from .data import SFTRecord
 from .splits import build_split, pool_path
-from .training import load_causal_lm, set_seed
+from .training import load_causal_lm, load_tokenizer, set_seed
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -428,7 +426,7 @@ def main() -> None:
     torch.cuda.set_device(device)
     set_seed(seed)
 
-    tokenizer = AutoTokenizer.from_pretrained(cfg.draft_model)
+    tokenizer = load_tokenizer(cfg.draft_model, revision=cfg.draft_revision)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -455,7 +453,9 @@ def main() -> None:
     )
 
     tuned_target = load_finetuned_model(run_dir, cfg.target_model, device)
-    base_target = load_causal_lm(cfg.target_model, device)
+    base_target = load_causal_lm(
+        cfg.target_model, device, revision=cfg.target_revision
+    )
     base_target.config.use_cache = True
 
     tuned_scores = evaluate_model(
@@ -493,7 +493,11 @@ def main() -> None:
             ("draft_member_sft", cfg.draft_model),
         ):
             if name == "base_draft":
-                model = load_causal_lm(model_id, device)
+                model = load_causal_lm(
+                    model_id,
+                    device,
+                    revision=cfg.draft_revision,
+                )
             else:
                 model = load_draft_model(run_dir, model_id, name, device)
             model.config.use_cache = True
