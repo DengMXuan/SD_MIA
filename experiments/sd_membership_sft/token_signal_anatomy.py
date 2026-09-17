@@ -27,9 +27,12 @@ from typing import Any
 
 import numpy as np
 
-from .directional_mia import conformal_tail_pvalues
-from .full_delta_mia import rank_auc, split_indices
-from .stat_delta_mia import DeltaData, load_delta_data, sliding_means
+from .audit_metrics import (conformal_tail_pvalues)
+from .audit_metrics import (rank_auc)
+from .audit_runtime import (split_indices)
+from .replay_cache import (DeltaData, load_delta_data, sliding_means)
+
+from .replay_cache import (drop_final_cached_token, load_paired_logps)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -122,23 +125,6 @@ def build_roles(labels: np.ndarray, split_seed: int) -> Roles:
     return roles
 
 
-def drop_final_cached_token(data: DeltaData) -> DeltaData:
-    """Remove the producer-appended final token without changing fragment scope."""
-    if np.any(data.lengths <= 1):
-        raise ValueError("cannot drop the final token from a one-token record")
-    pieces = [
-        data.delta[int(start) : int(end) - 1]
-        for start, end in zip(data.offsets[:-1], data.offsets[1:])
-    ]
-    lengths = data.lengths - 1
-    offsets = np.r_[0, np.cumsum(lengths, dtype=np.int64)]
-    return DeltaData(
-        labels=data.labels,
-        record_ids=data.record_ids,
-        lengths=lengths,
-        offsets=offsets,
-        delta=np.concatenate(pieces).astype(np.float32, copy=False),
-    )
 
 
 def _record_values(data: DeltaData, index: int) -> np.ndarray:
@@ -439,31 +425,6 @@ def matching_global_baseline(method: str) -> str:
     return "mean_abs_delta"
 
 
-def load_paired_logps(path: Path, expected: DeltaData, drop_final: bool) -> tuple[np.ndarray, np.ndarray]:
-    with np.load(path, allow_pickle=False) as archive:
-        for key in ("lengths", "target", "draft_auxiliary_distilled"):
-            if key not in archive.files:
-                raise ValueError(f"{path} is missing {key}")
-        source_lengths = np.asarray(archive["lengths"], dtype=np.int64)
-        target = np.asarray(archive["target"], dtype=np.float32)
-        draft = np.asarray(archive["draft_auxiliary_distilled"], dtype=np.float32)
-    if len(source_lengths) != len(expected.labels):
-        raise ValueError("paired p/q cache record count is not aligned")
-    if drop_final:
-        pieces_target, pieces_draft = [], []
-        offsets = np.r_[0, np.cumsum(source_lengths, dtype=np.int64)]
-        for start, end in zip(offsets[:-1], offsets[1:]):
-            pieces_target.append(target[int(start) : int(end) - 1])
-            pieces_draft.append(draft[int(start) : int(end) - 1])
-        target, draft = np.concatenate(pieces_target), np.concatenate(pieces_draft)
-        source_lengths = source_lengths - 1
-    if not np.array_equal(source_lengths, expected.lengths):
-        raise ValueError("paired p/q cache lengths are not aligned")
-    if len(target) != len(expected.delta) or len(draft) != len(target):
-        raise ValueError("paired p/q token arrays are not aligned")
-    if not np.allclose(target - draft, expected.delta, atol=2e-6, rtol=1e-6):
-        raise ValueError("paired p/q cache disagrees with delta cache")
-    return target, draft
 
 
 def q_bin_analysis(

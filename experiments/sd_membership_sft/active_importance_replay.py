@@ -26,15 +26,13 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .directional_mia import conformal_tail_pvalues
-from .full_delta_mia import partial_auc, rank_auc
-from .stat_delta_mia import load_delta_data, sliding_means
-from .token_signal_anatomy import (
-    Roles,
-    build_roles,
-    drop_final_cached_token,
-    load_paired_logps,
-)
+from .audit_metrics import (conformal_tail_pvalues)
+from .audit_metrics import (partial_auc, rank_auc)
+from .replay_cache import (load_delta_data, sliding_means)
+from .token_signal_anatomy import (Roles, build_roles)
+from .replay_cache import (drop_final_cached_token, load_paired_logps)
+
+from .replay_cache import (ReplayData, load_replay_data)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -57,18 +55,6 @@ RATES = (0.01, 0.05, 0.10)
 LOWQ_SCORE_FRACTIONS = (0.10, 0.20, 0.50)
 
 
-@dataclass(frozen=True)
-class ReplayData:
-    labels: np.ndarray
-    record_ids: np.ndarray
-    lengths: np.ndarray
-    offsets: np.ndarray
-    logp: np.ndarray
-    logq0: np.ndarray
-
-    @property
-    def delta0(self) -> np.ndarray:
-        return self.logp - self.logq0
 
 
 @dataclass(frozen=True)
@@ -114,21 +100,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_replay_data(full_delta_path: Path, pq_path: Path) -> ReplayData:
-    """Load aligned exact caches and drop each record's final cached token."""
-    original = load_delta_data(full_delta_path)
-    without_final = drop_final_cached_token(original)
-    logp, logq0 = load_paired_logps(pq_path, without_final, drop_final=True)
-    if np.any(logp > 1e-6) or np.any(logq0 > 1e-6):
-        raise ValueError("cached log probabilities must not be positive")
-    return ReplayData(
-        labels=without_final.labels,
-        record_ids=without_final.record_ids,
-        lengths=without_final.lengths,
-        offsets=without_final.offsets,
-        logp=np.asarray(logp, dtype=np.float64),
-        logq0=np.asarray(logq0, dtype=np.float64),
-    )
 
 
 def q_lambda_from_logq(logq0: np.ndarray, lambda_value: float) -> np.ndarray:

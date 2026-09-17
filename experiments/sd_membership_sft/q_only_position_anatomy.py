@@ -17,14 +17,9 @@ from typing import Any
 
 import numpy as np
 
-from .stat_delta_mia import load_delta_data
-from .token_signal_anatomy import (
-    ROOT,
-    build_roles,
-    drop_final_cached_token,
-    fast_partial_auc,
-    load_paired_logps,
-)
+from .replay_cache import (load_delta_data)
+from .token_signal_anatomy import (ROOT, build_roles, fast_partial_auc)
+from .replay_cache import (drop_final_cached_token, load_paired_logps)
 
 
 FRACTIONS = (0.01, 0.02, 0.05, 0.10, 0.20, 0.50)

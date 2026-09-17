@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from .audit_metrics import (conformal_tail_pvalues, order_statistic_threshold)
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WINDOWS = (4, 8, 16, 32, 64)
 
@@ -71,41 +73,8 @@ def threshold_metrics(
     }
 
 
-def conformal_tail_pvalues(
-    scores: np.ndarray, calibration_nonmember: np.ndarray
-) -> np.ndarray:
-    """Return conservative upper-tail p-values with inclusive tie handling."""
-    scores = np.asarray(scores, dtype=np.float64)
-    calibration_nonmember = np.asarray(calibration_nonmember, dtype=np.float64)
-    if calibration_nonmember.size == 0:
-        raise ValueError("calibration_nonmember must not be empty")
-    # With sorted calibration values, ``searchsorted(..., side='left')`` gives
-    # the number of calibration values strictly below each score.  Subtracting
-    # from n therefore counts values ``>= score`` exactly, including ties,
-    # without constructing an O(n_scores * n_calibration) matrix.
-    ordered = np.sort(calibration_nonmember)
-    count_ge = len(ordered) - np.searchsorted(ordered, scores, side="left")
-    return (1.0 + count_ge) / (len(calibration_nonmember) + 1.0)
 
 
-def order_statistic_threshold(
-    calibration_nonmember: np.ndarray, fpr: float
-) -> float:
-    """Boundary for the inclusive-tie conformal rule.
-
-    The actual decision is p-value <= fpr.  For distinct values it is
-    equivalent to ``score > threshold`` where threshold is the (k+1)-th largest
-    calibration score; using p-values above also handles ties correctly.
-    """
-    calibration_nonmember = np.asarray(calibration_nonmember, dtype=np.float64)
-    if not 0.0 < fpr < 1.0 or calibration_nonmember.size == 0:
-        raise ValueError("invalid FPR or empty calibration set")
-    max_calibration_tail = int(np.ceil(fpr * (len(calibration_nonmember) + 1.0))) - 1
-    order_from_largest = max(1, max_calibration_tail + 1)
-    ordered = np.sort(calibration_nonmember)[::-1]
-    if order_from_largest > len(ordered):
-        return float("-inf")
-    return float(ordered[order_from_largest - 1])
 
 
 def bootstrap_auc(

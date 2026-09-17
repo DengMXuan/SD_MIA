@@ -1,0 +1,197 @@
+{
+  "date": "2026-09-17",
+  "scope": "experiments/sd_membership_sft only",
+  "archive_count": 26,
+  "modules": [
+    {
+      "module": "stat_delta_mia",
+      "original_sha256": "35b396fa8785b794ad5cfeea3dac98a8cf8d7858258296b120cdfe52d3dacb2a",
+      "original_lines": 886,
+      "archive": "archive/stat_delta_mia.py",
+      "compatibility": "stat_delta_mia.py"
+    },
+    {
+      "module": "full_ai_query_allocation",
+      "original_sha256": "aae2eb9af2d67d829ae85999efadf5833aa9d543274e69e7d9e706d9edad7eab",
+      "original_lines": 459,
+      "archive": "archive/full_ai_query_allocation.py",
+      "compatibility": "full_ai_query_allocation.py"
+    },
+    {
+      "module": "active_protocol_design",
+      "original_sha256": "ed6a6fff13dd7a3f38581f08031373adb9e4bda63b080de2d79e92d8088f1cd0",
+      "original_lines": 271,
+      "archive": "archive/active_protocol_design.py",
+      "compatibility": "active_protocol_design.py"
+    },
+    {
+      "module": "m2_features",
+      "original_sha256": "c344895e65c2fa55034cfc66a3358ec07c168ae4227e20f573483c32eacdbb6d",
+      "original_lines": 293,
+      "archive": "archive/m2_features.py",
+      "compatibility": "m2_features.py"
+    },
+    {
+      "module": "neural_adaptive_accept_only",
+      "original_sha256": "4f1f2cad6a6f7a9c8dcc32f982d1a63617ab4e391c27c4eac7423a562f70513e",
+      "original_lines": 983,
+      "archive": "archive/neural_adaptive_accept_only.py",
+      "compatibility": "neural_adaptive_accept_only.py"
+    },
+    {
+      "module": "dynamic_marginal_query",
+      "original_sha256": "bcd2076ba347faa2ddfc44eb723c97bfc76e91f7bfe282e19644812f3a10102b",
+      "original_lines": 975,
+      "archive": "archive/dynamic_marginal_query.py",
+      "compatibility": "dynamic_marginal_query.py"
+    },
+    {
+      "module": "adaptive_window_accept_only",
+      "original_sha256": "3e0580ab8a7b9bae99cbffa1db22d5a61255f9427cad75c1d93b312f6e0504dc",
+      "original_lines": 765,
+      "archive": "archive/adaptive_window_accept_only.py",
+      "compatibility": "adaptive_window_accept_only.py"
+    },
+    {
+      "module": "aggregate_neural_adaptive_accept_only",
+      "original_sha256": "0ab699e1e666e22a3f9454d21b41eec385cbee9214a4185d0e6e68b4b5d2e4a8",
+      "original_lines": 212,
+      "archive": "archive/aggregate_neural_adaptive_accept_only.py",
+      "compatibility": "aggregate_neural_adaptive_accept_only.py"
+    },
+    {
+      "module": "run_priority_matrix",
+      "original_sha256": "61d8ee69c42addcfba109162206fc62348e9284ce947f389c084e8b536970455",
+      "original_lines": 49,
+      "archive": "archive/run_priority_matrix.py",
+      "compatibility": "run_priority_matrix.py"
+    },
+    {
+      "module": "aggregate_permissions",
+      "original_sha256": "6ed895da88dcdd2770b37b99aaa5b5b7c6897068e7cef418da9ef98aea168206",
+      "original_lines": 153,
+      "archive": "archive/aggregate_permissions.py",
+      "compatibility": "aggregate_permissions.py"
+    },
+    {
+      "module": "m2_fit",
+      "original_sha256": "f00c09559e78552d0aa3f988bb56c3bc8bba810ae5bb4e77036dbaada3e39d58",
+      "original_lines": 686,
+      "archive": "archive/m2_fit.py",
+      "compatibility": "m2_fit.py"
+    },
+    {
+      "module": "combine_shadow_active",
+      "original_sha256": "9b6e2f926a365eaf554d2cc4c4531fc316c93b200ece9aed84996c533fee0135",
+      "original_lines": 178,
+      "archive": "archive/combine_shadow_active.py",
+      "compatibility": "combine_shadow_active.py"
+    },
+    {
+      "module": "full_delta_mia",
+      "original_sha256": "4e85a19ee17248553250f1f5d1aed32415291a6e85749daca0d94bec363c1770",
+      "original_lines": 1184,
+      "archive": "archive/full_delta_mia.py",
+      "compatibility": "full_delta_mia.py"
+    },
+    {
+      "module": "collect_counterfactual_accept_only",
+      "original_sha256": "5c790fb534e66c51eeab2a093318c9fea6c73df22af5edfe84adff25c222d3a2",
+      "original_lines": 150,
+      "archive": "archive/collect_counterfactual_accept_only.py",
+      "compatibility": "collect_counterfactual_accept_only.py"
+    },
+    {
+      "module": "accept_only_mia",
+      "original_sha256": "a1e144c8bc41f120674e8bf703b44ac670152c6f728c948838b48aa8db5e23c3",
+      "original_lines": 480,
+      "archive": "archive/accept_only_mia.py",
+      "compatibility": "accept_only_mia.py"
+    },
+    {
+      "module": "run_direction_matrix",
+      "original_sha256": "a66adaa2dcaf707f71a5a93752a198ee0f78d496313f1527715ba67feda36c36",
+      "original_lines": 76,
+      "archive": "archive/run_direction_matrix.py",
+      "compatibility": "run_direction_matrix.py"
+    },
+    {
+      "module": "interpretable_scale_gate",
+      "original_sha256": "43a122182189cd7154f12e2cfd7b69a956a1ed4529c24f4ba318f39d0da908cf",
+      "original_lines": 428,
+      "archive": "archive/interpretable_scale_gate.py",
+      "compatibility": "interpretable_scale_gate.py"
+    },
+    {
+      "module": "analyze_full_ai_allocation",
+      "original_sha256": "c4487de5ef8771b0db6d47aaece78ebb865fb805c759c347e3143b627f1e8c2c",
+      "original_lines": 232,
+      "archive": "archive/analyze_full_ai_allocation.py",
+      "compatibility": "analyze_full_ai_allocation.py"
+    },
+    {
+      "module": "shadow_scale_gate",
+      "original_sha256": "51d8b60a044fed1be3e970e86ce294d2c165a30e20c0a52810e3a05fa98fd2c2",
+      "original_lines": 382,
+      "archive": "archive/shadow_scale_gate.py",
+      "compatibility": "shadow_scale_gate.py"
+    },
+    {
+      "module": "m2_models",
+      "original_sha256": "007d26ca0b3921593758bff6a50d511700a330dff7d9645449a9dbf6e1c5d03a",
+      "original_lines": 424,
+      "archive": "archive/m2_models.py",
+      "compatibility": "m2_models.py"
+    },
+    {
+      "module": "m1_evaluate",
+      "original_sha256": "6bd9377d9d13290caf9e95c45e3cdc6525cc3a456a634dd9b0f4c35537c9a10a",
+      "original_lines": 512,
+      "archive": "archive/m1_evaluate.py",
+      "compatibility": "m1_evaluate.py"
+    },
+    {
+      "module": "m2_evaluate",
+      "original_sha256": "65a708abc1345019d1dece7e2699ea3b5b9bd4bbfb7b334e390690f037beb02c",
+      "original_lines": 430,
+      "archive": "archive/m2_evaluate.py",
+      "compatibility": "m2_evaluate.py"
+    },
+    {
+      "module": "priority_accept_only",
+      "original_sha256": "d6d6f90c6a536bf5ef8c1d420a69107c78ac12f4ba0d275af02309ecb79c7887",
+      "original_lines": 377,
+      "archive": "archive/priority_accept_only.py",
+      "compatibility": "priority_accept_only.py"
+    },
+    {
+      "module": "build_local_shadow_cache",
+      "original_sha256": "9e419335bea87ea85e7be34335bab48cc87327e4fbfd747e185917be48611440",
+      "original_lines": 128,
+      "archive": "archive/build_local_shadow_cache.py",
+      "compatibility": "build_local_shadow_cache.py"
+    },
+    {
+      "module": "analyze_dynamic_marginal_query",
+      "original_sha256": "ec8f97a28a6034a3c3017ed83d5cfe02aae4e90dbf144d99e9c5d41e642d970d",
+      "original_lines": 201,
+      "archive": "archive/analyze_dynamic_marginal_query.py",
+      "compatibility": "analyze_dynamic_marginal_query.py"
+    },
+    {
+      "module": "m1_fit",
+      "original_sha256": "19a3bf8c3df6ba0536a843638156eeb20fd4a837116863ba6f9ffde4c94135b5",
+      "original_lines": 2348,
+      "archive": "archive/m1_fit.py",
+      "compatibility": "m1_fit.py"
+    }
+  ],
+  "validation": {
+    "tests_passed": 172,
+    "pre_post_arrays_exact": 25,
+    "frozen_detector_checkpoints_on_fixed_synthetic_inputs": 12,
+    "saved_combination_runs": 18,
+    "saved_calibration_configurations_exact": 216,
+    "baseline_pretraining_existing_tests_unchanged": true
+  }
+}

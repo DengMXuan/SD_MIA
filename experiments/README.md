@@ -332,6 +332,354 @@ and oracle-position variants are diagnostics only. The older
 `accept_only_mia` pipeline is retained solely as the project's own historical
 fixed-q baseline.
 
+The exploratory nonmember-sample, learned-window, EVT-threshold, and
+coverage-constrained active-query ablations are kept in one module. A single
+condition can run independently so the six conditions can be scheduled in
+parallel, then aggregated from their persisted outputs:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.adaptive_window_accept_only \
+  --benchmark wikitection --epoch 1
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.adaptive_window_accept_only \
+  --aggregate-existing
+```
+
+The nonmember-only neural follow-up trains a multi-scale TCN on real trusted
+nonmembers and synthetic positive-delta alternatives. Its token outputs are
+also evaluated as adaptive probe priorities. The measurement-value variant
+uses only high-query trusted-nonmember trajectories as its teacher:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.neural_adaptive_accept_only \
+  --benchmark wikitection --epoch 1
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.neural_adaptive_accept_only \
+  --aggregate-existing
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.aggregate_neural_adaptive_accept_only
+```
+
+The follow-up mechanism checks separate the neural residual, scale choice,
+and query allocation claims.  `neural_residual_mechanism` measures pairwise
+repairs and regressions rather than treating the neural blend as a black box;
+`interpretable_scale_gate` compares fixed scales with q-only and
+accept-aware learned gates:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.neural_residual_mechanism
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.interpretable_scale_gate \
+  --benchmark wikitection --epoch 1
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.interpretable_scale_gate \
+  --aggregate-existing
+```
+
+A legitimate local-shadow gate is trained only from 400 trusted target
+nonmembers: 200 become members of the local 1.7B shadow and 200 remain shadow
+nonmembers.  It never consumes a target-member label.  Build one cache per
+benchmark, run all six target conditions, and aggregate:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.build_local_shadow_cache \
+  --benchmark wikitection --gpu 0
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.shadow_scale_gate \
+  --benchmark wikitection --epoch 1 --device cuda:0
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.shadow_scale_gate \
+  --aggregate-existing
+```
+
+The equal-budget allocation check gives every token two pilot queries and
+then compares uniform, 6/10 hybrid, one-shot full-AI, sequential full-AI, and
+an unavailable-delta oracle at exactly mean K=8.  The post-hoc command uses
+paired record resamples for method deltas:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.full_ai_query_allocation \
+  --benchmark wikitection --epoch 1 --device cuda:0
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.full_ai_query_allocation \
+  --aggregate-existing
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.analyze_full_ai_allocation
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.combine_shadow_active
+```
+
+The closed-loop follow-up removes the fixed top-50% rule.  A marginal-value
+MLP trained only on local-shadow trajectories recomputes token utility after
+each query round, and diminishing-return water filling assigns an unequal
+integer number of probes.  It evaluates both a one-query pilot with mean
+total K=2 and a two-query pilot with mean total K=8:
+
+```bash
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.dynamic_marginal_query \
+  --benchmark wikitection --epochs 1 3 --device cuda:0
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.dynamic_marginal_query \
+  --aggregate-existing
+uv run --no-sync python \
+  -m experiments.sd_membership_sft.analyze_dynamic_marginal_query
+```
+
+## 8. Conditional nonmember likelihood and counterfactual accept-only probes
+
+`conditional_accept_only` learns a conditional distribution of acceptance
+counts directly from local log-q sequences. It uses a small TCN and a finite
+binomial mixture including an all-accept atom, without reconstructing target
+p or delta. The mixture is a predictive model, not an identifiable estimate
+of the target probability or its saturated mass. Only 320 trusted nonmembers
+train it; 80 disjoint nonmembers select the checkpoint by count NLL. Another
+200 nonmembers calibrate thresholds. The registered T partition is used only
+after fitting. No real or synthetic members train/select the predictor.
+
+The member-positive scores mix fixed positive count tilts globally or through
+a two-state span prior (enter=1/64, leave=1/8). Those alternatives are explicit
+research assumptions. The factorized conditional null is approximate; scores
+are not claimed to be e-values. Ordinary NLL is reported as a two-sided
+diagnostic. A fixed 0.25 residual fusion and q-only control are also reported.
+
+Run the original-context cached replay on CPU or CUDA:
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.conditional_accept_only \
+  --benchmark wikitection --epoch 1 --budget 2 --device cpu
+```
+
+Outputs include model checkpoints, training history, exact record partitions,
+source cache hashes, score arrays, query counts, and `REPORT.md` / `REPORT.json`
+under `results/sft_runs/conditional_accept_only/<condition>/b2_seed20260914/`.
+The default 30 epochs / 5-epoch patience use nonmember NLL only. Change
+`--seed` for independent cached replay/training replicates; `--epoch` denotes target
+SFT epochs while `--epochs` denotes detector training epochs.
+
+The counterfactual collector scores the same final 64 response tokens under
+the original prefix and a truncated prefix retaining the instruction plus
+the immediate 32 response-context tokens. It omits appended EOS and fails
+if there is insufficient distant context to remove. Both target p and draft q
+are recomputed under each view. Target values stay inside the offline verifier
+simulator; only q, independent accept bits and record metadata are exported:
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.collect_counterfactual_accept_only \
+  --run-dir experiments/results/sft_runs/wikitection_qwen3_8b_epoch1 \
+  --output experiments/results/sft_runs/counterfactual_observations/wiki_e1.npz \
+  --device cuda:0 --repeats 2
+uv run --no-sync python -m experiments.sd_membership_sft.conditional_accept_only \
+  --observations experiments/results/sft_runs/counterfactual_observations/wiki_e1.npz \
+  --budget 2 --device cpu
+```
+
+With `--observations`, `--seed` changes detector training only; the supplied
+verifier bits stay frozen. Recollect with a different collector seed for an
+independent paired verifier replay.
+
+Paired mode predicts original counts conditioned on both q sequences and the
+truncated-view count. At total budget B, original-only receives B original
+decisions; paired receives B/2 original plus B/2 truncated decisions. Its
+fusion reuses only its original half-budget. The collector stores additional
+bits for the original-only control; report collection cost separately from
+each detector's used queries. Compare these methods on the paired archive's
+identical suffix tokens, not against historical whole-document metrics.
+Truncation also changes context length and absolute positions, so it cannot
+alone establish that a response difference is caused by memorization.
+Both workflows remain position-locked verifier simulations, not live serial
+SD trajectories. GPU model inference is needed for practical collection of
+the saved 8B/1.7B checkpoints; cached detector fitting works on CPU.
+
+Aggregate frozen runs and optionally compare the existing K=2 neural fusion:
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.analyze_conditional_accept_only \
+  --legacy-root experiments/results/sft_runs/accept_only_active_v2/neural_adaptive/conditions
+```
+
+Legacy comparisons require identical record IDs, labels and low-q scores.
+Paired archives never reuse whole-document legacy scores. Bootstrap intervals
+resample the same test records across methods and seeds within each condition;
+they condition on fitted models and do not quantify retraining uncertainty.
+The analyzer defaults to cached whole-document runs. Use `--scope paired`
+to analyze supplied counterfactual archives separately; the two candidate
+scopes are never pooled into one macro average.
+
+## 9. Frozen-checkpoint validation of the four directions
+
+The scope, fixed alternatives, splits and query budgets are recorded in
+[`DIRECTIONS_VALIDATION.md`](DIRECTIONS_VALIDATION.md). Target and draft
+parameters stay frozen; all new training is restricted to small nonmember
+detectors. No shadow members or synthetic membership labels are used.
+
+Resume the original-context three-seed matrix, or train paired detectors
+after collecting frozen-checkpoint observations:
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.run_direction_matrix conditional
+CUDA_VISIBLE_DEVICES=2 HF_HUB_OFFLINE=1 uv run --no-sync python \
+  -m experiments.sd_membership_sft.collect_counterfactual_accept_only \
+  --run-dir experiments/results/sft_runs/wikitection_qwen3_8b_epoch1 \
+  --output experiments/results/sft_runs/counterfactual_observations/wikitection_epoch1.npz \
+  --batch-size 8 --repeats 8 --replay-seeds 20260914,20260915,20260916
+uv run --no-sync python -m experiments.sd_membership_sft.run_direction_matrix paired
+```
+
+Repeat collection for the three datasets and two target epochs. Multi-seed
+collection reuses the same frozen-model forward passes, with independent bit
+randomness. `run_direction_matrix paired` evaluates B=2 and B=8; it refuses
+missing archives unless `--ready-only` explicitly permits a partial batch.
+Completed detector runs are skipped only when their report and source
+manifest both exist.
+
+`active_protocol_design` learns a q-conditioned latent probability mixture
+through nonmember multi-q accept-count likelihoods. It has no exact-p/delta
+regression target. The fixed alternatives increase latent log probability
+by .5/1/2. A Jensen–Shannon utility selects proposal levels and/or positions.
+The five policies share one normal-q pilot, the same observable null model,
+coupled verifier random streams, and exact B=1/2/4/8 decision checkpoints.
+Training/selection uses ten decisions per nonmember token, reported separately.
+Early positive stopping is calibrated on nonmember path maxima, accounting
+for the registered multiple looks rather than repeatedly testing an ordinary
+single-look threshold. This remains position-locked offline replay.
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.run_direction_matrix active
+```
+
+`serial_accept_only` performs actual sampled speculative decoding with the
+saved target and draft. It uses the residual correction distribution after
+rejection, a target bonus token after full acceptance, and crops both KV caches
+before continuing. EOS can terminate early. The archive includes only reached
+accept/reject bits, local draft logq/entropy, round/position features and costs;
+target probabilities and correction-token identities never enter the detector.
+A causal GRU predicts nonmember acceptance hazards. Fixed positive, negative,
+and two-sided logit-tilt evidence are compared with acceptance rate, rejection
+rate, and absolute deviation from nonmember validation acceptance rate on
+identical transcripts. These directions were fixed before inspecting natural
+SD metrics, since sampled-proposal acceptance averages 1-TV(p,q) and need not
+increase for members. All directions are reported without member-based selection. This natural
+generation experiment must not be pooled with fixed-candidate replay.
+
+```bash
+CUDA_VISIBLE_DEVICES=3 HF_HUB_OFFLINE=1 uv run --no-sync python \
+  -m experiments.sd_membership_sft.serial_accept_only collect \
+  --run-dir experiments/results/sft_runs/wikitection_qwen3_8b_epoch1 \
+  --output-dir experiments/results/sft_runs/directions_validation/serial/wikitection_epoch1
+uv run --no-sync python -m experiments.sd_membership_sft.serial_accept_only evaluate \
+  --output-dir experiments/results/sft_runs/directions_validation/serial/wikitection_epoch1
+```
+
+Collection resumes per-record atomic checkpoints. For multiple GPUs, run
+non-overlapping `--shard-count 2 --shard-index 0` / `--shard-index 1` workers
+with the same output directory. The last worker merges all records. The
+natural-SD pilot covers Wiki epochs 1/3, seed 20260914, gamma=4, at most eight
+verification rounds and 1,400 records per checkpoint. The detector fit uses
+the same 320/80/200 nonmember train/validation/calibration roles and 800-record
+test set; no LM weights are updated.
+
+After all registered runs finish, build the paired comparison report:
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.summarize_direction_validation
+```
+
+`DIRECTIONS_REPORT.md/json` reports per-condition outcomes, paired bootstrap
+intervals, nominal TPR and actual FPR. The same test-record draws are reused
+across seeds and target checkpoints that share a test set. Intervals condition
+on fitted models; they do not establish robustness to new training datasets.
+
+The completed local matrix includes 18 conditional runs, 18 active-policy runs,
+36 paired-prefix runs and two natural-SD runs. See the
+[Chinese findings](results/sft_runs/directions_validation/FINDINGS_ZH.md) and
+[full comparison report](results/sft_runs/directions_validation/DIRECTIONS_REPORT.md)
+for all outcomes, including negative findings and actual false-positive rates.
+
+## 10. Priority-ordered conditional-model follow-ups
+
+The fixed scope is in [PRIORITY_VALIDATION.md](PRIORITY_VALIDATION.md).
+`priority_accept_only` tests a causal accept-count history branch, extra frozen
+local-draft difficulty features, three-initialization PMF averaging and a fixed
+uncertainty discount, expanded/grouped nonmember calibration, sparse evidence,
+and a pilot-plus-second-query allocation policy. Target and draft weights are
+never updated. No real or synthetic member labels train/select any component.
+
+Historical M1 caches supply only their raw draft q/entropy/rank/margin features;
+none of their fitted membership detectors or target-score features are used.
+Their q differs numerically from historical replay q, so the feature ablation
+regenerates bits with that q and refits its own matched q-only baseline. Feature
+results must not be compared to the historical baseline as if inputs matched.
+The missing News/ArXiv epoch-3 caches can be collected with:
+
+```bash
+CUDA_VISIBLE_DEVICES=2 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 uv run --no-sync python \
+  -m experiments.sd_membership_sft.collect_draft_difficulty \
+  --run-dir experiments/results/sft_runs/newstection_qwen3_8b_epoch3 \
+  --output-dir experiments/results/sft_runs/priority_validation/features/newstection_epoch3
+```
+
+Use the corresponding ArXiv run/output paths for its epoch-3 cache. Extraction
+resumes from a memmapped feature array and a completed-record bitmap. All
+feature collections retain record identity, exclude appended EOS and record
+frozen-checkpoint provenance.
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.run_priority_matrix sequence --gpus 4,5,6 --jobs 3
+uv run --no-sync python -m experiments.sd_membership_sft.run_priority_matrix features --gpus 4,5,6 --jobs 3
+uv run --no-sync python -m experiments.sd_membership_sft.run_priority_matrix posthoc --jobs 3
+uv run --no-sync python -m experiments.sd_membership_sft.summarize_priority_validation
+```
+
+Omit `--gpus` to fit the small detectors on CPU. A runner skips completed
+reports. `features --ready-only` explicitly allows a partial batch while a
+collector is running; strict summarization requires all 18 condition/seed
+reports in each of the three phases. The causal branch is separate from the
+bidirectional static-q branch and sees only shifted past counts. Its likelihood
+must not be interpreted as recovering target p or as an exact e-value.
+
+Calibration expands the original 200 to 1200 nonmembers disjoint from training,
+validation and test. Both fixed binary partitions (length and mean logq) use
+reference medians. Report actual FPR alongside TPR and group-level errors.
+Allocation comparisons both spend L+floor(L/2) decisions, use the same pilot,
+and score every observed decision with a shared latent-mixture model.
+
+The complete 54-run follow-up is summarized in the
+[Chinese findings](results/sft_runs/priority_validation/FINDINGS_ZH.md) and
+[paired comparison report](results/sft_runs/priority_validation/PRIORITY_REPORT.md).
+These report every registered variant, validation likelihoods, calibration
+changes and condition-specific errors. The combination follow-up is below.
+
+## 11. Feature, sparse-score and calibration combinations
+
+[COMBINATION_VALIDATION.md](COMBINATION_VALIDATION.md) fixes a 2×2×3 factorial:
+q/position versus added draft difficulty features; global versus sparse
+evidence; pooled 200 versus pooled 1200 versus difficulty-grouped 1200
+nonmember calibration. All twelve configurations use identical
+feature-consistent q, B=2 feedback and test records within each run. Both
+saved small detectors are frozen and reused, with no new fitting.
+
+```bash
+uv run --no-sync python -m experiments.sd_membership_sft.combined_accept_only matrix --gpus 4,5,6 --jobs 3
+uv run --no-sync python -m experiments.sd_membership_sft.summarize_combination_validation
+```
+
+Omit `--gpus` for CPU inference. The runner checks record/split alignment and
+reproduces saved global scores before evaluating sparse combinations. Each
+score is calibrated independently. The summary requires all six conditions
+and three seeds, reports 216 factorial cells, paired ranking/decision
+differences, feature×sparsity interaction and conditional false-positive rates.
+The primary full combination is fixed in advance; other predefined cells
+remain visible even when they show better operating-point tradeoffs.
+
+See [Chinese findings](results/sft_runs/combination_validation/FINDINGS_ZH.md)
+and the [complete report](results/sft_runs/combination_validation/COMBINATION_REPORT.md).
+
 ## Tests
 
 ```bash
