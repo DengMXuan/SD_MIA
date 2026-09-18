@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 from pathlib import Path
+import random
 from typing import Any
 
 import numpy as np
@@ -14,7 +15,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 from .data import SFTRecord, collate_sft, make_sft_example
 
 
+_BNB_8BIT_BLOCK_SIZE = 256
+# bitsandbytes passes a tensor's element count to its CUDA optimizer kernel as
+# a signed int32. Keep individual launches well below that limit and align all
+# boundaries to its 256-element quantization blocks.
+_BNB_8BIT_CHUNK_ELEMENTS = 1 << 30
+
+
 def set_seed(seed: int) -> None:
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -75,6 +84,7 @@ def _backward_chunked_distillation_loss(
     labels: torch.Tensor,
     temperature: float,
     chunk_size: int = 32,
+    loss_scale: float = 1.0,
 ) -> float:
     """Backpropagate the exact CE/KL objective without full-vocabulary FP32 copies.
 
@@ -116,7 +126,7 @@ def _backward_chunked_distillation_loss(
         )
         loss_value += float(chunk_loss.detach())
 
-    student_logits.backward(student_gradient)
+    student_logits.backward(student_gradient * loss_scale)
     return loss_value
 
 
@@ -189,6 +199,118 @@ def _enable_checkpointing(model: torch.nn.Module) -> None:
         model.enable_input_require_grads()
 
 
+def _update_bnb_8bit_parameter_in_chunks(
+    optimizer: Any,
+    group: dict[str, Any],
+    parameter: torch.nn.Parameter,
+    group_index: int,
+    parameter_index: int,
+    *,
+    functional: Any | None = None,
+    chunk_elements: int = _BNB_8BIT_CHUNK_ELEMENTS,
+) -> None:
+    """Apply one bitsandbytes 8-bit update without overflowing its int32 size.
+
+    Gemma 4 E2B packs all Per-Layer Embeddings into one 2,348,810,240-element
+    parameter. bitsandbytes 0.50 passes ``numel`` to CUDA as ``c_int32``, so a
+    normal optimizer step overflows. Its optimizer state is blockwise, making
+    aligned launches over views mathematically equivalent to one launch.
+    """
+    if functional is None:
+        import bitsandbytes.functional as functional
+
+    if chunk_elements <= 0 or chunk_elements % _BNB_8BIT_BLOCK_SIZE:
+        raise ValueError(
+            f"chunk_elements must be a positive multiple of {_BNB_8BIT_BLOCK_SIZE}"
+        )
+    if parameter.grad is None:
+        return
+
+    parameter.data = parameter.data.contiguous()
+    parameter.grad = parameter.grad.contiguous()
+    state = optimizer.state[parameter]
+    if state["state1"].dtype != torch.uint8:
+        raise RuntimeError(
+            "chunked bitsandbytes updates require 8-bit optimizer state"
+        )
+
+    config = optimizer.get_config(group_index, parameter_index, group)
+    state["step"] += 1
+    step = state["step"]
+    betas = config["betas"]
+
+    flat_parameter = parameter.data.view(-1)
+    flat_gradient = parameter.grad.view(-1)
+    flat_state1 = state["state1"].view(-1)
+    flat_state2 = (
+        state["state2"].view(-1) if state.get("state2") is not None else None
+    )
+    if getattr(state["state1"], "is_paged", False):
+        flat_state1.is_paged = True
+    if flat_state2 is not None and getattr(state["state2"], "is_paged", False):
+        flat_state2.is_paged = True
+    total_elements = parameter.numel()
+
+    def state_slice(tensor: torch.Tensor | None, start: int, end: int):
+        if tensor is None:
+            return None
+        view = tensor[start:end]
+        # Unified-memory tensors report as CPU and bitsandbytes exempts them
+        # from its same-device check via this marker. Tensor views do not carry
+        # arbitrary Python attributes, so restore the marker on every slice.
+        if getattr(tensor, "is_paged", False):
+            view.is_paged = True
+        return view
+
+    for start in range(0, total_elements, chunk_elements):
+        end = min(start + chunk_elements, total_elements)
+        block_start = start // _BNB_8BIT_BLOCK_SIZE
+        block_end = (end + _BNB_8BIT_BLOCK_SIZE - 1) // _BNB_8BIT_BLOCK_SIZE
+        functional.optimizer_update_8bit_blockwise(
+            optimizer.optimizer_name,
+            flat_gradient[start:end],
+            flat_parameter[start:end],
+            state_slice(flat_state1, start, end),
+            state_slice(flat_state2, start, end),
+            betas[0],
+            betas[1],
+            betas[2] if len(betas) >= 3 else 0.0,
+            config.get("alpha", 0.0),
+            config["eps"],
+            step,
+            config["lr"],
+            state["qmap1"],
+            state.get("qmap2"),
+            state["absmax1"][block_start:block_end],
+            (
+                state["absmax2"][block_start:block_end]
+                if state.get("absmax2") is not None
+                else None
+            ),
+            config["weight_decay"],
+            gnorm_scale=1.0,
+            skip_zeros=config["skip_zeros"],
+        )
+
+
+class _LargeTensorSafeAdamW8bitMixin:
+    """Split only tensors that exceed bitsandbytes' safe CUDA launch size."""
+
+    @torch.no_grad()
+    def update_step(self, group, parameter, group_index, parameter_index):
+        if parameter.numel() <= _BNB_8BIT_CHUNK_ELEMENTS:
+            return super().update_step(
+                group, parameter, group_index, parameter_index
+            )
+        return _update_bnb_8bit_parameter_in_chunks(
+            self,
+            group,
+            parameter,
+            group_index,
+            parameter_index,
+        )
+
+
 def _make_optimizer(
     model: torch.nn.Module, lr: float, optimizer_name: str = "adamw"
 ) -> torch.optim.Optimizer:
@@ -196,10 +318,20 @@ def _make_optimizer(
     if optimizer_name == "adamw8bit":
         import bitsandbytes as bnb
 
+        class LargeTensorSafePagedAdamW8bit(
+            _LargeTensorSafeAdamW8bitMixin, bnb.optim.PagedAdamW8bit
+        ):
+            pass
+
+        class LargeTensorSafeAdamW8bit(
+            _LargeTensorSafeAdamW8bitMixin, bnb.optim.AdamW8bit
+        ):
+            pass
+
         try:
-            return bnb.optim.PagedAdamW8bit(parameters, lr=lr)
+            return LargeTensorSafePagedAdamW8bit(parameters, lr=lr)
         except (TypeError, RuntimeError):
-            return bnb.optim.AdamW8bit(parameters, lr=lr)
+            return LargeTensorSafeAdamW8bit(parameters, lr=lr)
     try:
         return torch.optim.AdamW(parameters, lr=lr, fused=True)
     except (TypeError, RuntimeError):
@@ -243,6 +375,9 @@ def sft_train(
 ) -> list[float]:
     if epochs <= 0:
         return []
+    # Reset immediately before optimization so model/tokenizer loading cannot
+    # advance a condition's training RNG differently across architectures.
+    set_seed(seed)
     _enable_checkpointing(model)
     optimizer = _make_optimizer(model, lr, optimizer_name)
     history: list[float] = []
@@ -294,6 +429,7 @@ def distill_on_auxiliary(
     device: torch.device,
     steps: int,
     batch_size: int,
+    grad_accum: int,
     lr: float,
     temperature: float,
     seed: int,
@@ -301,6 +437,9 @@ def distill_on_auxiliary(
 ) -> list[float]:
     if steps <= 0:
         return []
+    if grad_accum <= 0:
+        raise ValueError("grad_accum must be positive")
+    set_seed(seed)
     _enable_checkpointing(draft)
     target.eval()
     draft.train()
@@ -309,39 +448,45 @@ def distill_on_auxiliary(
     examples = [make_sft_example(record, tokenizer) for record in records]
     losses: list[float] = []
     for step in range(steps):
-        indices = rng.integers(0, len(examples), size=batch_size)
-        batch = collate_sft(
-            [examples[int(index)] for index in indices], int(tokenizer.pad_token_id)
-        )
-        batch = {key: value.to(device) for key, value in batch.items()}
         optimizer.zero_grad(set_to_none=True)
-        with torch.no_grad(), _autocast(device):
-            teacher_logits = target(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                use_cache=False,
-            ).logits[:, :-1]
-        with _autocast(device):
-            student_logits = draft(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                use_cache=False,
-            ).logits[:, :-1]
-        loss_value = _backward_chunked_distillation_loss(
-            student_logits,
-            teacher_logits,
-            batch["labels"][:, 1:],
-            temperature,
-        )
+        micro_losses: list[float] = []
+        for _micro_step in range(grad_accum):
+            indices = rng.integers(0, len(examples), size=batch_size)
+            batch = collate_sft(
+                [examples[int(index)] for index in indices],
+                int(tokenizer.pad_token_id),
+            )
+            batch = {key: value.to(device) for key, value in batch.items()}
+            with torch.no_grad(), _autocast(device):
+                teacher_logits = target(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    use_cache=False,
+                ).logits[:, :-1]
+            with _autocast(device):
+                student_logits = draft(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    use_cache=False,
+                ).logits[:, :-1]
+            micro_losses.append(
+                _backward_chunked_distillation_loss(
+                    student_logits,
+                    teacher_logits,
+                    batch["labels"][:, 1:],
+                    temperature,
+                    loss_scale=1.0 / grad_accum,
+                )
+            )
+            del teacher_logits, student_logits
         torch.nn.utils.clip_grad_norm_(draft.parameters(), 1.0)
         optimizer.step()
-        losses.append(loss_value)
+        losses.append(float(np.mean(micro_losses)))
         if (step + 1) % max(1, steps // 4) == 0:
             print(
                 f"draft distill step {step + 1}/{steps}: loss={losses[-1]:.5f}",
                 flush=True,
             )
-        del teacher_logits, student_logits
     del optimizer
     draft.eval()
     gc.collect()

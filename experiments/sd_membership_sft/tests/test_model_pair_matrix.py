@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -40,6 +41,21 @@ def test_dry_run_has_smoke_gate_and_exact_matrix():
     ) == 36
     assert all("--trainer full --optimizer adamw8bit" in line for line in conditions)
     assert all("--n-per-class 2000 --n-aux 2000" in line for line in conditions)
+    assert all("--target-lr 2e-5 --draft-lr 2e-5" in line for line in conditions)
+    assert all("--distill-steps 384 --distill-temperature 2.0" in line for line in conditions)
+    assert all("--seed " in line and "--data-seed " in line for line in conditions)
+    for line in conditions:
+        seed = re.search(r"\bseed=(\d+)\b", line)
+        assert seed is not None
+        assert f"PYTHONHASHSEED={seed.group(1)}" in line
+        assert f"--seed {seed.group(1)} --data-seed {seed.group(1)}" in line
+    assert all(
+        "--target-batch-size 2 --target-grad-accum 8" in line
+        and "--draft-batch-size 2 --draft-grad-accum 8" in line
+        for line in conditions
+    )
+    assert all("--split-manifest" in line for line in conditions)
+    assert all("model_pairs_shared_v2/shared_splits" in line for line in conditions)
     assert result.stdout.rstrip().endswith(
         "[plan-ok] conditions=36 checkpoints=108 workers=4"
     )

@@ -1,4 +1,4 @@
-"""EAGLE-3 speculator-head draft: target SFT plus head KD on post-cutoff pool data.
+"""Frozen-target EAGLE-3 adaptation on shared controlled-SFT splits.
 
 Draft approach 2 of 3 (see :mod:`drafts`): the deployment adapts the
 published EAGLE-3 speculator head instead of a plain draft LM. Pairs:
@@ -7,7 +7,7 @@ and ``llama31_8b_eagle3`` (unsloth/Meta-Llama-3.1-8B-Instruct + its
 EAGLE-3 speculator). Commands:
 
 - ``eagle-target``: full-parameter member SFT of the EAGLE-line target.
-- ``eagle-head``: continue-train the published EAGLE-3 head against the
+- ``eagle-head``: independently train a fresh published EAGLE-3 head against the
   fine-tuned target with KD; ``--variant aux`` uses auxiliary documents
   (member-blind, deployment-aligned), ``--variant member`` uses member
   documents (boundary condition). Only the data differs between variants.
@@ -34,16 +34,18 @@ import torch.nn.functional as F
 
 from .heads import eagle3_target_layer_ids, load_eagle3_speculator
 from ..data import collate_sft, make_sft_example
-from ..training import _autocast, _make_optimizer, load_causal_lm, sft_train
+from ..training import _autocast, _make_optimizer, load_causal_lm, set_seed, sft_train
 from .common import (
-    KD_TEMPERATURE,
     PAIR_MODELS,
     build_parser,
+    cached_snapshot,
+    checkpoint_complete,
     device_for,
     load_split,
     resolve_output_dir,
     run_command,
     run_dir_for,
+    save_pretrained_atomically,
     tokenizer_for,
     write_run_config,
 )
@@ -63,20 +65,54 @@ def parse_args() -> argparse.Namespace:
 def cmd_eagle_target(args: argparse.Namespace) -> None:
     device = device_for(args)
     run_dir = run_dir_for(args)
+    checkpoint = run_dir / "checkpoints" / "target"
+    if checkpoint_complete(checkpoint):
+        print(f"[skip] complete target checkpoint: {checkpoint}", flush=True)
+        return
     tokenizer = tokenizer_for(args.pair)
-    members, _nonmembers, _aux, _meta = load_split(tokenizer, args)
-    target = load_causal_lm(PAIR_MODELS[args.pair]["target"], device)
+    members, _nonmembers, _aux, metadata = load_split(tokenizer, args)
+    model = PAIR_MODELS[args.pair]
+    target = load_causal_lm(
+        model["target"],
+        device,
+        revision=model["target_revision"],
+        local_files_only=True,
+    )
     started = time.time()
     losses = sft_train(
         target, members, tokenizer, device,
         epochs=args.epochs, batch_size=args.batch_size, grad_accum=args.grad_accum,
-        lr=args.lr, seed=args.seed + 10, label="eagle target SFT",
+        lr=args.lr, seed=args.seed, label="eagle target SFT",
         optimizer_name="adamw8bit",
     )
-    (run_dir / "checkpoints" / "target").mkdir(parents=True, exist_ok=True)
-    target.save_pretrained(run_dir / "checkpoints" / "target")
-    tokenizer.save_pretrained(run_dir / "checkpoints" / "target")
-    write_run_config(args, {"target_sft_loss": losses, "seconds": time.time() - started})
+
+    def writer(path: Path) -> None:
+        target.save_pretrained(path)
+        tokenizer.save_pretrained(path)
+
+    save_pretrained_atomically(
+        checkpoint,
+        writer,
+        {
+            "stage": "target",
+            "pair": args.pair,
+            "base_model": model["target"],
+            "base_revision": model["target_revision"],
+            "seed": args.seed,
+            "data_seed": args.data_seed,
+            "epochs": args.epochs,
+            "full_parameter_sft": True,
+        },
+    )
+    write_run_config(
+        args,
+        {
+            "stage": "target",
+            "target_sft_loss": losses,
+            "seconds": time.time() - started,
+            "data": metadata,
+        },
+    )
     print(json.dumps({"command": "eagle-target", "losses": losses}, indent=2), flush=True)
 
 
@@ -85,6 +121,7 @@ def _eagle_kd_loss(
     target: Any,
     batch: dict[str, torch.Tensor],
     device: torch.device,
+    temperature: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """One EAGLE-3 KD step: draft-vocab KL against the tuned target teacher.
 
@@ -128,11 +165,11 @@ def _eagle_kd_loss(
     teacher_selected = teacher[valid]
     kd = (
         F.kl_div(
-            F.log_softmax(student_selected / KD_TEMPERATURE, dim=-1),
-            F.softmax(teacher_selected / KD_TEMPERATURE, dim=-1),
+            F.log_softmax(student_selected / temperature, dim=-1),
+            F.softmax(teacher_selected / temperature, dim=-1),
             reduction="batchmean",
         )
-        * KD_TEMPERATURE**2
+        * temperature**2
     )
     return kd, valid
 
@@ -141,8 +178,14 @@ def cmd_eagle_head(args: argparse.Namespace) -> None:
     assert args.variant in ("aux", "member")
     device = device_for(args)
     run_dir = run_dir_for(args)
+    head_dir = run_dir / "heads" / (
+        "auxiliary_head" if args.variant == "aux" else "member_head"
+    )
+    if checkpoint_complete(head_dir):
+        print(f"[skip] complete head checkpoint: {head_dir}", flush=True)
+        return
     tokenizer = tokenizer_for(args.pair)
-    members, _nonmembers, auxiliary, _meta = load_split(tokenizer, args)
+    members, _nonmembers, auxiliary, metadata = load_split(tokenizer, args)
     records = auxiliary if args.variant == "aux" else members
 
     from ..generalization import load_finetuned_model
@@ -150,46 +193,91 @@ def cmd_eagle_head(args: argparse.Namespace) -> None:
     target = load_finetuned_model(run_dir, PAIR_MODELS[args.pair]["target"], device)
     for parameter in target.parameters():
         parameter.requires_grad_(False)
-    speculator = load_eagle3_speculator(PAIR_MODELS[args.pair]["speculator"], device)
+    target.eval()
+    target.config.use_cache = False
+    model = PAIR_MODELS[args.pair]
+    speculator = load_eagle3_speculator(
+        model["speculator"], device, revision=model["speculator_revision"]
+    )
     speculator.train()
-    optimizer = _make_optimizer(speculator, args.kd_lr, "adamw")
+    set_seed(args.seed)
+    optimizer = _make_optimizer(speculator, args.head_lr, "adamw")
 
     examples = [make_sft_example(record, tokenizer) for record in records]
-    rng = np.random.default_rng(args.seed + 31)
+    rng = np.random.default_rng(args.seed)
     losses: list[float] = []
-    optimizer.zero_grad(set_to_none=True)
-    pending = 0
-    for step in range(args.kd_steps):
-        indices = rng.integers(0, len(examples), size=args.kd_batch_size)
-        batch = collate_sft(
-            [examples[int(i)] for i in indices], int(tokenizer.pad_token_id)
-        )
-        batch = {k: v.to(device) for k, v in batch.items()}
-        kd, _valid = _eagle_kd_loss(speculator, target, batch, device)
-        loss = kd / args.kd_grad_accum
-        loss.backward()
-        pending += 1
-        losses.append(float(kd.detach().cpu()))
-        if pending == args.kd_grad_accum:
-            torch.nn.utils.clip_grad_norm_(
-                [p for p in speculator.parameters() if p.requires_grad], 1.0
+    trainable = [p for p in speculator.parameters() if p.requires_grad]
+    for update in range(args.head_updates):
+        optimizer.zero_grad(set_to_none=True)
+        micro_losses: list[float] = []
+        for _micro in range(args.head_grad_accum):
+            indices = rng.integers(0, len(examples), size=args.head_batch_size)
+            batch = collate_sft(
+                [examples[int(i)] for i in indices], int(tokenizer.pad_token_id)
             )
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            pending = 0
-        if (step + 1) % max(1, args.kd_steps // 4) == 0:
-            print(f"eagle head kd step {step + 1}/{args.kd_steps}: loss={losses[-1]:.5f}", flush=True)
-    head_dir = run_dir / "heads" / f"{args.variant}_kd_head"
-    head_dir.mkdir(parents=True, exist_ok=True)
-    speculator.save_pretrained(head_dir)
-    from huggingface_hub import snapshot_download
+            batch = {k: v.to(device) for k, v in batch.items()}
+            kd, _valid = _eagle_kd_loss(
+                speculator, target, batch, device, args.kd_temperature
+            )
+            (kd / args.head_grad_accum).backward()
+            micro_losses.append(float(kd.detach().cpu()))
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+        optimizer.step()
+        losses.append(float(np.mean(micro_losses)))
+        if (update + 1) % max(1, args.head_updates // 4) == 0:
+            print(
+                f"eagle head {args.variant} update {update + 1}/"
+                f"{args.head_updates}: loss={losses[-1]:.5f}",
+                flush=True,
+            )
+    speculator.eval()
+    source = cached_snapshot(model["speculator"], model["speculator_revision"])
 
-    source = Path(snapshot_download(repo_id=PAIR_MODELS[args.pair]["speculator"]))
-    for name in ("eagle3.py",):
-        if (source / name).is_file():
-            shutil.copy(source / name, head_dir / name)
-    write_run_config(args, {"variant": args.variant, "kd_loss_last": losses[-1]})
-    print(json.dumps({"command": "eagle-head", "variant": args.variant, "final_loss": losses[-1]}), flush=True)
+    def writer(path: Path) -> None:
+        speculator.save_pretrained(path)
+        implementation = source / "eagle3.py"
+        if not implementation.is_file():
+            raise FileNotFoundError(f"eagle3.py not found in {source}")
+        shutil.copy(implementation, path / "eagle3.py")
+
+    save_pretrained_atomically(
+        head_dir,
+        writer,
+        {
+            "stage": f"{args.variant}_head",
+            "variant": args.variant,
+            "objective": "temperature-kl",
+            "initialized_from": model["speculator"],
+            "initialized_from_revision": model["speculator_revision"],
+            "target_checkpoint": str(run_dir / "checkpoints" / "target"),
+            "target_frozen": True,
+            "optimizer_updates": args.head_updates,
+            "effective_batch_size": args.head_batch_size * args.head_grad_accum,
+            "learning_rate": args.head_lr,
+            "temperature": args.kd_temperature,
+            "seed": args.seed,
+        },
+    )
+    write_run_config(
+        args,
+        {
+            "stage": f"{args.variant}_head",
+            "variant": args.variant,
+            "objective": "temperature-kl",
+            "kd_loss": losses,
+            "data": metadata,
+        },
+    )
+    print(
+        json.dumps(
+            {
+                "command": "eagle-head",
+                "variant": args.variant,
+                "final_loss": losses[-1],
+            }
+        ),
+        flush=True,
+    )
 
 
 def main() -> None:

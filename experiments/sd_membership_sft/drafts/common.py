@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import gc
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -19,28 +21,45 @@ import torch
 from transformers import AutoTokenizer
 
 from ..config import Config
-from ..splits import build_split, pool_path
+from ..splits import (
+    SHARED_SPLIT_SCHEMA_VERSION,
+    build_split_from_shared_manifest,
+    pool_path,
+)
 from ..training import set_seed
 
 ROOT = Path(__file__).resolve().parents[3]
 DATA_ROOT = Path("experiments/data/pools")
 RESULTS_ROOT = Path("experiments/results/protocol_ft")
-LAMBDA_MTP = 0.3
 KD_TEMPERATURE = 2.0
 KD_STEPS = 384
-KD_LR = 1e-4
+KD_LR = 2e-5
+EFFECTIVE_BATCH_SIZE = 16
+CHECKPOINT_MARKER = "_COMPLETE.json"
 
 
 PAIR_MODELS: dict[str, dict[str, str]] = {
     "qwen3_8b_eagle3": {
         "target": "Qwen/Qwen3-8B",
+        "target_revision": "b968826d9c46dd6066d109eabc6255188de91218",
         "speculator": "RedHatAI/Qwen3-8B-speculator.eagle3",
+        "speculator_revision": "08610ffa01dd9f16731fe8f627b85905b6aa51c4",
+        "kind": "eagle3",
     },
     "llama31_8b_eagle3": {
         "target": "unsloth/Meta-Llama-3.1-8B-Instruct",
+        "target_revision": "a2856192dd7c25b842431f39c179a6c2c2f627d1",
         "speculator": "RedHatAI/Llama-3.1-8B-Instruct-speculator.eagle3",
+        "speculator_revision": "f4fa34a8f803a0ba75d048d6b3dbc1ad5149e9ac",
+        "kind": "eagle3",
     },
-    "qwen35_9b_mtp": {"target": "Qwen/Qwen3.5-9B-Base"},
+    "qwen35_9b_mtp": {
+        "target": "Qwen/Qwen3.5-9B-Base",
+        "target_revision": "68c46c4b3498877f3ef123c856ecfde50c39f404",
+        "speculator": "Qwen/Qwen3.5-9B-Base",
+        "speculator_revision": "68c46c4b3498877f3ef123c856ecfde50c39f404",
+        "kind": "mtp",
+    },
 }
 
 
@@ -50,9 +69,48 @@ def run_dir_for(args: Any) -> Path:
 
 def load_split(tokenizer: Any, args: Any):
     pool = pool_path(args.benchmark)
-    return build_split(
-        args.benchmark, ROOT / pool, tokenizer, args.n_per_class, args.n_aux, args.data_seed
+    manifest = args.split_manifest
+    if not manifest.is_absolute():
+        manifest = ROOT / manifest
+    result = build_split_from_shared_manifest(
+        args.benchmark,
+        ROOT / pool,
+        tokenizer,
+        manifest,
+        tokenizer_source_for(args.pair),
     )
+    metadata = result[3]
+    audit_path = manifest.with_suffix(".audit.json")
+    if not audit_path.is_file():
+        raise RuntimeError(f"Shared split has no preflight audit: {audit_path}")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    source = tokenizer_source_for(args.pair)
+    tokenizer_audit = audit.get("tokenizers", {}).get(source)
+    if (
+        audit.get("shared_split_schema_version") != SHARED_SPLIT_SCHEMA_VERSION
+        or tokenizer_audit is None
+        or tokenizer_audit.get("shared_split_sha256")
+        != metadata["shared_split_sha256"]
+        or tokenizer_audit.get("cross_split_ngram_audit", {}).get("gate") != "PASS"
+    ):
+        raise RuntimeError(
+            f"Shared split audit is missing or stale for {source}: {audit_path}"
+        )
+    if metadata["split_seed"] != args.data_seed:
+        raise RuntimeError(
+            f"Shared split seed {metadata['split_seed']} does not match "
+            f"data_seed {args.data_seed}"
+        )
+    expected = {
+        "member": args.n_per_class,
+        "nonmember": args.n_per_class,
+        "auxiliary": args.n_aux,
+    }
+    if metadata["counts"] != expected:
+        raise RuntimeError(
+            f"Shared split counts {metadata['counts']} do not match {expected}"
+        )
+    return result
 
 
 def device_for(args: Any) -> torch.device:
@@ -65,22 +123,33 @@ def device_for(args: Any) -> torch.device:
 
 
 def tokenizer_for(pair: str) -> Any:
-    tokenizer = AutoTokenizer.from_pretrained(PAIR_MODELS[pair]["target"])
+    model = PAIR_MODELS[pair]
+    tokenizer = AutoTokenizer.from_pretrained(
+        model["target"],
+        revision=model["target_revision"],
+        local_files_only=True,
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
     return tokenizer
 
 
-def make_optimizer_from_params(params: list[torch.nn.Parameter], lr: float, name: str):
-    if name == "adamw8bit":
-        import bitsandbytes as bnb
+def tokenizer_source_for(pair: str) -> str:
+    model = PAIR_MODELS[pair]
+    return f"{model['target']}@{model['target_revision']}"
 
-        try:
-            return bnb.optim.PagedAdamW8bit(params, lr=lr)
-        except (TypeError, RuntimeError):
-            return bnb.optim.AdamW8bit(params, lr=lr)
-    return torch.optim.AdamW(params, lr=lr)
+
+def cached_snapshot(model_id: str, revision: str) -> Path:
+    from huggingface_hub import snapshot_download
+
+    return Path(
+        snapshot_download(
+            repo_id=model_id,
+            revision=revision,
+            local_files_only=True,
+        )
+    )
 
 
 def build_parser(description: str, pairs: list[str]) -> argparse.ArgumentParser:
@@ -100,10 +169,33 @@ def build_parser(description: str, pairs: list[str]) -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--kd-steps", type=int, default=KD_STEPS)
-    parser.add_argument("--kd-lr", type=float, default=KD_LR)
-    parser.add_argument("--kd-batch-size", type=int, default=2)
-    parser.add_argument("--kd-grad-accum", type=int, default=8)
+    parser.add_argument(
+        "--head-updates",
+        "--kd-steps",
+        dest="head_updates",
+        type=int,
+        default=KD_STEPS,
+        help="optimizer updates per head branch (not micro-batches)",
+    )
+    parser.add_argument(
+        "--head-lr", "--kd-lr", dest="head_lr", type=float, default=KD_LR
+    )
+    parser.add_argument(
+        "--head-batch-size",
+        "--kd-batch-size",
+        dest="head_batch_size",
+        type=int,
+        default=2,
+    )
+    parser.add_argument(
+        "--head-grad-accum",
+        "--kd-grad-accum",
+        dest="head_grad_accum",
+        type=int,
+        default=8,
+    )
+    parser.add_argument("--kd-temperature", type=float, default=KD_TEMPERATURE)
+    parser.add_argument("--split-manifest", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=None)
     return parser
 
@@ -113,12 +205,34 @@ def resolve_output_dir(args: argparse.Namespace) -> None:
         tag = "" if args.lr == 2e-5 else f"_lr{args.lr:g}"
         bench = "" if args.benchmark == "newstection" else f"_{args.benchmark}"
         args.output_dir = (
-            RESULTS_ROOT / args.pair / f"{args.pair}{bench}{tag}_epoch{args.epochs}"
+            RESULTS_ROOT
+            / args.pair
+            / f"{args.pair}{bench}{tag}_epoch{args.epochs}_seed{args.seed}"
         )
+
+
+def validate_training_contract(args: argparse.Namespace) -> None:
+    if args.data_seed != args.seed:
+        raise ValueError("data_seed and seed must be identical for this matrix")
+    if args.batch_size * args.grad_accum != EFFECTIVE_BATCH_SIZE:
+        raise ValueError(
+            "target batch_size * grad_accum must equal "
+            f"{EFFECTIVE_BATCH_SIZE}"
+        )
+    if args.head_batch_size * args.head_grad_accum != EFFECTIVE_BATCH_SIZE:
+        raise ValueError(
+            "head batch_size * head_grad_accum must equal "
+            f"{EFFECTIVE_BATCH_SIZE}"
+        )
+    if args.head_updates <= 0:
+        raise ValueError("head_updates must be positive")
+    if args.kd_temperature <= 0:
+        raise ValueError("kd_temperature must be positive")
 
 
 def run_command(args: argparse.Namespace, handlers: dict[str, Callable[[Any], None]]) -> None:
     started = time.time()
+    validate_training_contract(args)
     handler = handlers.get(args.command)
     if handler is None:
         raise ValueError(args.command)
@@ -138,7 +252,9 @@ def write_run_config(args: Any, extra: dict[str, Any]) -> None:
             "seed": args.seed,
             "data_seed": args.data_seed,
             "target_model": PAIR_MODELS[args.pair]["target"],
-            "draft_model": PAIR_MODELS[args.pair]["target"],  # no separate draft LM
+            "target_revision": PAIR_MODELS[args.pair]["target_revision"],
+            "draft_model": PAIR_MODELS[args.pair]["speculator"],
+            "draft_revision": PAIR_MODELS[args.pair]["speculator_revision"],
             "benchmark": args.benchmark,
             "pool_path": ROOT / DATA_ROOT / args.benchmark / "pool.jsonl",
             "n_per_class": args.n_per_class,
@@ -147,15 +263,122 @@ def write_run_config(args: Any, extra: dict[str, Any]) -> None:
             "target_batch_size": args.batch_size,
             "target_grad_accum": args.grad_accum,
             "target_lr": args.lr,
+            "draft_batch_size": args.head_batch_size,
+            "draft_grad_accum": args.head_grad_accum,
+            "draft_lr": args.head_lr,
+            "distill_steps": args.head_updates,
+            "distill_temperature": args.kd_temperature,
             "output_dir": run_dir,
         }
     )
-    artifact = {
-        "protocol_track": {"pair": args.pair, "command": args.command, **extra},
-        "config": cfg,
+    result_path = run_dir / "results.json"
+    artifact: dict[str, Any] = {}
+    if result_path.is_file():
+        artifact = json.loads(result_path.read_text(encoding="utf-8"))
+    artifact["protocol_track"] = {
+        "pair": args.pair,
+        "target_frozen_before_heads": True,
+        "shared_raw_split": str(args.split_manifest),
     }
+    artifact["config"] = cfg
+    stage_name = str(extra.get("stage", args.command))
+    artifact.setdefault("stages", {})[stage_name] = extra
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "results.json").write_text(
+    temporary = result_path.with_name(f".{result_path.name}.tmp.{os.getpid()}")
+    temporary.write_text(
         json.dumps(artifact, indent=2, ensure_ascii=False, default=str),
         encoding="utf-8",
     )
+    os.replace(temporary, result_path)
+
+
+def checkpoint_complete(path: Path) -> bool:
+    """Return true only for a finalized checkpoint with config and weights."""
+    if not (path / CHECKPOINT_MARKER).is_file() or not (path / "config.json").is_file():
+        return False
+    patterns = (
+        "*.safetensors",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    )
+    return any(any(path.glob(pattern)) for pattern in patterns)
+
+
+def partial_checkpoint_path(destination: Path) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    candidate = tempfile.mkdtemp(
+        prefix=f".{destination.name}.partial.", dir=destination.parent
+    )
+    path = Path(candidate)
+    path.rmdir()
+    return path
+
+
+def promote_checkpoint(
+    temporary: Path, destination: Path, metadata: dict[str, Any]
+) -> None:
+    """Validate and atomically promote a stage checkpoint.
+
+    An older incomplete destination is preserved under a timestamped hidden
+    name rather than being overwritten. The completion marker is written into
+    the temporary directory before the single rename that publishes it.
+    """
+    if not (temporary / "config.json").is_file():
+        raise RuntimeError(f"Checkpoint has no config.json: {temporary}")
+    json.loads((temporary / "config.json").read_text(encoding="utf-8"))
+    weight_patterns = (
+        "*.safetensors",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    )
+    if not any(any(temporary.glob(pattern)) for pattern in weight_patterns):
+        raise RuntimeError(f"Checkpoint has no model weights: {temporary}")
+    for index_name in (
+        "model.safetensors.index.json",
+        "pytorch_model.bin.index.json",
+    ):
+        index_path = temporary / index_name
+        if not index_path.is_file():
+            continue
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        missing_shards = sorted(
+            {
+                shard
+                for shard in index.get("weight_map", {}).values()
+                if not (temporary / shard).is_file()
+            }
+        )
+        if missing_shards:
+            raise RuntimeError(
+                f"Checkpoint index {index_path} references missing shards: "
+                f"{missing_shards}"
+            )
+    marker = {
+        "status": "complete",
+        "completed_unix_time": time.time(),
+        **metadata,
+    }
+    (temporary / CHECKPOINT_MARKER).write_text(
+        json.dumps(marker, indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+    if destination.exists():
+        if checkpoint_complete(destination):
+            raise FileExistsError(f"Complete checkpoint already exists: {destination}")
+        archived = destination.with_name(
+            f".{destination.name}.incomplete.{int(time.time())}.{os.getpid()}"
+        )
+        os.replace(destination, archived)
+    os.replace(temporary, destination)
+    if not checkpoint_complete(destination):
+        raise RuntimeError(f"Promoted checkpoint failed validation: {destination}")
+
+
+def save_pretrained_atomically(
+    destination: Path,
+    writer: Callable[[Path], None],
+    metadata: dict[str, Any],
+) -> None:
+    temporary = partial_checkpoint_path(destination)
+    writer(temporary)
+    promote_checkpoint(temporary, destination, metadata)

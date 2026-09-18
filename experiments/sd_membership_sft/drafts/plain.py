@@ -23,7 +23,12 @@ import torch
 
 from ..config import Config
 from ..data import records_metadata
-from ..splits import build_split, pool_path
+from ..splits import (
+    SHARED_SPLIT_SCHEMA_VERSION,
+    build_split,
+    build_split_from_shared_manifest,
+    pool_path,
+)
 from ..training import (
     add_lora,
     distill_on_auxiliary,
@@ -57,8 +62,14 @@ def parse_args() -> argparse.Namespace:
     ]:
         parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=kind)
     parser.add_argument("--pool-path", type=Path)
+    parser.add_argument(
+        "--split-manifest",
+        type=Path,
+        help="preflight-audited shared raw document-ID assignment",
+    )
     parser.add_argument("--target-lr", type=float)
     parser.add_argument("--draft-lr", type=float)
+    parser.add_argument("--distill-temperature", type=float)
     parser.add_argument(
         "--benchmark",
         choices=["wikitection", "newstection", "arxivtection"],
@@ -90,6 +101,7 @@ def load_config(args: argparse.Namespace) -> Config:
             "skip_trained_drafts",
             "no_save_adapters",
             "resume",
+            "split_manifest",
         } or value is None:
             continue
         values[key] = value
@@ -228,6 +240,71 @@ def _checkpoint_complete(path: Path) -> bool:
     )
 
 
+def _load_condition_split(
+    cfg: Config,
+    args: argparse.Namespace,
+    tokenizer: Any,
+    root: Path,
+):
+    pool = cfg.pool_path if cfg.pool_path is not None else pool_path(cfg.benchmark)
+    if not pool.is_absolute():
+        pool = root / pool
+    split_manifest = getattr(args, "split_manifest", None)
+    if split_manifest is None:
+        return build_split(
+            cfg.benchmark,
+            pool,
+            tokenizer,
+            cfg.n_per_class,
+            cfg.n_aux,
+            cfg.data_seed,
+        )
+
+    if not split_manifest.is_absolute():
+        split_manifest = root / split_manifest
+    tokenizer_source = f"{cfg.draft_model}@{cfg.draft_revision}"
+    result = build_split_from_shared_manifest(
+        cfg.benchmark,
+        pool,
+        tokenizer,
+        split_manifest,
+        tokenizer_source,
+    )
+    metadata = result[3]
+    audit_path = split_manifest.with_suffix(".audit.json")
+    if not audit_path.is_file():
+        raise RuntimeError(f"Shared split has no preflight audit: {audit_path}")
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    tokenizer_audit = audit.get("tokenizers", {}).get(tokenizer_source)
+    if (
+        audit.get("shared_split_schema_version") != SHARED_SPLIT_SCHEMA_VERSION
+        or tokenizer_audit is None
+        or tokenizer_audit.get("shared_split_sha256")
+        != metadata["shared_split_sha256"]
+        or tokenizer_audit.get("cross_split_ngram_audit", {}).get("gate")
+        != "PASS"
+    ):
+        raise RuntimeError(
+            f"Shared split audit is missing or stale for {tokenizer_source}: "
+            f"{audit_path}"
+        )
+    if metadata["split_seed"] != cfg.data_seed:
+        raise RuntimeError(
+            f"Shared split seed {metadata['split_seed']} does not match "
+            f"data_seed {cfg.data_seed}"
+        )
+    expected = {
+        "member": cfg.n_per_class,
+        "nonmember": cfg.n_per_class,
+        "auxiliary": cfg.n_aux,
+    }
+    if metadata["counts"] != expected:
+        raise RuntimeError(
+            f"Shared split counts {metadata['counts']} do not match {expected}"
+        )
+    return result
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_config(args)
@@ -250,16 +327,8 @@ def main() -> None:
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    pool = cfg.pool_path if cfg.pool_path is not None else pool_path(cfg.benchmark)
-    if not pool.is_absolute():
-        pool = root / pool
-    members, nonmembers, auxiliary, data_metadata = build_split(
-        cfg.benchmark,
-        pool,
-        tokenizer,
-        cfg.n_per_class,
-        cfg.n_aux,
-        cfg.data_seed,
+    members, nonmembers, auxiliary, data_metadata = _load_condition_split(
+        cfg, args, tokenizer, root
     )
     full_finetune = cfg.trainer == "full"
     checkpoint_dir = "checkpoints" if full_finetune else "adapters"
@@ -294,7 +363,7 @@ def main() -> None:
             cfg.target_batch_size,
             cfg.target_grad_accum,
             cfg.target_lr,
-            cfg.seed + 10,
+            cfg.seed,
             "target SFT",
             optimizer_name=cfg.optimizer,
         )
@@ -331,9 +400,10 @@ def main() -> None:
                 device,
                 cfg.distill_steps,
                 cfg.draft_batch_size,
+                cfg.draft_grad_accum,
                 cfg.draft_lr,
                 cfg.distill_temperature,
-                cfg.seed + 20,
+                cfg.seed,
                 optimizer_name=cfg.optimizer,
             )
             if cfg.save_adapters:
@@ -379,7 +449,7 @@ def main() -> None:
                 cfg.draft_batch_size,
                 cfg.draft_grad_accum,
                 cfg.draft_lr,
-                cfg.seed + 21,
+                cfg.seed,
                 "member-data draft SFT",
                 optimizer_name=cfg.optimizer,
             )

@@ -56,17 +56,33 @@ def ensure_mtp_conversion(
     return converted
 
 
-def load_mtp_speculator(converted: Path | str, device: torch.device) -> Any:
+def load_mtp_speculator(
+    converted: Path | str,
+    device: torch.device,
+    verifier_checkpoint: Path | str | None = None,
+) -> Any:
     """Load a converted native-MTP speculator (batch-1 teacher-forced API).
 
     The library wraps forward in ``conditional_torch_compile``, which breaks
     the autograd graph in eval-then-train flows; unwrap it so head training
     (joint / adapt) and measurement share the eager path.
     """
-    from speculators import SpeculatorModel
+    from speculators import SpeculatorModel, SpeculatorModelConfig
+
+    config = SpeculatorModelConfig.from_pretrained(
+        str(converted), local_files_only=True
+    )
+    if verifier_checkpoint is not None:
+        # The trainable native MTP layer remains the pinned published layer,
+        # while verifier-owned frozen embeddings/output weights must match the
+        # condition's SFT target checkpoint.
+        config.speculators_config.verifier.name_or_path = str(verifier_checkpoint)
 
     model = SpeculatorModel.from_pretrained(
-        str(converted), local_files_only=True, dtype=torch.bfloat16
+        str(converted),
+        config=config,
+        local_files_only=True,
+        dtype=torch.bfloat16,
     )
     model = model.to(device)
     model.eval()
@@ -84,7 +100,11 @@ def load_mtp_speculator(converted: Path | str, device: torch.device) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def load_eagle3_speculator(speculator_id: str, device: torch.device) -> Any:
+def load_eagle3_speculator(
+    speculator_id: str,
+    device: torch.device,
+    revision: str | None = None,
+) -> Any:
     """Load a RedHatAI eagle3 checkpoint through its bundled ``eagle3.py``.
 
     Follows the historical (August 2026) loading path: the remote module is
@@ -100,7 +120,11 @@ def load_eagle3_speculator(speculator_id: str, device: torch.device) -> Any:
     else:
         from huggingface_hub import snapshot_download
 
-        snapshot = snapshot_download(repo_id=speculator_id)
+        snapshot = snapshot_download(
+            repo_id=speculator_id,
+            revision=revision,
+            local_files_only=True,
+        )
     implementation = Path(snapshot) / "eagle3.py"
     if not implementation.is_file():
         raise FileNotFoundError(f"eagle3.py not found in {snapshot}")

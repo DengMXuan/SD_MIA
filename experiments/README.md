@@ -1,10 +1,11 @@
 # Experiments
 
 This directory contains two independent membership-audit tracks: controlled
-post-cutoff instruction-SFT experiments with Qwen3 targets, and pretrained
-Pythia 6.9B / 1.4B evaluation using frozen MIMIR labels. It also contains the
-target-only baseline suite and the offline SD p/q, PQ-gap, directional and M1
-analyses. Generated pools, checkpoints, caches and reports live under
+post-cutoff instruction-SFT experiments across plain-model, EAGLE-3, and MTP
+pairs, and pretrained Pythia 6.9B / 1.4B evaluation using frozen MIMIR labels.
+It also contains the target-only baseline suite and the offline SD p/q, PQ-gap,
+directional and M1 analyses. Generated pools, checkpoints, caches and reports
+live under
 `experiments/data/` and `experiments/results/`; both are intentionally ignored
 by Git.
 
@@ -24,6 +25,9 @@ experiments/
 │   ├── training.py              # model loading, LoRA/full SFT, auxiliary distillation, saving
 │   ├── generalization.py        # generation-quality generalization check for a finished run
 │   ├── retrain_sft.sh           # batch retrain script for the benchmark matrix
+│   ├── retrain_unified_matrix.sh # all five pairs with one preflight and shared splits
+│   ├── retrain_model_pairs.sh    # two plain-model pairs (standalone child launcher)
+│   ├── retrain_speculator_matrix.sh # three EAGLE-3/MTP pairs (child launcher)
 │   └── drafts/                  # the three parallel SD draft-adaptation approaches
 │       ├── plain.py             # 1/3 plain small causal-LM draft (e.g. Qwen3-1.7B-Base)
 │       ├── eagle3.py            # 2/3 published EAGLE-3 speculator head
@@ -48,7 +52,8 @@ experiments/
     └── protocol_ft/             # EAGLE-3 / MTP run directories (historical root name)
 ```
 
-The main controlled-SFT matrix is three pools × target epochs 1 and 3:
+The original single-pair controlled-SFT matrix is three pools × target epochs
+1 and 3:
 
 | Benchmark | Response token band | Target output |
 |---|---:|---|
@@ -105,7 +110,79 @@ Every approach replays the same frozen pools and writes a
 `generalization.py`, so fine-tuned targets can be reloaded and scored
 the same way regardless of approach.
 
-### 2a. Plain small-model draft (`drafts.plain`)
+### 2a. Unified five-pair matrix (recommended)
+
+`retrain_unified_matrix.sh` is the single supported entry point for the full
+rerun. It covers 5 model pairs × 3 datasets × target epochs 1/3 × seeds
+1919/1949/1978 = 90 conditions. Every condition produces a target plus two
+draft variants, for 270 experiment artifacts:
+
+| Child matrix | Pairs | Conditions | Artifacts |
+|---|---:|---:|---:|
+| Plain Qwen3-8B/1.7B and Gemma4-12B/E2B | 2 | 36 | 108 |
+| Qwen3 EAGLE-3, Llama EAGLE-3, Qwen3.5 native MTP | 3 | 54 | 162 |
+| Total | 5 | 90 | 270 |
+
+No separate config file is needed. The launcher pins learning rate `2e-5`,
+effective batch size 16, and KD temperature 2.0. Auxiliary plain-draft KD and
+every EAGLE-3/MTP head branch use 384 optimizer updates; the plain member-data
+draft retains its matched 1/3-epoch SFT definition. All three datasets use the
+empirically validated micro-batch 2 × accumulation 8. For a condition, `seed`,
+`data_seed`, `PYTHONHASHSEED`, split construction, target SFT, and draft/head
+training all receive the same numeric seed.
+
+The unified preflight checks every pinned offline model and builds only nine
+schema-v2 split manifests: one per dataset and seed, audited under all five
+actual training tokenizers. Consequently, all five pairs use exactly the same
+raw member/nonmember/auxiliary document IDs for a fixed dataset and seed. An
+existing split with a different tokenizer set, pool hash, seed, count, or audit
+is rejected rather than silently reused.
+
+Inspect the full command plan without loading models, touching GPUs, or
+creating result directories:
+
+```bash
+MATRIX_GPUS="3 4 5 6" \
+  bash experiments/sd_membership_sft/retrain_unified_matrix.sh --dry-run
+```
+
+Before the long run, perform the offline cache/GPU check and CPU-heavy shared
+split audit:
+
+```bash
+MATRIX_GPUS="3 4 5 6" \
+  bash experiments/sd_membership_sft/retrain_unified_matrix.sh --preflight-only
+```
+
+When that succeeds, launch the entire experiment:
+
+```bash
+nohup env MATRIX_GPUS="3 4 5 6" \
+  bash experiments/sd_membership_sft/retrain_unified_matrix.sh \
+  > unified_matrix_v1.launch.log 2>&1 &
+```
+
+The two child matrices run sequentially because each one already fills all
+four GPUs with one single-GPU worker per device. Conditions are never split
+across GPUs. If a child matrix fails, the other child matrix still runs; the
+unified command finally exits nonzero unless all 90 conditions are complete.
+Rerunning the identical command resumes/skips completed artifacts and retries
+missing work.
+
+```bash
+bash experiments/sd_membership_sft/retrain_unified_matrix.sh --status
+tail -f unified_matrix_v1.launch.log
+```
+
+The new default root is `experiments/results/sft_runs/unified_matrix_v1/`,
+with shared splits in `shared_splits/`, plain-pair outputs in `model_pairs/`,
+and EAGLE-3/MTP outputs in `speculator_matrix/`. It does not resume from or
+overwrite either earlier `model_pairs/`, `model_pairs_shared_v2/`, or
+`speculator_matrix/` roots. Change physical GPUs with `MATRIX_GPUS`; provide
+exactly four distinct indices. If sharing busy devices is deliberate,
+`MATRIX_SKIP_GPU_BUSY_CHECK=1` disables only the busy-process gate.
+
+### 2b. Plain small-model draft (`drafts.plain`)
 
 Builds the controlled split, fine-tunes the target on member records,
 distills an auxiliary-only draft (member-blind, deployment-aligned),
@@ -134,14 +211,16 @@ Key flags:
   path. `--optimizer adamw8bit` swaps in a bitsandbytes paged 8-bit AdamW
   so an 8B target fits on one A100-80GB.
 - `--benchmark` selects the frozen pool: `wikitection`, `newstection`,
-  or `arxivtection` (ArXiv keeps its 2048-token band; use
-  `--target-batch-size 1 --target-grad-accum 16` there, likewise for the
-  draft flags).
+  or `arxivtection`. The controlled matrix uses micro-batch 2 × accumulation
+  8 for all three; ArXiv retains its longer 2048-token response band.
 - `--n-per-class` member/nonmember records; `--n-aux` auxiliary records
   for draft distillation. Records are selected at load time under the
   target tokenizer's token band (128..512 tokens for Wiki/News,
   1024..2048 for ArXiv) with the fixed instruction prompt; only the
   document continuation contributes loss (prompt masked with `-100`).
+- `--split-manifest` loads a preflight-audited shared raw document-ID
+  assignment. Matrix launchers require this mode so model pairs receive the
+  same member/nonmember/auxiliary documents for a dataset and seed.
 - `--skip-trained-drafts` trains the target only; `--skip-training`
   resumes from saved checkpoints.
 
@@ -154,50 +233,93 @@ into the output directory, plus `checkpoints/` (full runs) or `adapters/`
 epochs 1 and 3, one benchmark per GPU) and skips conditions whose
 `results.json` already exists.
 
-### 2b. EAGLE-3 speculator head (`drafts.eagle3`)
-
-Pairs: `qwen3_8b_eagle3` (Qwen/Qwen3-8B +
-RedHatAI/Qwen3-8B-speculator.eagle3) and `llama31_8b_eagle3`
-(unsloth/Meta-Llama-3.1-8B-Instruct + its EAGLE-3 speculator). Stages,
-run in order:
+For a standalone two-pair Qwen3-8B/1.7B and Gemma4-12B/E2B run, use the child
+shared-split launcher. Its first preflight deterministically filters truncated
+token near-duplicates under both pair tokenizers, backfills rejected candidates
+from the frozen pool, and writes nine schema-v2 manifests plus audit files:
 
 ```bash
-uv run --no-sync python -m experiments.sd_membership_sft.drafts.eagle3 \
-  --gpu 0 --pair qwen3_8b_eagle3 --epochs 3 eagle-target
-uv run --no-sync python -m experiments.sd_membership_sft.drafts.eagle3 \
-  --gpu 0 --pair qwen3_8b_eagle3 --epochs 3 eagle-head --variant aux
+bash experiments/sd_membership_sft/retrain_model_pairs.sh --preflight-only
+
+nohup bash experiments/sd_membership_sft/retrain_model_pairs.sh \
+  > model_pairs_shared_v2.launch.log 2>&1 &
 ```
 
-- `eagle-target`: full-parameter member SFT of the EAGLE-line target
-  (trunk hyperparameters mirror the mainline settings: lr 2e-5,
-  effective batch 16, PagedAdamW8bit, bf16).
-- `eagle-head --variant aux|member`: KD continue-training of the EAGLE-3
-  head against the fine-tuned target (`aux` uses only document-disjoint
-  auxiliary records; `member` is the same-member boundary condition).
+New results default to
+`experiments/results/sft_runs/model_pairs_shared_v2/`; the earlier
+tokenizer-specific `model_pairs/` artifacts are preserved and are never resumed
+into the shared-split rerun. Override physical devices with
+`MATRIX_GPUS="3 4 5 6"` as needed.
 
-### 2c. Native MTP head (`drafts.mtp`)
+### 2c. Frozen-target EAGLE-3 and native-MTP matrix
 
-Pair: `qwen35_9b_mtp` (Qwen/Qwen3.5-9B-Base). Stages, run in order:
+`retrain_speculator_matrix.sh` is the standalone child launcher for the three
+pinned target–head pairs:
+
+- `Qwen/Qwen3-8B` + `RedHatAI/Qwen3-8B-speculator.eagle3`
+- `unsloth/Meta-Llama-3.1-8B-Instruct` + its RedHatAI EAGLE-3 head
+- `Qwen/Qwen3.5-9B-Base` + its original native MTP head
+
+The launcher covers 3 pairs × 3 datasets × target epochs 1/3 × 3 seeds = 54
+conditions. Each condition saves exactly three experiment artifacts: a full
+target checkpoint, an auxiliary-data head, and a member-data head (162 total).
+The target is frozen before either head starts. EAGLE-3 uses KD for both head
+branches; MTP uses KD for the auxiliary branch and native MTP cross-entropy for
+the member branch. Both branches reload the same immutable original head and
+never inherit each other's updates.
+
+No separate config file is required. The launcher fixes full-parameter BF16
+target SFT with paged 8-bit AdamW, learning rate `2e-5`, effective batch 16,
+and 2,000 member documents. Head training uses 384 optimizer updates (not 384
+micro-batches), effective batch 16, learning rate `2e-5`, and KD temperature
+2.0 where applicable. All three datasets use the same empirically validated
+micro-batch 2 × accumulation 8 configuration.
+
+Inspect the complete plan without touching GPUs or creating files:
 
 ```bash
-uv run --no-sync python -m experiments.sd_membership_sft.drafts.mtp \
-  --gpu 0 --pair qwen35_9b_mtp mtp-prehead
-uv run --no-sync python -m experiments.sd_membership_sft.drafts.mtp \
-  --gpu 0 --pair qwen35_9b_mtp mtp-joint
-uv run --no-sync python -m experiments.sd_membership_sft.drafts.mtp \
-  --gpu 0 --pair qwen35_9b_mtp mtp-adapt
+bash experiments/sd_membership_sft/retrain_speculator_matrix.sh --dry-run
 ```
 
-- `mtp-prehead`: convert the checkpoint's native depth-1 MTP layer into
-  a speculators model (the "pre-head"; no extra training).
-- `mtp-joint`: joint fine-tune trunk + native MTP head on member
-  documents with `LM CE + lambda_mtp * MTP CE` (the "MTP trains
-  together" condition).
-- `mtp-adapt`: member-blind KD adaptation of the joint head to the
-  joint target on auxiliary documents.
+Then run the offline preflight. It checks that physical GPUs 3–6 are present
+and idle, validates every pinned cached revision, and creates nine shared raw
+document-ID manifests (three datasets × three seeds). All three model families
+therefore receive the same member/nonmember/auxiliary documents for a dataset
+and seed. Candidate documents are checked under every tokenizer in seeded
+order; exact-token or near-duplicate candidates are rejected and
+deterministically backfilled before the shared assignment is frozen. A final
+cross-split 13-gram audit fails closed if any tokenizer still exceeds the 80%
+threshold. The first preflight is a CPU-heavy tokenization/audit pass; later
+launches verify and reuse its immutable manifests and audit attestations.
 
-Outputs land under `experiments/results/protocol_ft/<pair>/` (the root
-keeps its historical name).
+```bash
+bash experiments/sd_membership_sft/retrain_speculator_matrix.sh --preflight-only
+```
+
+Start all four single-GPU workers:
+
+```bash
+nohup bash experiments/sd_membership_sft/retrain_speculator_matrix.sh \
+  > speculator_matrix.launch.log 2>&1 &
+```
+
+Each worker exposes one physical GPU through `CUDA_VISIBLE_DEVICES` and the
+Python process uses `cuda:0`; a condition itself is not split across GPUs. A
+failure is recorded but does not stop unrelated conditions. Relaunching the
+same command validates completion markers, reuses a complete frozen target,
+and runs only missing head stages. The final launcher exit status is nonzero
+if any condition is still incomplete.
+
+```bash
+bash experiments/sd_membership_sft/retrain_speculator_matrix.sh --status
+tail -f speculator_matrix.launch.log
+```
+
+Outputs are under
+`experiments/results/sft_runs/speculator_matrix/<pair>/<dataset>/epoch<E>/seed<S>/`;
+per-stage logs are in each condition's `logs/` directory. Override the four
+exclusive devices with `MATRIX_GPUS="3 4 5 6"`. If GPU sharing is intentional,
+`MATRIX_SKIP_GPU_BUSY_CHECK=1` disables only the busy-process gate.
 
 ## 3. Generalization check
 

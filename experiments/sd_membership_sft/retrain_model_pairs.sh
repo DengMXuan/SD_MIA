@@ -10,7 +10,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
-RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/model_pairs}
+RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/model_pairs_shared_v2}
+SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 MODEL_REVISIONS_ENV=${MODEL_REVISIONS_ENV:-$SCRIPT_DIR/model_pair_revisions.env}
 PYTHON=${PYTHON:-.venv/bin/python}
 read -r -a GPUS <<< "${MATRIX_GPUS:-3 4 5 6}"
@@ -21,18 +22,21 @@ MODE=run
 
 usage() {
   cat <<'EOF'
-Usage: retrain_model_pairs.sh [--dry-run | --preflight-only]
+Usage: retrain_model_pairs.sh [--dry-run | --preflight-only | --status]
 
   --dry-run         Print the smoke condition and remaining matrix commands.
                     No directories are created and no training is started.
-  --preflight-only  Validate cached model revisions, tokenizers, datasets, and
-                    configured GPUs. No training is started.
+  --preflight-only  Validate cached models, GPUs, and create/audit all nine
+                    shared raw-split manifests. No training is started.
+  --status          Count complete conditions without checking GPUs or models.
 
 Environment overrides:
   MATRIX_GPUS="3 4 5 6"  Exclusive worker GPU indices.
   RESULTS_ROOT=...        Matrix output directory.
+  SPLIT_ROOT=...          Preflight-audited shared raw-split manifests.
   MODEL_REVISIONS_ENV=... File containing the four pinned revisions.
   PYTHON=...              Python interpreter used for preflight and training.
+  MATRIX_SKIP_PREFLIGHT=1 Internal: reuse a supervising launcher's preflight.
 EOF
 }
 
@@ -40,6 +44,7 @@ case "${1:-}" in
   "") ;;
   --dry-run) MODE=dry-run ;;
   --preflight-only) MODE=preflight ;;
+  --status) MODE=status ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
@@ -127,6 +132,7 @@ preflight() {
   done
 
   HF_HUB_OFFLINE=1 "$PYTHON" - \
+    "$SPLIT_ROOT" \
     "${GPUS[*]}" \
     "Qwen/Qwen3-8B-Base@$QWEN_TARGET_REVISION" \
     "Qwen/Qwen3-1.7B-Base@$QWEN_DRAFT_REVISION" \
@@ -139,8 +145,10 @@ import sys
 import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from experiments.sd_membership_sft.head_matrix_preflight import prepare_shared_splits
 
-gpu_indices = [int(value) for value in sys.argv[1].split()]
+split_root = Path(sys.argv[1])
+gpu_indices = [int(value) for value in sys.argv[2].split()]
 if os.environ.get("MATRIX_SKIP_GPU_CHECK") != "1":
     visible_devices = torch.cuda.device_count()
     missing = [index for index in gpu_indices if index >= visible_devices]
@@ -153,8 +161,10 @@ else:
     print("[gpu-check-skipped]")
 
 tokenizers = {}
-for item in sys.argv[2:]:
+revisions = {}
+for item in sys.argv[3:]:
     model_id, revision = item.rsplit("@", 1)
+    revisions[model_id] = revision
     snapshot = Path(
         snapshot_download(model_id, revision=revision, local_files_only=True)
     )
@@ -195,6 +205,12 @@ for target_id, draft_id in (
             f"incompatible pair tokenizers: {target_id} and {draft_id}"
         )
     print(f"[pair-ok] {target_id} + {draft_id}")
+
+shared_tokenizers = {
+    f"{draft_id}@{revisions[draft_id]}": tokenizers[draft_id]
+    for draft_id in ("Qwen/Qwen3-1.7B-Base", "google/gemma-4-E2B")
+}
+prepare_shared_splits(shared_tokenizers, split_root)
 PY
 }
 
@@ -202,7 +218,7 @@ write_manifest() {
   mkdir -p "$RESULTS_ROOT"
   local temporary_manifest
   temporary_manifest=$(mktemp "$RESULTS_ROOT/.MATRIX.tsv.XXXXXX") || return 2
-  printf 'pair\tbenchmark\tepoch\tseed\ttarget_checkpoint\tdraft_kd_checkpoint\tdraft_member_checkpoint\n' \
+  printf 'pair\tbenchmark\tepoch\tseed\tshared_split_manifest\ttarget_checkpoint\tdraft_kd_checkpoint\tdraft_member_checkpoint\n' \
     > "$temporary_manifest"
   local pair benchmark epoch seed output_dir
   for pair in qwen3 gemma4; do
@@ -210,8 +226,9 @@ write_manifest() {
       for epoch in "${EPOCHS[@]}"; do
         for seed in "${SEEDS[@]}"; do
           output_dir="$RESULTS_ROOT/$pair/$benchmark/epoch${epoch}/seed${seed}"
-          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$pair" "$benchmark" "$epoch" "$seed" \
+            "$SPLIT_ROOT/$benchmark/seed${seed}.json" \
             "$output_dir/checkpoints/target" \
             "$output_dir/checkpoints/draft_auxiliary_distilled" \
             "$output_dir/checkpoints/draft_member_sft" \
@@ -231,7 +248,9 @@ run_condition() {
   local gpu=$5
   local phase=$6
   local output_dir="$RESULTS_ROOT/$pair/$benchmark/epoch${epoch}/seed${seed}"
+  local split_manifest="$SPLIT_ROOT/$benchmark/seed${seed}.json"
   local status
+  local batch_size=2 grad_accum=8
   local -a resume=()
   local -a command
 
@@ -251,10 +270,12 @@ run_condition() {
     --benchmark "$benchmark" --target-epochs "$epoch"
     --trainer full --optimizer adamw8bit
     --target-lr 2e-5 --draft-lr 2e-5
-    --target-batch-size 2 --target-grad-accum 8
-    --draft-batch-size 2 --draft-grad-accum 8
+    --target-batch-size "$batch_size" --target-grad-accum "$grad_accum"
+    --draft-batch-size "$batch_size" --draft-grad-accum "$grad_accum"
     --n-per-class 2000 --n-aux 2000
-    --distill-steps 384 --seed "$seed" --data-seed "$seed"
+    --distill-steps 384 --distill-temperature 2.0
+    --seed "$seed" --data-seed "$seed"
+    --split-manifest "$split_manifest"
     --output-dir "$output_dir" "${resume[@]}"
   )
 
@@ -262,14 +283,16 @@ run_condition() {
     printf '[%s] condition pair=%s benchmark=%s epoch=%s seed=%s gpu=%s command=' \
       "$phase" "$pair" "$benchmark" "$epoch" "$seed" "$gpu"
     printf '%q ' env CUDA_VISIBLE_DEVICES="$gpu" HF_HUB_OFFLINE=1 \
-      TOKENIZERS_PARALLELISM=false "${command[@]}"
+      TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false \
+      PYTHONHASHSEED="$seed" "${command[@]}"
     printf '\n'
     return 0
   fi
 
   mkdir -p "$output_dir"
   echo "[start] condition pair=$pair benchmark=$benchmark epoch=$epoch seed=$seed gpu=$gpu"
-  CUDA_VISIBLE_DEVICES="$gpu" HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false \
+  CUDA_VISIBLE_DEVICES="$gpu" HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+    TOKENIZERS_PARALLELISM=false PYTHONHASHSEED="$seed" \
     "${command[@]}" > "$output_dir/train.log" 2>&1
   status=$?
   if (( status != 0 )); then
@@ -326,6 +349,12 @@ count_complete_conditions() {
   printf '%s\n' "$completed"
 }
 
+if [ "$MODE" = status ]; then
+  completed=$(count_complete_conditions)
+  echo "[status] completed_conditions=$completed expected_conditions=36 completed_checkpoints=$((completed * 3)) expected_checkpoints=108"
+  exit 0
+fi
+
 if [ "$MODE" = dry-run ]; then
   run_condition gemma4 newstection 1 1919 "${GPUS[0]}" smoke || exit
   for worker_index in "${!GPUS[@]}"; do
@@ -335,7 +364,11 @@ if [ "$MODE" = dry-run ]; then
   exit 0
 fi
 
-preflight || exit
+if [ "${MATRIX_SKIP_PREFLIGHT:-0}" = 1 ]; then
+  echo "[preflight-reused] supervised launcher supplied shared manifests and audits"
+else
+  preflight || exit
+fi
 echo "[preflight-ok] cached models, pair tokenizers, and datasets are ready"
 if [ "$MODE" = preflight ]; then
   exit 0

@@ -9,8 +9,8 @@ as equally deployment-shaped options:
   member-data SFT boundary variant.
 - :mod:`drafts.eagle3` — the published EAGLE-3 speculator head, KD-adapted
   to the fine-tuned target.
-- :mod:`drafts.mtp` — the checkpoint's native MTP head, jointly SFT'd with
-  the trunk and then KD-adapted.
+- :mod:`drafts.mtp` — the checkpoint's native MTP head, independently
+  initialized for auxiliary KD and member-data MTP-CE after target SFT.
 
 All three write run artifacts under ``experiments/results`` and replay
 their data through the same frozen post-cutoff pools.

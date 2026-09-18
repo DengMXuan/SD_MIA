@@ -1,27 +1,24 @@
-"""Native-MTP-head draft: joint trunk+MTP SFT plus head KD on post-cutoff pool data.
+"""Frozen-target adaptation of Qwen3.5's native MTP head.
 
-Draft approach 3 of 3 (see :mod:`drafts`): the deployment adapts the
-checkpoint's own native MTP head instead of a plain draft LM or an
-EAGLE-3 speculator. Pair: ``qwen35_9b_mtp`` (Qwen/Qwen3.5-9B-Base).
-Commands, run in order:
+Each condition has four restartable stages:
 
-- ``mtp-prehead``: convert the checkpoint's native depth-1 MTP layer into
-  a speculators model (the "pre-head"; no extra training).
-- ``mtp-joint``: joint fine-tune trunk + native MTP head on member
-  documents with ``LM CE + lambda_mtp * MTP CE`` (the "MTP trains
-  together" condition).
-- ``mtp-adapt``: member-blind KD adaptation of the joint head to the
-  joint target on auxiliary documents.
+- ``mtp-source`` exports the original, pinned native MTP layer.
+- ``mtp-target`` performs full-parameter member SFT and saves the target.
+- ``mtp-head --variant aux`` initializes from the original head and uses KD
+  on auxiliary documents against the frozen SFT target.
+- ``mtp-head --variant member`` independently initializes from the same
+  original head and uses native MTP cross-entropy on member documents.
 
-Each run directory receives a ``results.json`` whose ``config`` block
-matches :class:`config.Config` so ``generalization.py`` can replay it
-unchanged.
+The old joint trunk/head path is intentionally absent: both comparison heads
+must observe exactly the same frozen membership-bearing target checkpoint.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -30,18 +27,20 @@ import torch.nn.functional as F
 
 from .heads import ensure_mtp_conversion, load_mtp_speculator
 from ..data import collate_sft, make_sft_example
-from ..training import _autocast, _enable_checkpointing, load_causal_lm
+from ..training import _autocast, load_causal_lm, set_seed, sft_train
 from .common import (
-    KD_TEMPERATURE,
-    LAMBDA_MTP,
     PAIR_MODELS,
     build_parser,
+    cached_snapshot,
+    checkpoint_complete,
     device_for,
     load_split,
-    make_optimizer_from_params,
+    partial_checkpoint_path,
+    promote_checkpoint,
     resolve_output_dir,
     run_command,
     run_dir_for,
+    save_pretrained_atomically,
     tokenizer_for,
     write_run_config,
 )
@@ -49,195 +48,371 @@ from .common import (
 
 def parse_args() -> argparse.Namespace:
     parser = build_parser(__doc__, ["qwen35_9b_mtp"])
+    parser.add_argument(
+        "--source-head",
+        type=Path,
+        required=True,
+        help="matrix-global immutable native-MTP export",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("mtp-prehead", help="convert the checkpoint's native MTP layer")
-    sub.add_parser("mtp-joint", help="joint trunk+native-MTP member SFT")
-    sub.add_parser("mtp-adapt", help="member-blind KD adaptation of the joint MTP head")
+    sub.add_parser("mtp-source", help="export the pinned checkpoint's native MTP head")
+    sub.add_parser("mtp-target", help="full-parameter member SFT of the target")
+    head = sub.add_parser("mtp-head", help="adapt a fresh native MTP head")
+    head.add_argument("--variant", choices=["aux", "member"], required=True)
     args = parser.parse_args()
     resolve_output_dir(args)
     return args
 
 
-def cmd_mtp_prehead(args: argparse.Namespace) -> None:
-    """Convert the native depth-1 MTP layer into the run's pre-head."""
+def _source_head_path(args: argparse.Namespace) -> Path:
+    return args.source_head if args.source_head.is_absolute() else Path.cwd() / args.source_head
+
+
+def cmd_mtp_source(args: argparse.Namespace) -> None:
+    """Convert the original native layer without involving the SFT target."""
     device_for(args)
-    run_dir = run_dir_for(args)
+    source_dir = _source_head_path(args)
+    if checkpoint_complete(source_dir):
+        print(f"[skip] complete native MTP source: {source_dir}", flush=True)
+        return
+    model = PAIR_MODELS[args.pair]
+    snapshot = cached_snapshot(model["target"], model["target_revision"])
+    temporary = partial_checkpoint_path(source_dir)
     converted = ensure_mtp_conversion(
-        PAIR_MODELS[args.pair]["target"],
-        run_dir / "heads" / "pre_head",
-        num_speculative_steps=1,
+        str(snapshot), temporary, num_speculative_steps=1
     )
-    write_run_config(args, {"pre_head": str(converted), "init": "native-export"})
-    print(json.dumps({"command": "mtp-prehead", "converted": str(converted)}), flush=True)
+    promote_checkpoint(
+        converted,
+        source_dir,
+        {
+            "stage": "source_head",
+            "pair": args.pair,
+            "initialized_from": model["target"],
+            "initialized_from_revision": model["target_revision"],
+            "native_mtp_export": True,
+            "training_updates": 0,
+        },
+    )
+    write_run_config(
+        args,
+        {
+            "stage": "source_head",
+            "source_head": str(source_dir),
+            "init": "pinned-native-export",
+        },
+    )
+    print(json.dumps({"command": "mtp-source", "converted": str(source_dir)}), flush=True)
 
 
-def cmd_mtp_joint(args: argparse.Namespace) -> None:
-    """Joint trunk + native-MTP speculator SFT (speculators batch-1 head API)."""
+def cmd_mtp_target(args: argparse.Namespace) -> None:
     device = device_for(args)
     run_dir = run_dir_for(args)
+    checkpoint = run_dir / "checkpoints" / "target"
+    if checkpoint_complete(checkpoint):
+        print(f"[skip] complete target checkpoint: {checkpoint}", flush=True)
+        return
     tokenizer = tokenizer_for(args.pair)
-    members, _nonmembers, _aux, _meta = load_split(tokenizer, args)
-    target = load_causal_lm(PAIR_MODELS[args.pair]["target"], device)
-    _enable_checkpointing(target)
-    speculator = load_mtp_speculator(run_dir / "heads" / "pre_head", device)
-    speculator.train()
-    target.train()
-    params = (
-        [p for p in target.parameters() if p.requires_grad]
-        + [p for p in speculator.parameters() if p.requires_grad]
+    members, _nonmembers, _auxiliary, metadata = load_split(tokenizer, args)
+    model = PAIR_MODELS[args.pair]
+    target = load_causal_lm(
+        model["target"],
+        device,
+        revision=model["target_revision"],
+        local_files_only=True,
     )
-    optimizer = make_optimizer_from_params(params, args.lr, "adamw8bit")
+    started = time.time()
+    losses = sft_train(
+        target,
+        members,
+        tokenizer,
+        device,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        grad_accum=args.grad_accum,
+        lr=args.lr,
+        seed=args.seed,
+        label="MTP-line target SFT",
+        optimizer_name="adamw8bit",
+    )
 
-    examples = [make_sft_example(record, tokenizer) for record in members]
-    rng = np.random.default_rng(args.seed + 33)
-    history_lm: list[float] = []
-    history_mtp: list[float] = []
-    steps_per_epoch = max(1, len(examples) // (args.batch_size * args.grad_accum))
-    for epoch in range(args.epochs):
-        order = rng.permutation(len(examples))
-        for micro in range(steps_per_epoch * args.grad_accum):
-            rows = [
-                examples[int(order[(micro * args.batch_size + i) % len(examples)])]
-                for i in range(args.batch_size)
-            ]
-            batch = collate_sft(rows, int(tokenizer.pad_token_id))
-            batch = {k: v.to(device) for k, v in batch.items()}
-            optimizer.zero_grad(set_to_none=True)
-            with _autocast(device):
+    def writer(path: Path) -> None:
+        target.save_pretrained(path)
+        tokenizer.save_pretrained(path)
+
+    save_pretrained_atomically(
+        checkpoint,
+        writer,
+        {
+            "stage": "target",
+            "pair": args.pair,
+            "base_model": model["target"],
+            "base_revision": model["target_revision"],
+            "seed": args.seed,
+            "data_seed": args.data_seed,
+            "epochs": args.epochs,
+            "full_parameter_sft": True,
+        },
+    )
+    write_run_config(
+        args,
+        {
+            "stage": "target",
+            "target_sft_loss": losses,
+            "seconds": time.time() - started,
+            "data": metadata,
+        },
+    )
+    print(json.dumps({"command": "mtp-target", "losses": losses}, indent=2), flush=True)
+
+
+def _load_frozen_target_and_fresh_head(
+    args: argparse.Namespace, device: torch.device
+) -> tuple[Any, Any]:
+    run_dir = run_dir_for(args)
+    source_dir = _source_head_path(args)
+    if not checkpoint_complete(source_dir):
+        raise RuntimeError(f"Native MTP source is incomplete: {source_dir}")
+    from ..generalization import load_finetuned_model
+
+    target = load_finetuned_model(
+        run_dir, PAIR_MODELS[args.pair]["target"], device
+    )
+    for parameter in target.parameters():
+        parameter.requires_grad_(False)
+    target.eval()
+    target.config.use_cache = False
+    # Each stage is a separate process and always reloads this immutable source;
+    # the auxiliary and member branches can therefore never inherit each other.
+    speculator = load_mtp_speculator(
+        source_dir,
+        device,
+        verifier_checkpoint=run_dir / "checkpoints" / "target",
+    )
+    speculator.train()
+    return target, speculator
+
+
+def _mtp_auxiliary_kd(
+    args: argparse.Namespace,
+    target: Any,
+    speculator: Any,
+    examples: list[dict[str, list[int]]],
+    tokenizer: Any,
+    device: torch.device,
+) -> list[float]:
+    rng = np.random.default_rng(args.seed)
+    trainable = [parameter for parameter in speculator.parameters() if parameter.requires_grad]
+    optimizer = torch.optim.AdamW(trainable, lr=args.head_lr)
+    history: list[float] = []
+    for update in range(args.head_updates):
+        optimizer.zero_grad(set_to_none=True)
+        update_losses: list[float] = []
+        for _micro in range(args.head_grad_accum):
+            indices = rng.integers(0, len(examples), size=args.head_batch_size)
+            batch = collate_sft(
+                [examples[int(index)] for index in indices],
+                int(tokenizer.pad_token_id),
+            )
+            batch = {key: value.to(device) for key, value in batch.items()}
+            with torch.no_grad(), _autocast(device):
                 trunk_output = target(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
                     output_hidden_states=True,
                     use_cache=False,
                 )
-                shift_logits = trunk_output.logits[:, :-1].float()
-                shift_labels = batch["labels"][:, 1:]
-                valid = shift_labels.ne(-100)
-                lm_ce = F.cross_entropy(
-                    shift_logits[valid], shift_labels.clamp_min(0)[valid]
-                )
-            (lm_ce * len(rows)).backward()
-            mtp_losses: list[float] = []
-            # the speculator internally detaches its hidden-state input, so
-            # MTP gradients flow into the head only; that is the deployment
-            # semantics (the head adapts to the trunk, not vice versa)
-            with torch.no_grad():
-                hidden = trunk_output.hidden_states[-1].detach()
-            with _autocast(device):
-                for row in range(len(rows)):
-                    length = int(batch["attention_mask"][row].sum())
-                    _, mtp_loss, _ = speculator(
+            row_losses: list[torch.Tensor] = []
+            for row in range(args.head_batch_size):
+                length = int(batch["attention_mask"][row].sum())
+                with _autocast(device):
+                    logits_list, _native_loss, _metrics = speculator(
                         input_ids=batch["input_ids"][row : row + 1, :length],
-                        hidden_states=hidden[row : row + 1, :length],
+                        hidden_states=trunk_output.hidden_states[-1][
+                            row : row + 1, :length
+                        ],
                         attention_mask=None,
-                        loss_mask=batch["labels"][row : row + 1, :length].ne(-100),
                         return_dict=True,
                     )
-                    (LAMBDA_MTP * mtp_loss / len(rows)).backward()
-                    mtp_losses.append(float(mtp_loss.detach().cpu()))
-            history_lm.append(float(lm_ce.detach().cpu()))
-            history_mtp.append(float(np.mean(mtp_losses)))
-            torch.nn.utils.clip_grad_norm_(params, 1.0)
-            optimizer.step()
-            del trunk_output, hidden
-        print(
-            f"mtp-joint(native) epoch {epoch + 1}/{args.epochs}: "
-            f"lm={np.mean(history_lm[-steps_per_epoch * args.grad_accum:]):.5f} "
-            f"mtp={np.mean(history_mtp[-steps_per_epoch * args.grad_accum:]):.5f}",
-            flush=True,
+                    # Depth-1 step-0 logits[:, t] predict x_{t+2}; the teacher
+                    # distribution aligned to that event is trunk position t+1.
+                    student = logits_list[0].float()
+                    teacher = trunk_output.logits[
+                        row : row + 1, 1 : 1 + student.shape[1]
+                    ].float()
+                    labels = batch["labels"][
+                        row : row + 1, 2 : 2 + student.shape[1]
+                    ]
+                    valid = labels.ne(-100)
+                    if not bool(valid.any()):
+                        raise ValueError("MTP KD micro-batch has no response tokens")
+                    kd = (
+                        F.kl_div(
+                            F.log_softmax(
+                                student[valid] / args.kd_temperature, dim=-1
+                            ),
+                            F.softmax(
+                                teacher[:, : student.shape[1]][valid]
+                                / args.kd_temperature,
+                                dim=-1,
+                            ),
+                            reduction="batchmean",
+                        )
+                        * args.kd_temperature**2
+                    )
+                row_losses.append(kd)
+            micro_loss = torch.stack(row_losses).mean()
+            (micro_loss / args.head_grad_accum).backward()
+            update_losses.append(float(micro_loss.detach().cpu()))
+            del trunk_output
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+        optimizer.step()
+        history.append(float(np.mean(update_losses)))
+        if (update + 1) % max(1, args.head_updates // 4) == 0:
+            print(
+                f"MTP auxiliary KD update {update + 1}/{args.head_updates}: "
+                f"loss={history[-1]:.5f}",
+                flush=True,
+            )
+    return history
+
+
+def _mtp_member_ce(
+    args: argparse.Namespace,
+    target: Any,
+    speculator: Any,
+    examples: list[dict[str, list[int]]],
+    tokenizer: Any,
+    device: torch.device,
+) -> list[float]:
+    rng = np.random.default_rng(args.seed)
+    trainable = [parameter for parameter in speculator.parameters() if parameter.requires_grad]
+    optimizer = torch.optim.AdamW(trainable, lr=args.head_lr)
+    history: list[float] = []
+    for update in range(args.head_updates):
+        optimizer.zero_grad(set_to_none=True)
+        update_losses: list[float] = []
+        for _micro in range(args.head_grad_accum):
+            indices = rng.integers(0, len(examples), size=args.head_batch_size)
+            batch = collate_sft(
+                [examples[int(index)] for index in indices],
+                int(tokenizer.pad_token_id),
+            )
+            batch = {key: value.to(device) for key, value in batch.items()}
+            with torch.no_grad(), _autocast(device):
+                trunk_output = target(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    output_hidden_states=True,
+                    use_cache=False,
+                )
+            row_losses: list[torch.Tensor] = []
+            for row in range(args.head_batch_size):
+                length = int(batch["attention_mask"][row].sum())
+                with _autocast(device):
+                    _logits, native_loss, _metrics = speculator(
+                        input_ids=batch["input_ids"][row : row + 1, :length],
+                        hidden_states=trunk_output.hidden_states[-1][
+                            row : row + 1, :length
+                        ],
+                        attention_mask=None,
+                        loss_mask=batch["labels"][
+                            row : row + 1, :length
+                        ].ne(-100),
+                        return_dict=True,
+                    )
+                row_losses.append(native_loss)
+            micro_loss = torch.stack(row_losses).mean()
+            (micro_loss / args.head_grad_accum).backward()
+            update_losses.append(float(micro_loss.detach().cpu()))
+            del trunk_output
+        torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+        optimizer.step()
+        history.append(float(np.mean(update_losses)))
+        if (update + 1) % max(1, args.head_updates // 4) == 0:
+            print(
+                f"MTP member CE update {update + 1}/{args.head_updates}: "
+                f"loss={history[-1]:.5f}",
+                flush=True,
+            )
+    return history
+
+
+def cmd_mtp_head(args: argparse.Namespace) -> None:
+    assert args.variant in ("aux", "member")
+    device = device_for(args)
+    run_dir = run_dir_for(args)
+    head_dir = run_dir / "heads" / (
+        "auxiliary_head" if args.variant == "aux" else "member_head"
+    )
+    if checkpoint_complete(head_dir):
+        print(f"[skip] complete head checkpoint: {head_dir}", flush=True)
+        return
+    tokenizer = tokenizer_for(args.pair)
+    members, _nonmembers, auxiliary, metadata = load_split(tokenizer, args)
+    records = auxiliary if args.variant == "aux" else members
+    examples = [make_sft_example(record, tokenizer) for record in records]
+    target, speculator = _load_frozen_target_and_fresh_head(args, device)
+    set_seed(args.seed)
+    if args.variant == "aux":
+        history = _mtp_auxiliary_kd(
+            args, target, speculator, examples, tokenizer, device
         )
-    (run_dir / "checkpoints" / "target").mkdir(parents=True, exist_ok=True)
-    target.save_pretrained(run_dir / "checkpoints" / "target")
-    tokenizer.save_pretrained(run_dir / "checkpoints" / "target")
+        objective = "temperature-kl"
+        temperature: float | None = args.kd_temperature
+    else:
+        history = _mtp_member_ce(
+            args, target, speculator, examples, tokenizer, device
+        )
+        objective = "native-mtp-cross-entropy"
+        temperature = None
     speculator.eval()
-    (run_dir / "heads" / "joint_head").mkdir(parents=True, exist_ok=True)
-    speculator.save_pretrained(run_dir / "heads" / "joint_head")
+    model = PAIR_MODELS[args.pair]
+
+    def writer(path: Path) -> None:
+        speculator.save_pretrained(path)
+
+    save_pretrained_atomically(
+        head_dir,
+        writer,
+        {
+            "stage": f"{args.variant}_head",
+            "variant": args.variant,
+            "objective": objective,
+            "initialized_from": model["target"],
+            "initialized_from_revision": model["target_revision"],
+            "source_head": str(_source_head_path(args)),
+            "target_checkpoint": str(run_dir / "checkpoints" / "target"),
+            "verifier_owned_weights_from_target": True,
+            "target_frozen": True,
+            "optimizer_updates": args.head_updates,
+            "effective_batch_size": args.head_batch_size * args.head_grad_accum,
+            "learning_rate": args.head_lr,
+            "temperature": temperature,
+            "seed": args.seed,
+        },
+    )
     write_run_config(
         args,
         {
-            "lm_loss": float(np.mean(history_lm)),
-            "mtp_loss": float(np.mean(history_mtp)),
-            "init": "native-export",
+            "stage": f"{args.variant}_head",
+            "variant": args.variant,
+            "objective": objective,
+            "temperature": temperature,
+            "loss": history,
+            "data": metadata,
         },
     )
-    print(json.dumps({"command": "mtp-joint", "native": True, "done": True}), flush=True)
-
-
-def cmd_mtp_adapt(args: argparse.Namespace) -> None:
-    """Member-blind KD adaptation of the joint native MTP head.
-
-    Objective matches the self-trained line: temperature KL toward the joint
-    target's distribution at aligned positions. A pure CE-to-ground-truth
-    objective (the speculator's built-in loss) destroys the head's
-    calibration to the verifier distribution and measurably lowers
-    acceptance, so it is deliberately not used here.
-    """
-    device = device_for(args)
-    run_dir = run_dir_for(args)
-    tokenizer = tokenizer_for(args.pair)
-    _members, _nonmembers, auxiliary, _meta = load_split(tokenizer, args)
-
-    from ..generalization import load_finetuned_model
-
-    target = load_finetuned_model(run_dir, PAIR_MODELS[args.pair]["target"], device)
-    for parameter in target.parameters():
-        parameter.requires_grad_(False)
-    speculator = load_mtp_speculator(run_dir / "heads" / "joint_head", device)
-    speculator.train()
-    optimizer = torch.optim.AdamW(
-        [p for p in speculator.parameters() if p.requires_grad], lr=args.kd_lr
+    print(
+        json.dumps(
+            {
+                "command": "mtp-head",
+                "variant": args.variant,
+                "objective": objective,
+                "final_loss": history[-1],
+            }
+        ),
+        flush=True,
     )
-
-    examples = [make_sft_example(record, tokenizer) for record in auxiliary]
-    rng = np.random.default_rng(args.seed + 34)
-    losses: list[float] = []
-    for step in range(args.kd_steps):
-        example = examples[int(rng.integers(0, len(examples)))]
-        batch = collate_sft([example], int(tokenizer.pad_token_id))
-        batch = {k: v.to(device) for k, v in batch.items()}
-        with torch.no_grad(), _autocast(device):
-            trunk_output = target(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                output_hidden_states=True,
-                use_cache=False,
-            )
-        with _autocast(device):
-            length = int(batch["attention_mask"][0].sum())
-            logits_list, _native_loss, _metrics = speculator(
-                input_ids=batch["input_ids"][:, :length],
-                hidden_states=trunk_output.hidden_states[-1][:, :length],
-                attention_mask=None,
-                return_dict=True,
-            )
-            # step-0 logits[:, t] predicts x_{t+2}; teacher at trunk position t+1
-            student = logits_list[0].float()
-            teacher = trunk_output.logits[:, 1 : 1 + student.shape[1]].float()
-            labels = batch["labels"][:, 2 : 2 + student.shape[1]]
-            valid = labels.ne(-100)
-            kd = (
-                F.kl_div(
-                    F.log_softmax(student[valid] / KD_TEMPERATURE, dim=-1),
-                    F.softmax(teacher[:, : student.shape[1]][valid] / KD_TEMPERATURE, dim=-1),
-                    reduction="batchmean",
-                )
-                * KD_TEMPERATURE**2
-            )
-        optimizer.zero_grad(set_to_none=True)
-        kd.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [p for p in speculator.parameters() if p.requires_grad], 1.0
-        )
-        optimizer.step()
-        losses.append(float(kd.detach().cpu()))
-        if (step + 1) % max(1, args.kd_steps // 4) == 0:
-            print(f"mtp adapt(native) step {step + 1}/{args.kd_steps}: loss={losses[-1]:.5f}", flush=True)
-        del trunk_output, student, teacher, kd
-    speculator.eval()
-    (run_dir / "heads" / "aux_kd_head").mkdir(parents=True, exist_ok=True)
-    speculator.save_pretrained(run_dir / "heads" / "aux_kd_head")
-    write_run_config(args, {"final_loss": losses[-1], "objective": "kd-kl"})
-    print(json.dumps({"command": "mtp-adapt", "native": True, "final_loss": losses[-1]}), flush=True)
 
 
 def main() -> None:
@@ -245,9 +420,9 @@ def main() -> None:
     run_command(
         args,
         {
-            "mtp-prehead": cmd_mtp_prehead,
-            "mtp-joint": cmd_mtp_joint,
-            "mtp-adapt": cmd_mtp_adapt,
+            "mtp-source": cmd_mtp_source,
+            "mtp-target": cmd_mtp_target,
+            "mtp-head": cmd_mtp_head,
         },
     )
 
