@@ -10,7 +10,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
-RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/model_pairs_shared_v2}
+RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/model_pairs_audit600_v3}
 SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 MODEL_REVISIONS_ENV=${MODEL_REVISIONS_ENV:-$SCRIPT_DIR/model_pair_revisions.env}
 PYTHON=${PYTHON:-.venv/bin/python}
@@ -125,8 +125,8 @@ preflight() {
       echo "missing frozen dataset pool: $pool" >&2
       return 2
     fi
-    if (( $(wc -l < "$pool") < 6000 )); then
-      echo "dataset pool has fewer than 6000 records: $pool" >&2
+    if (( $(wc -l < "$pool") != 8000 )); then
+      echo "dataset pool must contain exactly 8000 records: $pool" >&2
       return 2
     fi
   done
@@ -272,7 +272,7 @@ run_condition() {
     --target-lr 2e-5 --draft-lr 2e-5
     --target-batch-size "$batch_size" --target-grad-accum "$grad_accum"
     --draft-batch-size "$batch_size" --draft-grad-accum "$grad_accum"
-    --n-per-class 2000 --n-aux 2000
+    --n-per-class 2000 --n-aux 2000 --n-audit-aux 600
     --distill-steps 384 --distill-temperature 2.0
     --seed "$seed" --data-seed "$seed"
     --split-manifest "$split_manifest"

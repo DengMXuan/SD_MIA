@@ -10,7 +10,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
 PYTHON=${PYTHON:-.venv/bin/python}
-RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/speculator_matrix}
+RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/speculator_matrix_audit600_v3}
 SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 MTP_SOURCE_HEAD=${MTP_SOURCE_HEAD:-$RESULTS_ROOT/_internal/qwen35_native_mtp_source}
 read -r -a GPUS <<< "${MATRIX_GPUS:-3 4 5 6}"
@@ -121,7 +121,7 @@ build_stage_command() {
     --gpu 0 --pair "$pair" --benchmark "$benchmark" --epochs "$epoch"
     --seed "$seed" --data-seed "$seed"
     --split-manifest "$split_manifest"
-    --n-per-class 2000 --n-aux 2000
+    --n-per-class 2000 --n-aux 2000 --n-audit-aux 600
     --batch-size "$batch_size" --grad-accum "$grad_accum" --lr 2e-5
     --head-updates 384 --head-lr 2e-5
     --head-batch-size "$batch_size" --head-grad-accum "$grad_accum"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,12 @@ from transformers import AutoTokenizer
 
 from .generalization import load_run_config
 from .logpq_distribution import verify_shared_tokenizer, verify_split_against_run
-from .splits import build_split, pool_path
+from .splits import (
+    build_controlled_split,
+    build_controlled_split_from_shared_manifest,
+    build_split,
+    pool_path,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLES = ("target", "draft_auxiliary_distilled", "draft_member_sft")
@@ -27,6 +33,20 @@ class ScoringRecords:
     records: list[Any]
     labels: np.ndarray
     record_ids: np.ndarray
+
+
+@dataclass(frozen=True)
+class DeploymentScoringRecords:
+    """Four-role records in the exact order stored in deployment archives."""
+
+    tokenizer: Any
+    audit_auxiliary: list[Any]
+    members: list[Any]
+    nonmembers: list[Any]
+    records: list[Any]
+    labels: np.ndarray
+    record_ids: np.ndarray
+    record_roles: np.ndarray
 
 
 def resolve_run_dir(path: Path) -> Path:
@@ -64,6 +84,100 @@ def prepare_scoring_records(
         records=records,
         labels=labels,
         record_ids=record_ids,
+    )
+
+
+def _verify_controlled_split_against_run(
+    split: Any, run_dir: Path, artifact: dict[str, Any]
+) -> None:
+    stored = artifact.get("records", {})
+    roles = (
+        ("members", split.members),
+        ("nonmembers", split.nonmembers),
+        ("auxiliary", split.draft_auxiliary),
+        ("audit_auxiliary", split.audit_auxiliary),
+    )
+    for name, rebuilt in roles:
+        if name not in stored:
+            raise RuntimeError(
+                f"Run passport has no {name!r} role; retrain with the four-role "
+                f"contract before collecting deployment observations: {run_dir}"
+            )
+        stored_hashes = [record["response_hash"] for record in stored[name]]
+        rebuilt_hashes = [record.response_hash for record in rebuilt]
+        if stored_hashes != rebuilt_hashes:
+            raise RuntimeError(
+                f"Rebuilt {name} split does not match the run passport in {run_dir}"
+            )
+
+
+def prepare_deployment_scoring_records(
+    run_dir: Path,
+    cfg: Any | None = None,
+    pool_override: Path | None = None,
+) -> tuple[Any, DeploymentScoringRecords]:
+    """Rebuild and attest audit/member/nonmember records for accept-only collection."""
+    run_dir = resolve_run_dir(run_dir).resolve()
+    cfg = load_run_config(run_dir) if cfg is None else cfg
+    artifact = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
+    tokenizer = AutoTokenizer.from_pretrained(
+        cfg.draft_model,
+        revision=cfg.draft_revision,
+    )
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    verify_shared_tokenizer(cfg.target_model, cfg.draft_model)
+
+    pool = pool_override if pool_override is not None else cfg.pool_path
+    if pool is None:
+        pool = pool_path(cfg.benchmark)
+    pool = pool if pool.is_absolute() else ROOT / pool
+    shared_manifest = artifact.get("data", {}).get("shared_split_manifest")
+    if shared_manifest:
+        manifest_path = Path(shared_manifest)
+        if not manifest_path.is_absolute():
+            manifest_path = ROOT / manifest_path
+        split = build_controlled_split_from_shared_manifest(
+            cfg.benchmark,
+            pool,
+            tokenizer,
+            manifest_path,
+            f"{cfg.draft_model}@{cfg.draft_revision}",
+        )
+    else:
+        split = build_controlled_split(
+            cfg.benchmark,
+            pool,
+            tokenizer,
+            n_per_class=cfg.n_per_class,
+            n_draft_aux=cfg.n_aux,
+            n_audit_aux=cfg.n_audit_aux,
+            seed=cfg.data_seed,
+        )
+    _verify_controlled_split_against_run(split, run_dir, artifact)
+
+    records = split.audit_auxiliary + split.members + split.nonmembers
+    labels = np.asarray(
+        [0] * len(split.audit_auxiliary)
+        + [1] * len(split.members)
+        + [0] * len(split.nonmembers),
+        dtype=np.int64,
+    )
+    roles = np.asarray(
+        ["audit_auxiliary"] * len(split.audit_auxiliary)
+        + ["member"] * len(split.members)
+        + ["nonmember"] * len(split.nonmembers)
+    )
+    record_ids = np.asarray([record.record_id for record in records])
+    return cfg, DeploymentScoringRecords(
+        tokenizer=tokenizer,
+        audit_auxiliary=split.audit_auxiliary,
+        members=split.members,
+        nonmembers=split.nonmembers,
+        records=records,
+        labels=labels,
+        record_ids=record_ids,
+        record_roles=roles,
     )
 
 

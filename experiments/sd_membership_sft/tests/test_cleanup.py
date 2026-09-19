@@ -21,7 +21,8 @@ def test_mainline_imports_do_not_load_archived_experiments():
 import importlib, sys
 for name in (
     'conditional_accept_only', 'difficulty_accept_only', 'combined_accept_only',
-    'collect_draft_difficulty', 'serial_accept_only',
+    'collect_draft_difficulty', 'collect_deployment_observations',
+    'deployment_accept_only', 'serial_accept_only',
     'summarize_combination_validation', 'summarize_priority_validation',
 ):
     importlib.import_module('experiments.sd_membership_sft.' + name)
@@ -138,3 +139,31 @@ def test_mainline_loads_legacy_draft_feature_manifest(tmp_path, monkeypatch):
     np.testing.assert_array_equal(record_ids, ids)
     assert observations.bits.shape == (2, 1, 2)
     assert source["q_difference_max"] == 0
+
+
+def test_deployment_partition_uses_independent_600_and_2000_per_test_class():
+    from experiments.sd_membership_sft.audit_partitions import deployment_partitions
+
+    roles = np.asarray(
+        ["audit_auxiliary"] * 600 + ["member"] * 2000 + ["nonmember"] * 2000
+    )
+    labels = np.r_[
+        np.zeros(600, dtype=np.int64),
+        np.ones(2000, dtype=np.int64),
+        np.zeros(2000, dtype=np.int64),
+    ]
+    ids = np.asarray([f"record-{index}" for index in range(4600)])
+    current = deployment_partitions(labels, ids, roles)
+    assert len(current["train"]) == 320
+    assert len(current["validation"]) == 80
+    assert len(current["calibration"]) == 200
+    assert int((labels[current["test"]] == 0).sum()) == 2000
+    assert int((labels[current["test"]] == 1).sum()) == 2000
+    assert not np.intersect1d(
+        current["test"], np.r_[current["reference"], current["calibration"]]
+    ).size
+    auxiliary = np.r_[
+        current["train"], current["validation"], current["calibration"]
+    ]
+    assert np.all(roles[auxiliary] == "audit_auxiliary")
+    assert len(np.unique(np.r_[auxiliary, current["test"]])) == 4600

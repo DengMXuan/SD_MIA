@@ -39,7 +39,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--split-root",
         type=Path,
-        default=Path("experiments/results/sft_runs/unified_matrix_v1/shared_splits"),
+        default=Path(
+            "experiments/results/sft_runs/unified_matrix_audit600_v2/shared_splits"
+        ),
     )
     parser.add_argument(
         "--model-revisions-env",

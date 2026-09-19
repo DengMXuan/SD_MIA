@@ -15,7 +15,8 @@ from scipy.special import logsumexp, expit
 import torch
 from torch import nn
 from torch.nn import functional as F
-from ..conditional_accept_only import (ConditionalCountTCN, Observations, record_partitions, observable_inputs, make_batch, count_nll, replay_observations, directional_scores)
+from ..conditional_accept_only import (ConditionalCountTCN, Observations, observable_inputs, make_batch, count_nll, replay_observations, directional_scores)
+from ..audit_partitions import legacy_partitions as record_partitions
 from ..replay_cache import (load_replay_data)
 from ..audit_metrics import (membership_metrics)
 from ..audit_runtime import (_record_uniforms)

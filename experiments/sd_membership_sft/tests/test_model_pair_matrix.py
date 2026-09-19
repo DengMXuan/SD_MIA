@@ -40,7 +40,10 @@ def test_dry_run_has_smoke_gate_and_exact_matrix():
         }
     ) == 36
     assert all("--trainer full --optimizer adamw8bit" in line for line in conditions)
-    assert all("--n-per-class 2000 --n-aux 2000" in line for line in conditions)
+    assert all(
+        "--n-per-class 2000 --n-aux 2000 --n-audit-aux 600" in line
+        for line in conditions
+    )
     assert all("--target-lr 2e-5 --draft-lr 2e-5" in line for line in conditions)
     assert all("--distill-steps 384 --distill-temperature 2.0" in line for line in conditions)
     assert all("--seed " in line and "--data-seed " in line for line in conditions)
@@ -55,7 +58,7 @@ def test_dry_run_has_smoke_gate_and_exact_matrix():
         for line in conditions
     )
     assert all("--split-manifest" in line for line in conditions)
-    assert all("model_pairs_shared_v2/shared_splits" in line for line in conditions)
+    assert all("model_pairs_audit600_v3/shared_splits" in line for line in conditions)
     assert result.stdout.rstrip().endswith(
         "[plan-ok] conditions=36 checkpoints=108 workers=4"
     )

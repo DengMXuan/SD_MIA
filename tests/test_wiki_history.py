@@ -25,6 +25,46 @@ def test_historical_page_without_old_revision_is_excluded(monkeypatch):
     assert pools._wiki_page_record({'pageid': 1}, {}, 700, 9000, '2023-12-31T23:59:59Z') is None
 
 
+def test_current_batch_truncates_long_extract_instead_of_dropping_it(monkeypatch):
+    text = ("The town and its people are part of the history of this region. " * 300)
+    requested = []
+
+    def request(url, **kwargs):
+        requested.append(url)
+        return {
+            "query": {
+                "pages": [
+                    {
+                        "pageid": 1,
+                        "title": "Example",
+                        "extract": text,
+                        "lastrevid": 99,
+                        "touched": "2026-04-02T00:00:00Z",
+                        "fullurl": "https://en.wikipedia.org/wiki/Example",
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(
+        pools,
+        "_request_json",
+        request,
+    )
+
+    records = pools._wiki_batch_records(
+        [{"pageid": 1, "title": "Example"}],
+        {1: {"timestamp": "2026-04-01T00:00:00Z"}},
+        700,
+        9000,
+    )
+
+    assert len(records) == 1
+    assert len(records[0]["text"]) == 9000
+    assert "exlimit=20" in requested[0]
+    assert "exintro=1" in requested[0]
+
+
 def test_successful_api_response_is_reused_after_restart(tmp_path, monkeypatch):
     import io
     import json

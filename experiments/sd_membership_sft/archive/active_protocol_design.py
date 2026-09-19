@@ -19,7 +19,8 @@ import torch
 
 from ..replay_cache import (load_replay_data)
 from ..audit_metrics import (membership_metrics)
-from ..conditional_accept_only import (ConditionalCountTCN, record_partitions)
+from ..conditional_accept_only import (ConditionalCountTCN)
+from ..audit_partitions import legacy_partitions as record_partitions
 from ..audit_metrics import (conformal_tail_pvalues)
 from ..audit_runtime import (ROOT, _paths, _write_json)
 

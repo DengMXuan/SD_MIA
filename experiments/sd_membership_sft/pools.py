@@ -11,9 +11,9 @@ Each subcommand writes ``pool.jsonl`` plus a SHA-256-anchored
 Raw text is persisted because the pool must be re-tokenized per target model;
 all sources are public corpora with per-record provenance URLs.
 
-Per-model token banding, hash deduplication against token IDs, and the
-member/nonmember/auxiliary three-class split happen at load time in
-``splits.build_split``, not here; this module only freezes documents.
+Per-model token banding, hash deduplication against token IDs, and the four
+member/nonmember/draft-auxiliary/audit-auxiliary roles happen at load time in
+``splits.build_controlled_split``; this module only freezes documents.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import io
 import json
 import random
 import re
+import shutil
 import threading
 import tempfile
 import time
@@ -39,8 +40,10 @@ from urllib.error import HTTPError
 
 from warcio.archiveiterator import ArchiveIterator
 
+from .pool_storage import read_verified_pool, write_pool_pair
 
-USER_AGENT = "SD-MIA-research/0.1 (controlled academic benchmark)"
+
+USER_AGENT = "SD-MIA-research/0.1 (https://github.com/DengMXuan/SD_MIA)"
 DATA_ROOT = Path("experiments/data/pools")
 DEFAULT_WINDOW = ("2026-05-01T00:00:00Z", "2026-08-29T23:59:59Z")
 NEWS_MONTHS = ("2026-05", "2026-06", "2026-07", "2026-08")
@@ -52,9 +55,9 @@ ARXIV_HTML = "https://arxiv.org/html/{arxiv_id}"
 AR5IV_HTML = "https://ar5iv.labs.arxiv.org/html/{arxiv_id}"
 
 POOL_PROVENANCE = (
-    "Post-cutoff benchmark pool; window postdates the Qwen3-8B 2025-07 cutoff "
-    "and all repo target models, assuming the Qwen3.6 cutoff <= 2026-03 from "
-    "its 2026-04-15 release"
+    "Post-cutoff benchmark pool; every collection window starts after the "
+    "Qwen3-8B 2025-07 cutoff and, for 2026 models, after the assumed latest "
+    "pretraining cutoff of 2026-03 inferred from Qwen3.6's 2026-04-15 release"
 )
 
 
@@ -83,13 +86,18 @@ def _request(
     timeout: int = 120,
     sleep: float = 1.0,
 ) -> Any:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **(headers or {})})
+    default_headers = {"User-Agent": USER_AGENT}
+    if url.startswith(ARXIV_API):
+        default_headers["Accept"] = "application/atom+xml"
+    request = urllib.request.Request(url, headers={**default_headers, **(headers or {})})
     for attempt in range(attempts):
         if url.startswith(WIKI_API):
             _pace_wiki()
         try:
             return urllib.request.urlopen(request, timeout=timeout)
         except HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504):
+                raise
             if attempt + 1 == attempts:
                 raise
             retry_after = error.headers.get("Retry-After")
@@ -297,20 +305,16 @@ def _write_pool(
     manifest: dict[str, Any],
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    payload = output.read_bytes()
+    payload = "".join(
+        json.dumps(record, ensure_ascii=False) + "\n" for record in records
+    ).encode("utf-8")
     manifest = {
         **manifest,
         "records": len(records),
         "jsonl_sha256": _sha256_hex(payload),
         "retrieved_unix_time": time.time(),
     }
-    manifest_path = output.with_suffix(".manifest.json")
-    manifest_path.write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    write_pool_pair(output, payload, manifest)
     print(
         json.dumps(
             {"output": str(output), "records": len(records), "sha256": manifest["jsonl_sha256"]},
@@ -398,7 +402,10 @@ def _wiki_page_record(
         page['touched'] = revision['timestamp']
     text = _fetch_wiki_fulltext(int(page["pageid"]), revision_id)
     time.sleep(0.25)
-    if text is None or not _usable_text(text, min_chars, max_chars):
+    if text is None:
+        return None
+    text = text[:max_chars]
+    if not _usable_text(text, min_chars, max_chars):
         return None
     digest = _sha256_hex(text.encode("utf-8"))
     return {
@@ -414,6 +421,66 @@ def _wiki_page_record(
         "text": text,
         "_text_digest": digest,
     }
+
+
+def _wiki_batch_records(
+    pages: list[dict[str, Any]],
+    creations: dict[int, dict[str, Any]],
+    min_chars: int,
+    max_chars: int,
+) -> list[dict[str, Any]]:
+    """Fetch current plain-text introductions for a small page batch."""
+    if not pages:
+        return []
+    by_id = {int(page["pageid"]): page for page in pages}
+    payload = _request_json(
+        f"{WIKI_API}?{urllib.parse.urlencode({
+            'format': 'json', 'formatversion': 2, 'action': 'query',
+            'pageids': '|'.join(str(page_id) for page_id in by_id),
+            'prop': 'extracts|info', 'explaintext': 1, 'exintro': 1,
+            'exchars': 1200, 'exsectionformat': 'plain', 'exlimit': 20,
+            'inprop': 'url', 'redirects': 0,
+        })}",
+        sleep=0.6,
+        attempts=8,
+    )
+    records: list[dict[str, Any]] = []
+    for result in payload.get("query", {}).get("pages", []):
+        page_id = int(result.get("pageid", 0))
+        original = by_id.get(page_id)
+        creation = creations.get(page_id)
+        if original is None or creation is None or result.get("missing"):
+            continue
+        text = re.sub(r" +\n", "\n", str(result.get("extract", ""))).strip()
+        # TextExtracts returns the whole article and is often much longer than
+        # the benchmark band. Keep the same bounded clean-text prefix used by
+        # the News and arXiv collectors instead of rejecting a valid long page.
+        text = text[:max_chars]
+        if not _usable_text(text, min_chars, max_chars):
+            continue
+        digest = _sha256_hex(text.encode("utf-8"))
+        records.append(
+            {
+                "record_id": f"wikitection:{digest[:16]}",
+                "source": "en.wikipedia.org",
+                "title": result.get("title", original.get("title", "")),
+                "creation_timestamp": creation["timestamp"],
+                "page_id": page_id,
+                "snapshot_revision": int(
+                    result.get("lastrevid", original.get("lastrevid", 0))
+                ),
+                "snapshot_timestamp": result.get(
+                    "touched", original.get("touched", "")
+                ),
+                "canonical_url": result.get(
+                    "fullurl", original.get("fullurl", "")
+                ),
+                "text_sha256": digest,
+                "text": text,
+                "_text_digest": digest,
+            }
+        )
+    return records
 
 
 def _select_wiki_records(records, tokenizer, count, seed):
@@ -538,36 +605,57 @@ def build_wikitection(args: argparse.Namespace) -> None:
     # Phase 2: full-text renders across a large worker pool, submitted in
     # chunks so the queue stays bounded and we can stop as soon as the target
     # record count is reached.
-    workers = max(1, min(args.parallel, 3))
+    full_text = bool(getattr(args, "full_text", False))
+    workers = max(1, min(args.parallel, 8 if full_text else 3))
+    batch_size = 1 if snapshot_at is not None or full_text else 20
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        for chunk_start in range(0, len(survivors), workers * 4):
+        queue_size = workers * 4 * batch_size
+        for chunk_start in range(0, len(survivors), queue_size):
             if len(records) >= args.records:
                 selected_records = (records[:args.records] if selection_tokenizer is None else
                                     _select_wiki_records(records, selection_tokenizer, args.records, args.seed))
                 if selected_records is not None:
                     break
-            chunk = survivors[chunk_start : chunk_start + workers * 4]
-            futures = [
-                executor.submit(
-                    _wiki_page_record,
-                    page,
-                    event_by_page[int(page["pageid"])],
-                    args.min_chars,
-                    args.max_chars,
-                    snapshot_at,
-                )
-                for page in chunk
-            ]
+            chunk = survivors[chunk_start : chunk_start + queue_size]
+            if snapshot_at is None and not full_text:
+                batches = [
+                    chunk[start : start + batch_size]
+                    for start in range(0, len(chunk), batch_size)
+                ]
+                futures = [
+                    executor.submit(
+                        _wiki_batch_records,
+                        batch,
+                        event_by_page,
+                        args.min_chars,
+                        args.max_chars,
+                    )
+                    for batch in batches
+                ]
+            else:
+                futures = [
+                    executor.submit(
+                        _wiki_page_record,
+                        page,
+                        event_by_page[int(page["pageid"])],
+                        args.min_chars,
+                        args.max_chars,
+                        snapshot_at,
+                    )
+                    for page in chunk
+                ]
             for future in as_completed(futures):
-                record = future.result()
-                if record is None:
-                    continue
-                digest = record["_text_digest"]
-                if digest in seen_text or dup_index.is_duplicate(record["text"]):
-                    continue
-                seen_text.add(digest)
-                dup_index.add(record["text"])
-                records.append(record)
+                fetched = future.result()
+                fetched_records = fetched if isinstance(fetched, list) else [fetched]
+                for record in fetched_records:
+                    if record is None:
+                        continue
+                    digest = record["_text_digest"]
+                    if digest in seen_text or dup_index.is_duplicate(record["text"]):
+                        continue
+                    seen_text.add(digest)
+                    dup_index.add(record["text"])
+                    records.append(record)
             print(
                 f"tried={min(chunk_start + len(chunk), len(survivors))} usable={len(records)}",
                 flush=True,
@@ -664,7 +752,8 @@ def build_newstection(args: argparse.Namespace) -> None:
         )
     records = records[: args.records]
     _write_pool(
-        DATA_ROOT / "newstection" / "pool.jsonl",
+        getattr(args, "output_path", None)
+        or DATA_ROOT / "newstection" / "pool.jsonl",
         records,
         {
             "benchmark": "newstection",
@@ -770,6 +859,7 @@ def _collect_news_segment(
 def _arxiv_atom_entries(
     window_start: str, window_end: str, wanted: int, per_page: int, sleep: float
 ) -> list[dict[str, str]]:
+    import requests
     import xml.etree.ElementTree as ElementTree
 
     atom_ns = "{http://www.w3.org/2005/Atom}"
@@ -790,8 +880,16 @@ def _arxiv_atom_entries(
             })}"
         )
         try:
-            with _request(url, sleep=sleep, timeout=90) as response:
-                payload = response.read()
+            response = requests.get(
+                url,
+                headers={
+                    "User-Agent": USER_AGENT,
+                    "Accept": "application/atom+xml",
+                },
+                timeout=90,
+            )
+            response.raise_for_status()
+            payload = response.content
         except Exception:
             # the arXiv API intermittently 500s on deep pagination; back off
             # hard and degrade to partial candidate lists instead of dying
@@ -900,7 +998,8 @@ def build_arxivtection(args: argparse.Namespace) -> None:
         )
     records = records[: args.records]
     _write_pool(
-        DATA_ROOT / "arxivtection" / "pool.jsonl",
+        getattr(args, "output_path", None)
+        or DATA_ROOT / "arxivtection" / "pool.jsonl",
         records,
         {
             "benchmark": "arxivtection",
@@ -923,16 +1022,21 @@ def build_arxivtection(args: argparse.Namespace) -> None:
 
 
 def _fetch_arxiv_fulltext(arxiv_id: str) -> bytes | None:
+    import requests
+
     for template in (ARXIV_HTML, AR5IV_HTML):
         url = template.format(arxiv_id=arxiv_id)
         try:
-            with _request(url, sleep=2.0, timeout=90) as response:
-                if response.status == 200:
-                    return response.read()
-        except HTTPError as error:
-            if error.code == 404:
+            response = requests.get(
+                url,
+                headers={"User-Agent": USER_AGENT, "Accept": "text/html"},
+                timeout=90,
+            )
+            if response.status_code == 200:
+                return response.content
+            if response.status_code == 404:
                 continue
-            time.sleep(5.0)
+            response.raise_for_status()
         except Exception:
             time.sleep(5.0)
     return None
@@ -1002,6 +1106,191 @@ def near_duplicate_filter(records: list[dict[str, Any]], threshold: float = 0.5)
     return keep
 
 
+def _read_verified_pool(
+    path: Path, benchmark: str
+) -> tuple[list[dict[str, Any]], dict[str, Any], bytes]:
+    """Compatibility wrapper around the shared recover-and-verify reader."""
+    return read_verified_pool(path, benchmark)
+
+
+def _combined_creation_interval(
+    manifests: Iterable[dict[str, Any]],
+) -> dict[str, str] | None:
+    intervals: list[dict[str, Any]] = []
+    for manifest in manifests:
+        own = manifest.get("creation_interval_inclusive")
+        if own:
+            intervals.append(own)
+        intervals.extend(
+            item["creation_interval_inclusive"]
+            for item in manifest.get("extension", {}).get("candidate_pools", [])
+            if item.get("creation_interval_inclusive")
+        )
+    if not intervals:
+        return None
+    starts = [str(interval["start"]) for interval in intervals]
+    ends = [str(interval["end"]) for interval in intervals]
+    return {"start": min(starts), "end": max(ends)}
+
+
+def merge_pool_files(
+    benchmark: str,
+    base_path: Path,
+    candidate_paths: list[Path],
+    *,
+    target_records: int = 8000,
+    output_path: Path | None = None,
+    near_duplicate_threshold: float = 0.5,
+    keep_backup: bool = True,
+) -> dict[str, Any]:
+    """Append verified, disjoint candidates while preserving the base prefix.
+
+    Candidate rows are checked against every base and previously accepted row
+    by record ID, exact text SHA-256, and word-level 13-gram overlap. Nothing is
+    written until enough rows have survived to reach ``target_records``.
+    """
+    if not candidate_paths:
+        raise ValueError("at least one candidate pool is required")
+    base_path = Path(base_path)
+    destination = Path(output_path) if output_path is not None else base_path
+    base, base_manifest, base_payload = _read_verified_pool(base_path, benchmark)
+    if target_records < len(base):
+        raise ValueError("target_records cannot shrink the frozen base pool")
+
+    seen_ids: set[str] = set()
+    seen_text: set[str] = set()
+    duplicate_index = NearDuplicateIndex(near_duplicate_threshold)
+
+    def identity(record: dict[str, Any], origin: Path) -> tuple[str, str, str]:
+        record_id = str(record.get("record_id", ""))
+        text = str(record.get("text", ""))
+        text_sha = _sha256_hex(text.encode("utf-8"))
+        if not record_id or not text:
+            raise RuntimeError(f"Pool row lacks record_id or text: {origin}")
+        if str(record.get("text_sha256", text_sha)) != text_sha:
+            raise RuntimeError(f"Pool row has invalid text_sha256: {origin} {record_id}")
+        return record_id, text_sha, text
+
+    for record in base:
+        record_id, text_sha, text = identity(record, base_path)
+        if record_id in seen_ids:
+            raise RuntimeError(f"Base pool repeats record_id {record_id}")
+        if text_sha in seen_text:
+            raise RuntimeError(f"Base pool repeats exact text {text_sha}")
+        seen_ids.add(record_id)
+        seen_text.add(text_sha)
+        duplicate_index.add(text)
+
+    merged = list(base)
+    stats = {
+        "candidate_records": 0,
+        "added_records": 0,
+        "skipped_record_id": 0,
+        "skipped_exact_text": 0,
+        "skipped_near_duplicate": 0,
+    }
+    candidate_manifests: list[dict[str, Any]] = []
+    used_source_manifests = [base_manifest]
+    for candidate_path in map(Path, candidate_paths):
+        candidates, manifest, payload = _read_verified_pool(candidate_path, benchmark)
+        candidate_manifests.append(
+            {
+                "path": str(candidate_path),
+                "jsonl_sha256": _sha256_hex(payload),
+                "records": len(candidates),
+                "creation_interval_inclusive": manifest.get(
+                    "creation_interval_inclusive"
+                ),
+            }
+        )
+        used_source_manifests.append(manifest)
+        for record in candidates:
+            if len(merged) >= target_records:
+                break
+            stats["candidate_records"] += 1
+            record_id, text_sha, text = identity(record, candidate_path)
+            if record_id in seen_ids:
+                stats["skipped_record_id"] += 1
+                continue
+            if text_sha in seen_text:
+                stats["skipped_exact_text"] += 1
+                continue
+            if duplicate_index.is_duplicate(text):
+                stats["skipped_near_duplicate"] += 1
+                continue
+            seen_ids.add(record_id)
+            seen_text.add(text_sha)
+            duplicate_index.add(text)
+            merged.append(record)
+            stats["added_records"] += 1
+        if len(merged) >= target_records:
+            break
+
+    if len(merged) != target_records:
+        raise RuntimeError(
+            f"Only {len(merged)} unique records available; need {target_records}. "
+            f"Merge stats: {stats}"
+        )
+
+    original_sha = _sha256_hex(base_payload)
+    if destination.resolve() == base_path.resolve() and keep_backup:
+        backup_root = base_path.parent / "backups"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_data = backup_root / f"pool.{original_sha[:16]}.jsonl"
+        backup_manifest = backup_data.with_suffix(".manifest.json")
+        if not backup_data.exists():
+            shutil.copy2(base_path, backup_data)
+            shutil.copy2(base_path.with_suffix(".manifest.json"), backup_manifest)
+
+    extension = {
+        "schema_version": 1,
+        "original_records": len(base),
+        "original_jsonl_sha256": original_sha,
+        "target_records": target_records,
+        "prefix_preserved": True,
+        "candidate_pools": candidate_manifests,
+        "deduplication": {
+            **stats,
+            "exact_record_id": True,
+            "exact_text_sha256": True,
+            "near_duplicate_shingle_n": 13,
+            "near_duplicate_threshold": near_duplicate_threshold,
+        },
+    }
+    new_manifest = {
+        **base_manifest,
+        "creation_interval_inclusive": _combined_creation_interval(
+            used_source_manifests
+        ),
+        "extension": extension,
+        "selection": {
+            **base_manifest.get("selection", {}),
+            "extension_exact_and_near_duplicate_checked": True,
+        },
+    }
+    _write_pool(destination, merged, new_manifest)
+
+    written, written_manifest, _payload = _read_verified_pool(
+        destination, benchmark
+    )
+    if written[: len(base)] != base:
+        raise RuntimeError("Extended pool did not preserve the original prefix")
+    return written_manifest
+
+
+def merge_pool(args: argparse.Namespace) -> None:
+    base_path = args.base_path or DATA_ROOT / args.benchmark / "pool.jsonl"
+    merge_pool_files(
+        args.benchmark,
+        base_path,
+        args.candidate_paths,
+        target_records=args.target_records,
+        output_path=args.output_path,
+        near_duplicate_threshold=args.threshold,
+        keep_backup=not args.no_backup,
+    )
+
+
 def dedupe_pool(args: argparse.Namespace) -> None:
     path = DATA_ROOT / args.benchmark / "pool.jsonl"
     manifest_path = path.with_suffix(".manifest.json")
@@ -1046,16 +1335,27 @@ def parse_args() -> argparse.Namespace:
     wiki.add_argument("--snapshot-at", help="latest allowed historical revision, ISO UTC timestamp")
     wiki.add_argument("--records", type=int, default=6600)
     wiki.add_argument("--candidate-limit", type=int, default=200_000)
-    wiki.add_argument("--parallel", type=int, default=3, help="Wiki API concurrency is capped at 3")
+    wiki.add_argument(
+        "--parallel",
+        type=int,
+        default=3,
+        help="concurrency (metadata capped at 3; --full-text capped at 8)",
+    )
     wiki.add_argument("--request-interval", type=float, default=7.5, help="global minimum seconds between requests")
     wiki.add_argument("--selection-tokenizer", help="locally cached tokenizer; collect until records pass existing 128–512 token gates")
     wiki.add_argument("--contact", help="real public project contact URL or email for User-Agent")
     wiki.add_argument("--cache-dir", type=Path, help="persistent successful API response cache")
+    wiki.add_argument(
+        "--full-text",
+        action="store_true",
+        help="fetch one rendered full article per request instead of batched intro extracts",
+    )
     wiki.set_defaults(handler=build_wikitection)
 
     news = subparsers.add_parser(
         "news", parents=[common], help="freeze the NewsTection pool"
     )
+    news.add_argument("--output-path", type=Path, help="separate destination for candidate records")
     news.add_argument("--months", nargs="+", default=list(NEWS_MONTHS))
     news.add_argument("--records", type=int, default=6600)
     news.add_argument("--max-segments", type=int, default=40)
@@ -1065,6 +1365,7 @@ def parse_args() -> argparse.Namespace:
     arxiv = subparsers.add_parser(
         "arxiv", parents=[common], help="freeze the ArXivTection pool"
     )
+    arxiv.add_argument("--output-path", type=Path, help="separate destination for candidate records")
     arxiv.add_argument("--records", type=int, default=6600)
     arxiv.add_argument("--candidate-limit", type=int, default=14_000)
     arxiv.add_argument("--parallel", type=int, default=8)
@@ -1076,6 +1377,18 @@ def parse_args() -> argparse.Namespace:
     dedupe.add_argument("--benchmark", required=True)
     dedupe.add_argument("--threshold", type=float, default=0.5)
     dedupe.set_defaults(handler=dedupe_pool)
+
+    merge = subparsers.add_parser(
+        "merge", help="safely extend a frozen pool from candidate pool files"
+    )
+    merge.add_argument("--benchmark", required=True)
+    merge.add_argument("--base-path", type=Path)
+    merge.add_argument("--candidate-paths", type=Path, nargs="+", required=True)
+    merge.add_argument("--target-records", type=int, default=8000)
+    merge.add_argument("--output-path", type=Path)
+    merge.add_argument("--threshold", type=float, default=0.5)
+    merge.add_argument("--no-backup", action="store_true")
+    merge.set_defaults(handler=merge_pool)
 
     return parser.parse_args()
 

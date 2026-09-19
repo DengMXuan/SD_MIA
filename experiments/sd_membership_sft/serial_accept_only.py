@@ -19,7 +19,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from .audit_metrics import (membership_metrics)
-from .conditional_accept_only import (assert_partition_contract, make_batch, record_partitions)
+from .conditional_accept_only import (assert_partition_contract, make_batch)
+from .audit_partitions import legacy_partitions as record_partitions
 from .data import (prompt_prefix_ids)
 from .generalization import (load_draft_model, load_finetuned_model)
 from .audit_runtime import (_write_json)

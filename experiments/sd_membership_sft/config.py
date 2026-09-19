@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .data_contract import DEFAULT_DATA_CONTRACT
+
 
 @dataclass
 class Config:
@@ -26,8 +28,9 @@ class Config:
     # "adamw" is the standard fp32-state optimizer; "adamw8bit" swaps in
     # bitsandbytes PagedAdamW8bit so an 8B target fits on one A100-80GB.
     optimizer: str = "adamw"
-    n_per_class: int = 2000
-    n_aux: int = 2000
+    n_per_class: int = DEFAULT_DATA_CONTRACT.members
+    n_aux: int = DEFAULT_DATA_CONTRACT.draft_auxiliary
+    n_audit_aux: int = DEFAULT_DATA_CONTRACT.audit_auxiliary
     target_epochs: int = 1
     target_batch_size: int = 2
     target_grad_accum: int = 8

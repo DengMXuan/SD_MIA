@@ -24,9 +24,9 @@ import torch
 from ..config import Config
 from ..data import records_metadata
 from ..splits import (
-    SHARED_SPLIT_SCHEMA_VERSION,
-    build_split,
-    build_split_from_shared_manifest,
+    CONTROLLED_SPLIT_SCHEMA_VERSION,
+    build_controlled_split,
+    build_controlled_split_from_shared_manifest,
     pool_path,
 )
 from ..training import (
@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
         ("target-epochs", int),
         ("n-per-class", int),
         ("n-aux", int),
+        ("n-audit-aux", int),
         ("target-batch-size", int),
         ("target-grad-accum", int),
         ("draft-batch-size", int),
@@ -159,6 +160,7 @@ def render_markdown(
         ),
         f"- Member records: {cfg.n_per_class}; nonmember records: {cfg.n_per_class}",
         f"- Auxiliary distillation records: {cfg.n_aux}",
+        f"- Independent audit auxiliary records: {cfg.n_audit_aux}",
         f"- SFT response: full document continuation ({cfg.benchmark} token band) plus EOS",
         "- SFT prompt: fixed instruction prompt with topic line; only document tokens contribute loss",
         "",
@@ -251,33 +253,41 @@ def _load_condition_split(
         pool = root / pool
     split_manifest = getattr(args, "split_manifest", None)
     if split_manifest is None:
-        return build_split(
+        split = build_controlled_split(
             cfg.benchmark,
             pool,
             tokenizer,
-            cfg.n_per_class,
-            cfg.n_aux,
-            cfg.data_seed,
+            n_per_class=cfg.n_per_class,
+            n_draft_aux=cfg.n_aux,
+            n_audit_aux=cfg.n_audit_aux,
+            seed=cfg.data_seed,
+        )
+        return (
+            split.members,
+            split.nonmembers,
+            split.draft_auxiliary,
+            split.audit_auxiliary,
+            split.metadata,
         )
 
     if not split_manifest.is_absolute():
         split_manifest = root / split_manifest
     tokenizer_source = f"{cfg.draft_model}@{cfg.draft_revision}"
-    result = build_split_from_shared_manifest(
+    split = build_controlled_split_from_shared_manifest(
         cfg.benchmark,
         pool,
         tokenizer,
         split_manifest,
         tokenizer_source,
     )
-    metadata = result[3]
+    metadata = split.metadata
     audit_path = split_manifest.with_suffix(".audit.json")
     if not audit_path.is_file():
         raise RuntimeError(f"Shared split has no preflight audit: {audit_path}")
     audit = json.loads(audit_path.read_text(encoding="utf-8"))
     tokenizer_audit = audit.get("tokenizers", {}).get(tokenizer_source)
     if (
-        audit.get("shared_split_schema_version") != SHARED_SPLIT_SCHEMA_VERSION
+        audit.get("shared_split_schema_version") != CONTROLLED_SPLIT_SCHEMA_VERSION
         or tokenizer_audit is None
         or tokenizer_audit.get("shared_split_sha256")
         != metadata["shared_split_sha256"]
@@ -297,12 +307,19 @@ def _load_condition_split(
         "member": cfg.n_per_class,
         "nonmember": cfg.n_per_class,
         "auxiliary": cfg.n_aux,
+        "audit_auxiliary": cfg.n_audit_aux,
     }
     if metadata["counts"] != expected:
         raise RuntimeError(
             f"Shared split counts {metadata['counts']} do not match {expected}"
         )
-    return result
+    return (
+        split.members,
+        split.nonmembers,
+        split.draft_auxiliary,
+        split.audit_auxiliary,
+        split.metadata,
+    )
 
 
 def main() -> None:
@@ -327,7 +344,7 @@ def main() -> None:
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    members, nonmembers, auxiliary, data_metadata = _load_condition_split(
+    members, nonmembers, auxiliary, audit_auxiliary, data_metadata = _load_condition_split(
         cfg, args, tokenizer, root
     )
     full_finetune = cfg.trainer == "full"
@@ -490,6 +507,7 @@ def main() -> None:
             "members": records_metadata(members),
             "nonmembers": records_metadata(nonmembers),
             "auxiliary": records_metadata(auxiliary),
+            "audit_auxiliary": records_metadata(audit_auxiliary),
         },
         "training": training,
     }

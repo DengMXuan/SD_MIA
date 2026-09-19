@@ -12,7 +12,8 @@ import subprocess
 import sys
 import numpy as np
 import torch
-from .conditional_accept_only import (ConditionalCountTCN, observable_inputs, record_partitions)
+from .conditional_accept_only import (ConditionalCountTCN, observable_inputs)
+from .audit_partitions import legacy_partitions as record_partitions
 from .difficulty_accept_only import (OUTPUT as PRIORITY, RESULTS, load_feature_observations, predict, aggregate, expanded_calibration, group_pvalues)
 from .audit_metrics import (membership_metrics)
 from .audit_metrics import (conformal_tail_pvalues)

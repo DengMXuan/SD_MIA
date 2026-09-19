@@ -6,13 +6,13 @@
 set -uo pipefail
 cd /home/mxd/lib/SD_MIA
 
-RESULTS=experiments/results/sft_runs
+RESULTS=${RESULTS:-experiments/results/sft_runs/four_role_v1}
 COMMON=(
   --trainer full --optimizer adamw8bit
   --target-lr 2e-5 --draft-lr 2e-5
   --target-batch-size 2 --target-grad-accum 8
   --draft-batch-size 2 --draft-grad-accum 8
-  --n-per-class 2000 --n-aux 2000
+  --n-per-class 2000 --n-aux 2000 --n-audit-aux 600
   --seed 20260824 --data-seed 20260824
   --distill-steps 384
 )

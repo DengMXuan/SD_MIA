@@ -11,7 +11,7 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
 PYTHON=${PYTHON:-.venv/bin/python}
-RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/unified_matrix_v1}
+RESULTS_ROOT=${RESULTS_ROOT:-experiments/results/sft_runs/unified_matrix_audit600_v2}
 SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 MODEL_PAIRS_ROOT=${MODEL_PAIRS_ROOT:-$RESULTS_ROOT/model_pairs}
 SPECULATOR_ROOT=${SPECULATOR_ROOT:-$RESULTS_ROOT/speculator_matrix}

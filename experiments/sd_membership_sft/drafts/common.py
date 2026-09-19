@@ -21,9 +21,10 @@ import torch
 from transformers import AutoTokenizer
 
 from ..config import Config
+from ..data_contract import DEFAULT_DATA_CONTRACT
 from ..splits import (
-    SHARED_SPLIT_SCHEMA_VERSION,
-    build_split_from_shared_manifest,
+    CONTROLLED_SPLIT_SCHEMA_VERSION,
+    build_controlled_split_from_shared_manifest,
     pool_path,
 )
 from ..training import set_seed
@@ -72,14 +73,14 @@ def load_split(tokenizer: Any, args: Any):
     manifest = args.split_manifest
     if not manifest.is_absolute():
         manifest = ROOT / manifest
-    result = build_split_from_shared_manifest(
+    split = build_controlled_split_from_shared_manifest(
         args.benchmark,
         ROOT / pool,
         tokenizer,
         manifest,
         tokenizer_source_for(args.pair),
     )
-    metadata = result[3]
+    metadata = split.metadata
     audit_path = manifest.with_suffix(".audit.json")
     if not audit_path.is_file():
         raise RuntimeError(f"Shared split has no preflight audit: {audit_path}")
@@ -87,7 +88,7 @@ def load_split(tokenizer: Any, args: Any):
     source = tokenizer_source_for(args.pair)
     tokenizer_audit = audit.get("tokenizers", {}).get(source)
     if (
-        audit.get("shared_split_schema_version") != SHARED_SPLIT_SCHEMA_VERSION
+        audit.get("shared_split_schema_version") != CONTROLLED_SPLIT_SCHEMA_VERSION
         or tokenizer_audit is None
         or tokenizer_audit.get("shared_split_sha256")
         != metadata["shared_split_sha256"]
@@ -105,12 +106,16 @@ def load_split(tokenizer: Any, args: Any):
         "member": args.n_per_class,
         "nonmember": args.n_per_class,
         "auxiliary": args.n_aux,
+        "audit_auxiliary": args.n_audit_aux,
     }
     if metadata["counts"] != expected:
         raise RuntimeError(
             f"Shared split counts {metadata['counts']} do not match {expected}"
         )
-    return result
+    # Model training deliberately receives only the three model-facing roles.
+    # The independent audit auxiliary is required and included in the split
+    # audit above, but it is reserved for downstream detector fitting.
+    return split.members, split.nonmembers, split.draft_auxiliary, metadata
 
 
 def device_for(args: Any) -> torch.device:
@@ -164,8 +169,15 @@ def build_parser(description: str, pairs: list[str]) -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=3, help="target SFT epochs")
     parser.add_argument("--data-seed", type=int, default=20260824)
     parser.add_argument("--seed", type=int, default=20260824)
-    parser.add_argument("--n-per-class", type=int, default=2000)
-    parser.add_argument("--n-aux", type=int, default=2000)
+    parser.add_argument(
+        "--n-per-class", type=int, default=DEFAULT_DATA_CONTRACT.members
+    )
+    parser.add_argument(
+        "--n-aux", type=int, default=DEFAULT_DATA_CONTRACT.draft_auxiliary
+    )
+    parser.add_argument(
+        "--n-audit-aux", type=int, default=DEFAULT_DATA_CONTRACT.audit_auxiliary
+    )
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--grad-accum", type=int, default=8)
     parser.add_argument("--lr", type=float, default=2e-5)
@@ -259,6 +271,7 @@ def write_run_config(args: Any, extra: dict[str, Any]) -> None:
             "pool_path": ROOT / DATA_ROOT / args.benchmark / "pool.jsonl",
             "n_per_class": args.n_per_class,
             "n_aux": args.n_aux,
+            "n_audit_aux": args.n_audit_aux,
             "target_epochs": args.epochs,
             "target_batch_size": args.batch_size,
             "target_grad_accum": args.grad_accum,

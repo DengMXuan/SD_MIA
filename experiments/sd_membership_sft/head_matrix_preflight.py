@@ -12,10 +12,11 @@ from typing import Any
 
 from transformers import AutoConfig, AutoTokenizer
 
+from .data_contract import DEFAULT_DATA_CONTRACT
 from .drafts.common import PAIR_MODELS, ROOT, cached_snapshot, tokenizer_source_for
 from .splits import (
-    SHARED_SPLIT_SCHEMA_VERSION,
-    build_split_from_shared_manifest,
+    CONTROLLED_SPLIT_SCHEMA_VERSION,
+    build_controlled_split_from_shared_manifest,
     pool_path,
     prepare_shared_split_manifest,
 )
@@ -30,7 +31,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--split-root",
         type=Path,
-        default=Path("experiments/results/sft_runs/speculator_matrix/shared_splits"),
+        default=Path(
+            "experiments/results/sft_runs/speculator_matrix_audit600_v3/shared_splits"
+        ),
     )
     parser.add_argument("--gpus", nargs="+", type=int, default=[3, 4, 5, 6])
     parser.add_argument("--skip-gpu-check", action="store_true")
@@ -169,7 +172,7 @@ def prepare_shared_splits(tokenizers: dict[str, Any], split_root: Path) -> None:
                 audited_sources = set(existing_audit.get("tokenizers", {}))
                 reusable = (
                     existing_manifest.get("schema_version")
-                    == SHARED_SPLIT_SCHEMA_VERSION
+                    == CONTROLLED_SPLIT_SCHEMA_VERSION
                     and existing_manifest.get("benchmark") == benchmark
                     and existing_manifest.get("seed") == seed
                     and existing_manifest.get("pool_sha256")
@@ -177,11 +180,11 @@ def prepare_shared_splits(tokenizers: dict[str, Any], split_root: Path) -> None:
                     and set(existing_manifest.get("tokenizer_sources", []))
                     == expected_sources
                     and existing_manifest.get("counts")
-                    == {"member": 2000, "nonmember": 2000, "auxiliary": 2000}
+                    == DEFAULT_DATA_CONTRACT.shared_manifest_counts
                     and existing_audit.get("benchmark") == benchmark
                     and existing_audit.get("seed") == seed
                     and existing_audit.get("shared_split_schema_version")
-                    == SHARED_SPLIT_SCHEMA_VERSION
+                    == CONTROLLED_SPLIT_SCHEMA_VERSION
                     and existing_audit.get("selection")
                     == existing_manifest.get("selection")
                     and audited_sources == expected_sources
@@ -211,8 +214,9 @@ def prepare_shared_splits(tokenizers: dict[str, Any], split_root: Path) -> None:
                 benchmark,
                 source_pool,
                 tokenizers,
-                n_per_class=2000,
-                n_aux=2000,
+                n_per_class=DEFAULT_DATA_CONTRACT.members,
+                n_aux=DEFAULT_DATA_CONTRACT.draft_auxiliary,
+                n_audit_aux=DEFAULT_DATA_CONTRACT.audit_auxiliary,
                 seed=seed,
                 output_path=destination,
                 eligibility_cache=eligibility_cache,
@@ -231,15 +235,14 @@ def prepare_shared_splits(tokenizers: dict[str, Any], split_root: Path) -> None:
                     f"tokenizer={source}",
                     flush=True,
                 )
-                _members, _nonmembers, _auxiliary, metadata = (
-                    build_split_from_shared_manifest(
-                        benchmark,
-                        source_pool,
-                        tokenizer,
-                        destination,
-                        source,
-                    )
+                controlled_split = build_controlled_split_from_shared_manifest(
+                    benchmark,
+                    source_pool,
+                    tokenizer,
+                    destination,
+                    source,
                 )
+                metadata = controlled_split.metadata
                 tokenizer_audits[source] = {
                     "shared_split_sha256": metadata["shared_split_sha256"],
                     "counts": metadata["counts"],
@@ -257,7 +260,7 @@ def prepare_shared_splits(tokenizers: dict[str, Any], split_root: Path) -> None:
                     flush=True,
                 )
             audit_artifact = {
-                "shared_split_schema_version": SHARED_SPLIT_SCHEMA_VERSION,
+                "shared_split_schema_version": CONTROLLED_SPLIT_SCHEMA_VERSION,
                 "benchmark": benchmark,
                 "seed": seed,
                 "manifest": str(destination),

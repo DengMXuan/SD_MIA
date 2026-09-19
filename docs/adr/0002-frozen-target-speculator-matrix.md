@@ -20,13 +20,17 @@ MTP's trainable native layer comes from that original export, while its frozen
 verifier-owned embedding and output weights come from the condition's SFT
 target so proposals use the matching vocabulary projection.
 
-Shared assignments use schema-v2 deterministic filtering. After the condition
+Shared assignments use schema-v3 deterministic filtering. After the condition
 seed orders the common length-eligible pool, every participating tokenizer
 filters exact truncated-token duplicates and candidates with at least 50%
 13-gram overlap against a retained record. Rejected candidates are backfilled
-before the first 6,000 IDs are partitioned. Every tokenizer then reruns the
-exact cross-split audit with the preregistered 80% failure threshold; training
-requires the manifest hash and all-tokenizer audit attestation to match.
+before the first 6,600 IDs are partitioned into 2,000 members, 2,000
+nonmembers, 2,000 draft auxiliaries, and 600 audit auxiliaries. The final role
+is excluded from target and speculative-head training and is reserved for the
+nonmember-only detector fit, validation, and calibration contract. Every
+tokenizer then reruns the exact cross-split audit with the preregistered 80%
+failure threshold; training requires the manifest hash and all-tokenizer audit
+attestation to match.
 
 Four exclusive single-GPU workers use physical GPUs 3–6. Artifact completion
 is marked only after an atomically promoted checkpoint and manifest exist;
@@ -34,3 +38,7 @@ relaunches skip complete stages, preserve and reuse a complete target, and
 retry only missing head stages. A condition failure is isolated from other
 workers, but the launcher reports all failures and exits nonzero after the
 remaining runnable conditions finish.
+
+The schema-v3 rerun defaults to
+`experiments/results/sft_runs/speculator_matrix_audit600_v3`, separate from
+schema-v2 artifacts.

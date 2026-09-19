@@ -29,9 +29,8 @@ from torch import nn
 from torch.nn import functional as F
 
 from .audit_metrics import membership_metrics
-from .audit_runtime import (
-    ROOT, SPLIT_SEED, _deterministic_subset, _paths, _write_json, split_indices,
-)
+from .audit_partitions import legacy_partitions
+from .audit_runtime import ROOT, SPLIT_SEED, _paths, _write_json
 from .lowq_baseline import lowq_fragment_scores, standardized_max
 
 
@@ -109,13 +108,8 @@ def replay_observations(benchmark: str, epoch: int, budget: int, seed: int):
 
 
 def record_partitions(labels: np.ndarray, record_ids: np.ndarray) -> dict[str, np.ndarray]:
-    """Reuse the registered split; reference=400 NM, calibration=200 NM."""
-    parts = split_indices(labels, SPLIT_SEED)
-    reference = _deterministic_subset(parts["D"][labels[parts["D"]] == 0], 400, SPLIT_SEED + 400)
-    calibration = _deterministic_subset(parts["C"][labels[parts["C"]] == 0], 200, SPLIT_SEED + 1200)
-    shuffled = np.random.default_rng(SPLIT_SEED).permutation(reference)
-    result = {"train": np.sort(shuffled[:320]), "validation": np.sort(shuffled[320:]),
-              "reference": reference, "calibration": calibration, "test": parts["T"]}
+    """Legacy partitions for the already collected 4,000-record archives."""
+    result = legacy_partitions(labels, record_ids)
     assert_partition_contract(labels, record_ids, result)
     return result
 

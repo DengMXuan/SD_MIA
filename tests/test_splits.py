@@ -10,6 +10,7 @@ from experiments.sd_membership_sft.data import SFTRecord, make_sft_example
 from experiments.sd_membership_sft.splits import (
     BENCHMARK_TOKEN_BANDS,
     SFT_PROMPT,
+    build_controlled_split,
     build_split,
 )
 
@@ -103,6 +104,42 @@ def test_build_split_disjoint_classes_and_ngram_gate(tmp_path: Path) -> None:
     for record in members + nonmembers + auxiliary:
         assert record.prompt_text == SFT_PROMPT.format(topic=record.topic)
         assert record.prompt_ids is not None
+
+
+def test_controlled_split_uses_independent_600_role(tmp_path: Path) -> None:
+    titles, texts = _fake_documents(34)
+    pool = tmp_path / "pool.jsonl"
+    _write_pool(pool, texts, titles)
+
+    split = build_controlled_split(
+        "wikitection",
+        pool,
+        StubTokenizer(),
+        n_per_class=8,
+        n_draft_aux=8,
+        n_audit_aux=2,
+        seed=7,
+    )
+
+    roles = (
+        split.members,
+        split.nonmembers,
+        split.draft_auxiliary,
+        split.audit_auxiliary,
+    )
+    assert tuple(map(len, roles)) == (8, 8, 8, 2)
+    role_ids = [{record.record_id for record in role} for role in roles]
+    for left in range(len(role_ids)):
+        for right in range(left + 1, len(role_ids)):
+            assert role_ids[left].isdisjoint(role_ids[right])
+    assert split.metadata["counts"] == {
+        "member": 8,
+        "nonmember": 8,
+        "draft_auxiliary": 8,
+        "audit_auxiliary": 2,
+    }
+    assert "audit_auxiliary_uses" not in split.metadata
+    assert split.metadata["cross_split_ngram_audit"]["gate"] == "PASS"
 
 
 def test_build_split_drops_documents_under_token_band(tmp_path: Path) -> None:

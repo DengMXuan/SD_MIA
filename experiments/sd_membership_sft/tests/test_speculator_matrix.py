@@ -16,6 +16,8 @@ from experiments.sd_membership_sft.drafts.common import (
     validate_training_contract,
 )
 from experiments.sd_membership_sft.splits import (
+    CONTROLLED_SPLIT_SCHEMA_VERSION,
+    build_controlled_split_from_shared_manifest,
     build_split_from_shared_manifest,
     prepare_shared_split_manifest,
 )
@@ -145,6 +147,46 @@ def test_shared_manifest_keeps_raw_ids_identical_across_tokenizers(tmp_path):
     assert ids_a == ids_b
     assert split_a[3]["raw_document_assignment_shared"] is True
     assert split_b[3]["split_seed"] == 1919
+
+
+def test_shared_manifest_supports_four_disjoint_roles(tmp_path):
+    pool = _write_pool(tmp_path, count=12)
+    manifest = tmp_path / "controlled.json"
+    source = "tokenizer-a@rev"
+    tokenizer = _FakeTokenizer(100)
+
+    artifact = prepare_shared_split_manifest(
+        "wikitection",
+        pool,
+        {source: tokenizer},
+        n_per_class=2,
+        n_aux=2,
+        n_audit_aux=2,
+        seed=1919,
+        output_path=manifest,
+        min_tokens=3,
+        max_tokens=40,
+    )
+    split = build_controlled_split_from_shared_manifest(
+        "wikitection", pool, tokenizer, manifest, source
+    )
+
+    assert artifact["schema_version"] == CONTROLLED_SPLIT_SCHEMA_VERSION
+    assert artifact["counts"] == {
+        "member": 2,
+        "nonmember": 2,
+        "auxiliary": 2,
+        "audit_auxiliary": 2,
+    }
+    roles = (
+        split.members,
+        split.nonmembers,
+        split.draft_auxiliary,
+        split.audit_auxiliary,
+    )
+    assert tuple(map(len, roles)) == (2, 2, 2, 2)
+    assert len({row.record_id for role in roles for row in role}) == 8
+    assert split.metadata["cross_split_ngram_audit"]["gate"] == "PASS"
 
 
 def test_shared_manifest_filters_near_duplicates_and_backfills(tmp_path):
@@ -314,6 +356,10 @@ def test_dry_run_has_exact_54_condition_matrix_and_162_artifacts():
     assert sum(" stage=source " in line for line in stages) == 1
     assert all("--head-updates 384 --head-lr 2e-5" in line for line in stages)
     assert all("--kd-temperature 2.0" in line for line in stages)
+    assert all(
+        "--n-per-class 2000 --n-aux 2000 --n-audit-aux 600" in line
+        for line in stages
+    )
     assert all("--seed " in line and "--data-seed " in line for line in stages)
     for line in stages:
         seed = re.search(r"\bseed=(\d+)\b", line)
