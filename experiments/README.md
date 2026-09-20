@@ -9,6 +9,11 @@ live under
 `experiments/data/` and `experiments/results/`; both are intentionally ignored
 by Git.
 
+The opt-in [DP defense extension](dp_defense/README.md) adds full-parameter
+document-level private Qwen training, auxiliary-KD/member-SFT draft variants,
+and matched fixed-candidate audits. It uses separate entry points and result
+directories so existing non-DP training and audit artifacts remain compatible.
+
 All commands below run from the repository root. When
 `CUDA_VISIBLE_DEVICES=<n>` is set, that physical GPU becomes logical `cuda:0`
 inside the process, so use `--gpu 0` in the command.

@@ -21,6 +21,11 @@ dependencies = [
     "warcio>=1.8.1",
 ]
 
+[project.optional-dependencies]
+dp = [
+    "opacus>=1.5,<2",
+]
+
 [dependency-groups]
 dev = ["pytest>=8,<9"]
 

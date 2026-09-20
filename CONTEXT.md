@@ -205,6 +205,33 @@ An evaluation that ranks member records above matched nonmember records using a
 specified combination of draft white-box features and protocol feedback.
 _Avoid_: privacy proof, production attack rate
 
+## Controlled-SFT privacy defenses
+
+**DP target**:
+A full-parameter target whose controlled member-data SFT has a documented
+document-level differential privacy guarantee. This guarantee concerns the
+controlled SFT exposure, not the base model's pretraining data.
+_Avoid_: private pretraining model, inference-noised target
+
+**DP-target auxiliary-KD draft**:
+A draft distilled from a DP target using a fixed, disjoint auxiliary dataset,
+without further access to the protected member records. Its protection for
+those members derives from post-processing the DP target.
+_Avoid_: DP-SGD-trained auxiliary draft, retroactively protected old KD draft
+
+**DP member-SFT draft**:
+A full-parameter draft trained directly on the protected member records with
+document-level differential privacy. Joint exposure with the DP target
+requires privacy accounting for both training mechanisms.
+_Avoid_: post-processing-only member draft
+
+**Deployment-pair privacy budget**:
+The privacy guarantee for jointly observing a target and one deployed draft,
+reported separately for the auxiliary-KD and member-SFT deployment scenarios.
+It does not cover joint observation of both deployments or additional model
+versions.
+_Avoid_: three-artifact condition budget, target-only budget for a member pair
+
 ## Pretraining membership audits
 
 **Pretraining member / nonmember**: labels supplied by the MIMIR benchmark

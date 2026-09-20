@@ -1006,6 +1006,21 @@ wheels = [
 ]
 
 [[package]]
+name = "opacus"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "opt-einsum" },
+    { name = "scipy" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/31/39/a92b485f5a9c65bdd18c574d24c3b17800e39f02d66e665ab9bfbde77c52/opacus-1.6.0.tar.gz", hash = "sha256:20d77252c1e8528cd5826fbaba345cd39ed5c3edb841707eafb6403fe276140a", size = 184592, upload-time = "2026-05-05T18:15:26.103Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/2d/cb1b04cc674f3e06dbe1afc02ed977f066f39c7a4a313372353f82c26117/opacus-1.6.0-py3-none-any.whl", hash = "sha256:342123624c56c09d47eaba44010ed216d51c63132b543d67cba53a49ed6dc41e", size = 308911, upload-time = "2026-05-05T18:15:24.479Z" },
+]
+
+[[package]]
 name = "openai"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1020,6 +1035,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f2/b0/1100c93f93e1c174205ce8d15a049a446f0dc88e9262c1f1f223fe6b9493/openai-3.8.0.tar.gz", hash = "sha256:6138a5a1333a1be9e4d1edea2d160b311542787b029543f87de4961c66358d16", size = 1473819, upload-time = "2026-09-03T19:51:10.495Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/a4/c7e89d3bfb8b7c7ffa38ec9fe527bccf4df723f752fb11bdb3da6c750b76/openai-3.8.0-py3-none-any.whl", hash = "sha256:514736aa1e4ef1033c1209ad53897392845ccd4f2c4fae6413b2cf5f91c2c926", size = 1740349, upload-time = "2026-09-03T19:51:08.596Z" },
+]
+
+[[package]]
+name = "opt-einsum"
+version = "3.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/b9/2ac072041e899a52f20cf9510850ff58295003aa75525e58343591b0cbfb/opt_einsum-3.4.0.tar.gz", hash = "sha256:96ca72f1b886d148241348783498194c577fa30a8faac108586b14f1ba4473ac", size = 63004, upload-time = "2024-09-26T14:33:24.483Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/cd/066e86230ae37ed0be70aae89aabf03ca8d9f39c8aea0dec8029455b5540/opt_einsum-3.4.0-py3-none-any.whl", hash = "sha256:69bb92469f86a1565195ece4ac0323943e83477171b91d24c35afe028a90d7cd", size = 71932, upload-time = "2024-09-26T14:33:23.039Z" },
 ]
 
 [[package]]
@@ -1461,6 +1485,11 @@ dependencies = [
     { name = "warcio" },
 ]
 
+[package.optional-dependencies]
+dp = [
+    { name = "opacus" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -1473,6 +1502,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.5,<3" },
     { name = "matplotlib", specifier = ">=3.9,<4" },
     { name = "numpy", specifier = ">=2,<3" },
+    { name = "opacus", marker = "extra == 'dp'", specifier = ">=1.5,<2" },
     { name = "peft", specifier = ">=0.15,<1" },
     { name = "requests", specifier = ">=2.32,<3" },
     { name = "rouge-score", specifier = ">=0.1.2" },
@@ -1484,6 +1514,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.0,<5.17" },
     { name = "warcio", specifier = ">=1.8.1" },
 ]
+provides-extras = ["dp"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8,<9" }]
