@@ -88,6 +88,13 @@ One fixed combination of benchmark dataset, target SFT epoch setting, and
 random seed for a model pair.
 _Avoid_: run, trial (when referring to the controlled matrix)
 
+**Qwen draft-audit configuration**:
+One Qwen3-8B/1.7B controlled training condition evaluated with either its
+auxiliary-KD draft or its member-SFT draft. Three seeds, three datasets, two
+target epoch settings and two draft variants define 36 audit configurations
+sharing 18 target checkpoints.
+_Avoid_: 36 independently trained targets, the two-family plain training matrix
+
 **Unified controlled-SFT matrix**:
 The five-pair experiment scheduled by one supervising launcher: two plain
 target–draft pairs and three frozen-target EAGLE-3/MTP pairs, crossed with
@@ -137,6 +144,42 @@ with its matching all-tokenizer audit attestation.
 _Avoid_: tokenizer-specific split
 
 ## Edge–cloud speculative decoding
+
+**Empirical ROC operating point**:
+A descriptive test-set operating point read from the ROC of audit scores and
+membership labels at a specified false-positive rate. It is not a threshold
+learned from an independent deployment-calibration set.
+_Avoid_: calibrated deployment TPR
+
+**Independently calibrated operating point**:
+A test-set true-positive rate and realized false-positive rate obtained with a
+threshold set using separate trusted nonmembers. The nominal calibration FPR
+and the realized test FPR are distinct quantities.
+_Avoid_: test-ROC threshold, guaranteed realized FPR
+
+**Fixed-candidate audit**:
+A membership audit that verifies tokens taken from the candidate record under
+that record's original prefixes, regardless of earlier verification outcomes.
+_Avoid_: natural SD trajectory, ordinary generation
+
+**Natural-SD audit**:
+A membership audit based on draft-generated proposals and observable verifier
+feedback along the actual generated continuation of an initial prefix.
+Corrections affect subsequent context rather than resetting it to the record.
+_Avoid_: fixed-candidate replay, teacher-forced continuation
+
+**Edge-side hidden-conditioned drafter**:
+An EAGLE-3 or native MTP prediction head run by the client using the target
+hidden states supplied by the cloud protocol. Its proposal distribution is
+locally observable, and the client has access to the supplied hidden states.
+_Avoid_: independent draft model, hidden-state-free attacker
+
+**Head-based accept-only detector boundary**:
+The membership detector uses locally computed draft-distribution features and
+observable acceptance feedback, excluding raw target hidden states and target
+probabilities. This detector restriction does not imply that the client lacks
+access to the hidden states needed to run its drafter.
+_Avoid_: target-hidden-states unavailable, target-probability access
 
 **Target model**:
 The cloud-side full language model whose controlled SFT membership is audited.
