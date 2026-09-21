@@ -12,6 +12,6 @@ as equally deployment-shaped options:
 - :mod:`drafts.mtp` — the checkpoint's native MTP head, independently
   initialized for auxiliary KD and member-data MTP-CE after target SFT.
 
-All three write run artifacts under ``experiments/results`` and replay
+All three write run artifacts under ``artifacts/runs/training`` and replay
 their data through the same frozen post-cutoff pools.
 """

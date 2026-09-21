@@ -14,7 +14,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ..audit_runtime import (ROOT)
+from experiments.sd_membership_sft.core.audit_runtime import (ROOT)
 
 
 SEEDS = (20260914, 20260915, 20260916)

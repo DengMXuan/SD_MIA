@@ -2,7 +2,7 @@
 
 ``drafts.plain`` is self-contained; the two head-based approaches share
 the model-pair registry, the split loader, and the run-config writer
-here. Results stay under ``experiments/results/protocol_ft`` for
+here. Results stay under ``artifacts/runs/training/protocol_ft`` for
 continuity with the existing run artifacts.
 """
 
@@ -20,18 +20,18 @@ from typing import Any, Callable
 import torch
 from transformers import AutoTokenizer
 
-from ..config import Config
-from ..data_contract import DEFAULT_DATA_CONTRACT
-from ..splits import (
+from experiments.sd_membership_sft.finetune.config import Config
+from experiments.sd_membership_sft.core.data_contract import DEFAULT_DATA_CONTRACT
+from experiments.sd_membership_sft.datasets.splits import (
     CONTROLLED_SPLIT_SCHEMA_VERSION,
     build_controlled_split_from_shared_manifest,
     pool_path,
 )
-from ..training import set_seed
+from experiments.sd_membership_sft.finetune.training import set_seed
 
-ROOT = Path(__file__).resolve().parents[3]
-DATA_ROOT = Path("experiments/data/pools")
-RESULTS_ROOT = Path("experiments/results/protocol_ft")
+from experiments.paths import ROOT
+DATA_ROOT = Path("artifacts/data/pools")
+RESULTS_ROOT = Path("artifacts/runs/training/protocol_ft")
 KD_TEMPERATURE = 2.0
 KD_STEPS = 384
 KD_LR = 2e-5
@@ -65,7 +65,10 @@ PAIR_MODELS: dict[str, dict[str, str]] = {
 
 
 def run_dir_for(args: Any) -> Path:
-    return args.output_dir if args.output_dir.is_absolute() else ROOT / args.output_dir
+    from experiments.paths import prepare_training_storage
+    path = args.output_dir if args.output_dir.is_absolute() else ROOT / args.output_dir
+    prepare_training_storage(path)
+    return path
 
 
 def load_split(tokenizer: Any, args: Any):

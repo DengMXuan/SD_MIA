@@ -58,7 +58,7 @@ def test_dry_run_has_smoke_gate_and_exact_matrix():
         for line in conditions
     )
     assert all("--split-manifest" in line for line in conditions)
-    assert all("model_pairs_audit600_v3/shared_splits" in line for line in conditions)
+    assert all("artifacts/data/splits/controlled_sft_v2" in line for line in conditions)
     assert result.stdout.rstrip().endswith(
         "[plan-ok] conditions=36 checkpoints=108 workers=4"
     )

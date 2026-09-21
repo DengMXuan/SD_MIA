@@ -28,13 +28,13 @@ import torch
 from scipy.optimize import minimize
 from torch import nn
 
-from ..audit_runtime import (DEFAULT_SPLIT_SEED, split_indices)
-from .full_delta_mia import (DEFAULT_TRAINING_SEEDS, _bootstrap_metrics, _metric_point, fit_row_standardizer)
-from ..audit_metrics import (partial_auc)
+from experiments.sd_membership_sft.core.audit_runtime import (DEFAULT_SPLIT_SEED, split_indices)
+from experiments.sd_membership_sft.archive.full_delta_mia import (DEFAULT_TRAINING_SEEDS, _bootstrap_metrics, _metric_point, fit_row_standardizer)
+from experiments.sd_membership_sft.core.audit_metrics import (partial_auc)
 
-from ..replay_cache import (DeltaData, load_delta_data, sliding_means)
+from experiments.sd_membership_sft.core.replay_cache import (DeltaData, load_delta_data, sliding_means)
 
-ROOT = Path(__file__).resolve().parents[3]
+from experiments.paths import ROOT
 BENCHMARKS = ("wikitection", "newstection", "arxivtection")
 EPOCHS = (1, 3)
 WINDOWS = (4, 8, 16, 32, 64)

@@ -14,10 +14,10 @@ from typing import Any
 
 import numpy as np
 
-from .full_delta_mia import (_operating_point)
-from ..audit_metrics import (partial_auc, rank_auc)
+from experiments.sd_membership_sft.archive.full_delta_mia import (_operating_point)
+from experiments.sd_membership_sft.core.audit_metrics import (partial_auc, rank_auc)
 
-ROOT = Path(__file__).resolve().parents[3]
+from experiments.paths import ROOT
 CONDITIONS = tuple((benchmark, epoch) for benchmark in ("wikitection", "newstection", "arxivtection") for epoch in (1, 3))
 
 

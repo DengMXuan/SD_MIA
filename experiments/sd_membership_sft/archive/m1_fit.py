@@ -31,10 +31,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import minimize
 
-from ..audit_metrics import (conformal_tail_pvalues)
-from ..directional_mia import (rank_auc, split_indices, threshold_metrics)
-from ..m1_features import (ACTIVATION_FEATURE_NAMES, AGGREGATE_FEATURE_NAMES, Q_FEATURE_NAMES, aggregate_matrix, document_mean_std_matrix)
-from ..scoring_common import (ROOT, resolve_run_dir)
+from experiments.sd_membership_sft.core.audit_metrics import (conformal_tail_pvalues)
+from experiments.sd_membership_sft.analysis.directional_mia import (rank_auc, split_indices, threshold_metrics)
+from experiments.sd_membership_sft.analysis.m1_features import (ACTIVATION_FEATURE_NAMES, AGGREGATE_FEATURE_NAMES, Q_FEATURE_NAMES, aggregate_matrix, document_mean_std_matrix)
+from experiments.sd_membership_sft.core.scoring_common import (ROOT, resolve_run_dir)
 
 
 SPLIT_SEED = 20260824
@@ -160,7 +160,7 @@ def _validate_probability_provenance(
     """Verify the cache source chain instead of trusting IDs and lengths alone."""
 
     if feature_manifest.get("training_regime") == "pretraining":
-        from ...pretraining.cache import validate_cache_provenance
+        from experiments.pretraining.cache import validate_cache_provenance
         validate_cache_provenance(feature_dir, probability_dir, feature_manifest, probability_manifest, role)
         return
 
@@ -380,7 +380,7 @@ def load_m1_data(feature_dir: Path, probability_dir: Path, role: str) -> M1Data:
         )
     offsets = _record_offsets(lengths)
     f19_rows: list[dict[str, float]] = []
-    from ..directional_mia import (record_features)
+    from experiments.sd_membership_sft.analysis.directional_mia import (record_features)
 
     for start, end in zip(offsets[:-1], offsets[1:]):
         f19_rows.append(record_features(target_logp[int(start) : int(end)], draft_logq[int(start) : int(end)]))

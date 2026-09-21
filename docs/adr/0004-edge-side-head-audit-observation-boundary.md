@@ -3,7 +3,7 @@
 Status: accepted for the observation boundary and protocol coverage on
 2026-09-19, including configurable starting prefixes for natural queries. The
 user subsequently confirmed implementation of the consolidated plan in
-`experiments/sd_membership_sft/NATURAL_SD_DESIGN.md`.
+`experiments/sd_membership_sft/docs/NATURAL_SD_DESIGN.md`.
 
 For the EAGLE-3/MTP membership-audit extension, the client runs the prediction
 head and the cloud supplies the target hidden states needed to produce its

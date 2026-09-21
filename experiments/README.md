@@ -1,3 +1,5 @@
+> 2026-09-22：SD SFT 代码与产物已分层整理。当前入口、存储布局及断点续跑命令见 [SD 实验说明](sd_membership_sft/README.md)。本文下方保留各实验的历史说明；旧 results/data 路径通过兼容链接访问。
+
 # Experiments
 
 This directory contains two independent membership-audit tracks: controlled

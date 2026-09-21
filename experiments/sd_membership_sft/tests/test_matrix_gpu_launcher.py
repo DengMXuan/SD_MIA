@@ -8,11 +8,8 @@ from experiments.sd_membership_sft import qwen_audit_matrix as matrix
 
 
 def launcher_namespace():
-    wrapper = Path(matrix.__file__).with_name("run_qwen_audit_matrix.sh")
-    text = wrapper.read_text()
-    marker = "<<'PY'\n"
-    assert marker in text, "launcher must allow small background GPU allocations"
-    source = text.split(marker, 1)[1].rsplit("\nPY", 1)[0]
+    wrapper = Path(matrix.__file__).with_name("cli.py")
+    source = wrapper.read_text()
     namespace = {"__name__": "launcher_test"}
     exec(compile(source, str(wrapper), "exec"), namespace)
     return namespace

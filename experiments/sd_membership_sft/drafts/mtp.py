@@ -25,10 +25,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .heads import ensure_mtp_conversion, load_mtp_speculator
-from ..data import collate_sft, make_sft_example
-from ..training import _autocast, load_causal_lm, set_seed, sft_train
-from .common import (
+from experiments.sd_membership_sft.drafts.heads import ensure_mtp_conversion, load_mtp_speculator
+from experiments.sd_membership_sft.datasets.data import collate_sft, make_sft_example
+from experiments.sd_membership_sft.finetune.training import _autocast, load_causal_lm, set_seed, sft_train
+from experiments.sd_membership_sft.drafts.common import (
     PAIR_MODELS,
     build_parser,
     cached_snapshot,
@@ -172,7 +172,7 @@ def _load_frozen_target_and_fresh_head(
     source_dir = _source_head_path(args)
     if not checkpoint_complete(source_dir):
         raise RuntimeError(f"Native MTP source is incomplete: {source_dir}")
-    from ..generalization import load_finetuned_model
+    from experiments.sd_membership_sft.finetune.generalization import load_finetuned_model
 
     target = load_finetuned_model(
         run_dir, PAIR_MODELS[args.pair]["target"], device

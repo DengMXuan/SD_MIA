@@ -19,12 +19,12 @@ from typing import Any
 
 import numpy as np
 
-from ..directional_mia import (record_features)
-from .m1_fit import (CALIBRATION_RATES, FIT_VERSION, M1Data, _jsonable, evaluate_score_vector, fixed_probability_baseline_scores, fit_detector, make_partitions, probability_b2_values)
-from ..m1_features import (aggregate_matrix)
+from experiments.sd_membership_sft.analysis.directional_mia import (record_features)
+from experiments.sd_membership_sft.archive.m1_fit import (CALIBRATION_RATES, FIT_VERSION, M1Data, _jsonable, evaluate_score_vector, fixed_probability_baseline_scores, fit_detector, make_partitions, probability_b2_values)
+from experiments.sd_membership_sft.analysis.m1_features import (aggregate_matrix)
 
 
-ROOT = Path(__file__).resolve().parents[3]
+from experiments.paths import ROOT
 DEFAULT_ROOT = ROOT / "experiments/results/sft_runs/m1_conditional"
 DEFAULT_OUTPUT = DEFAULT_ROOT / "M1_RESULTS.md"
 
@@ -153,7 +153,7 @@ def run_probability_baseline(
     method_scores["B2/logistic"] = detector.scores(b2_values, 20260909)
     bootstrap = None
     if bootstrap_repeats > 0:
-        from .m1_fit import (make_bootstrap_indices)
+        from experiments.sd_membership_sft.archive.m1_fit import (make_bootstrap_indices)
 
         bootstrap = make_bootstrap_indices(
             int(np.sum(labels[partitions["test"]] == 1)),

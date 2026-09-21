@@ -22,12 +22,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from ..conditional_accept_only import (Observations, save_observations)
-from ..data import (SFTRecord, _hash_ids, prompt_prefix_ids)
-from ..generalization import (load_draft_model, load_finetuned_model)
-from ..audit_runtime import (_write_json)
-from ..pq_gap_mia import (record_logprobabilities)
-from ..scoring_common import (prepare_scoring_records, resolve_run_dir, role_provenance)
+from experiments.sd_membership_sft.methods.conditional_accept_only import (Observations, save_observations)
+from experiments.sd_membership_sft.datasets.data import (SFTRecord, _hash_ids, prompt_prefix_ids)
+from experiments.sd_membership_sft.finetune.generalization import (load_draft_model, load_finetuned_model)
+from experiments.sd_membership_sft.core.audit_runtime import (_write_json)
+from experiments.sd_membership_sft.analysis.pq_gap_mia import (record_logprobabilities)
+from experiments.sd_membership_sft.core.scoring_common import (prepare_scoring_records, resolve_run_dir, role_provenance)
 
 
 def paired_records(

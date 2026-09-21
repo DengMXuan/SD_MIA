@@ -21,15 +21,15 @@ from typing import Any
 
 import torch
 
-from ..config import Config
-from ..data import records_metadata
-from ..splits import (
+from experiments.sd_membership_sft.finetune.config import Config
+from experiments.sd_membership_sft.datasets.data import records_metadata
+from experiments.sd_membership_sft.datasets.splits import (
     CONTROLLED_SPLIT_SCHEMA_VERSION,
     build_controlled_split,
     build_controlled_split_from_shared_manifest,
     pool_path,
 )
-from ..training import (
+from experiments.sd_membership_sft.finetune.training import (
     add_lora,
     distill_on_auxiliary,
     load_causal_lm,
@@ -328,9 +328,11 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available; run with the approved host GPU access")
 
-    root = Path(__file__).resolve().parents[3]
+    from experiments.paths import ROOT as root
     output_dir = cfg.output_dir if cfg.output_dir.is_absolute() else root / cfg.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    from experiments.paths import prepare_training_storage
+    prepare_training_storage(output_dir)
     if cfg.save_adapters:
         (output_dir / "adapters").mkdir(exist_ok=True)
 
@@ -354,7 +356,7 @@ def main() -> None:
     resume = bool(args.resume)
     target_ckpt = output_dir / checkpoint_dir / "target"
     if resume and _checkpoint_complete(target_ckpt):
-        from ..generalization import load_finetuned_model
+        from experiments.sd_membership_sft.finetune.generalization import load_finetuned_model
 
         target = load_finetuned_model(output_dir, cfg.target_model, device)
         target.eval()

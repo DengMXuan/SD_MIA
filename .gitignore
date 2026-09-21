@@ -49,5 +49,8 @@ tensorboard/
 /research/
 
 # Experiment datasets and run artifacts stay out of version control
-experiments/data/
+/experiments/data
 experiments/results/
+
+# Canonical local models, runs, caches, datasets and migration backups
+/artifacts/

@@ -35,15 +35,15 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, Subset
 
-from ..audit_metrics import (conformal_tail_pvalues, order_statistic_threshold)
-from ..directional_mia import (record_features)
-from ..m1_features import (aggregate_matrix)
+from experiments.sd_membership_sft.core.audit_metrics import (conformal_tail_pvalues, order_statistic_threshold)
+from experiments.sd_membership_sft.analysis.directional_mia import (record_features)
+from experiments.sd_membership_sft.analysis.m1_features import (aggregate_matrix)
 
-from ..audit_runtime import (DEFAULT_SPLIT_SEED, split_indices)
-from ..audit_metrics import (_roc_points, rank_auc, partial_auc)
+from experiments.sd_membership_sft.core.audit_runtime import (DEFAULT_SPLIT_SEED, split_indices)
+from experiments.sd_membership_sft.core.audit_metrics import (_roc_points, rank_auc, partial_auc)
 
 
-ROOT = Path(__file__).resolve().parents[3]
+from experiments.paths import ROOT
 DEFAULT_TRAINING_SEEDS = (20260909, 20260910, 20260911)
 DEFAULT_WINDOWS = (4, 8, 16, 32, 64)
 METHODS = (

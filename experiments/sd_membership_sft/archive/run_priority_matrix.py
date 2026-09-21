@@ -7,7 +7,7 @@ import os
 import queue
 import subprocess
 import sys
-from ..difficulty_accept_only import (OUTPUT, feature_root)
+from experiments.sd_membership_sft.methods.difficulty_accept_only import (OUTPUT, feature_root)
 
 
 def main():

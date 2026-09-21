@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from scipy.optimize import minimize
 
-from .m1_fit import (partial_auc)
+from experiments.sd_membership_sft.archive.m1_fit import (partial_auc)
 
 LOGISTIC_L2_GRID = (1e-3, 1e-2, 1e-1, 1.0)
 NET_WEIGHT_DECAYS = (1e-3, 1e-2)

@@ -32,10 +32,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .heads import eagle3_target_layer_ids, load_eagle3_speculator
-from ..data import collate_sft, make_sft_example
-from ..training import _autocast, _make_optimizer, load_causal_lm, set_seed, sft_train
-from .common import (
+from experiments.sd_membership_sft.drafts.heads import eagle3_target_layer_ids, load_eagle3_speculator
+from experiments.sd_membership_sft.datasets.data import collate_sft, make_sft_example
+from experiments.sd_membership_sft.finetune.training import _autocast, _make_optimizer, load_causal_lm, set_seed, sft_train
+from experiments.sd_membership_sft.drafts.common import (
     PAIR_MODELS,
     build_parser,
     cached_snapshot,
@@ -188,7 +188,7 @@ def cmd_eagle_head(args: argparse.Namespace) -> None:
     members, _nonmembers, auxiliary, metadata = load_split(tokenizer, args)
     records = auxiliary if args.variant == "aux" else members
 
-    from ..generalization import load_finetuned_model
+    from experiments.sd_membership_sft.finetune.generalization import load_finetuned_model
 
     target = load_finetuned_model(run_dir, PAIR_MODELS[args.pair]["target"], device)
     for parameter in target.parameters():

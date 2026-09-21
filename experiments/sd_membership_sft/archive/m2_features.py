@@ -25,7 +25,7 @@ from typing import Any
 
 import numpy as np
 
-from ..m1_features import (aggregate_matrix)
+from experiments.sd_membership_sft.analysis.m1_features import (aggregate_matrix)
 
 EVIDENCE_CLIP = 4.0
 STD_CLIP = 8.0

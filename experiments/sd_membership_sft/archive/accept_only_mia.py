@@ -22,12 +22,12 @@ import numpy as np
 import torch
 from torch import nn
 
-from ..audit_runtime import (DEFAULT_SPLIT_SEED, split_indices)
-from .full_delta_mia import (DEFAULT_TRAINING_SEEDS, _bootstrap_metrics)
-from ..audit_metrics import (partial_auc)
-from .stat_delta_mia import (fit_logistic)
+from experiments.sd_membership_sft.core.audit_runtime import (DEFAULT_SPLIT_SEED, split_indices)
+from experiments.sd_membership_sft.archive.full_delta_mia import (DEFAULT_TRAINING_SEEDS, _bootstrap_metrics)
+from experiments.sd_membership_sft.core.audit_metrics import (partial_auc)
+from experiments.sd_membership_sft.archive.stat_delta_mia import (fit_logistic)
 
-ROOT = Path(__file__).resolve().parents[3]
+from experiments.paths import ROOT
 BENCHMARKS = ("wikitection", "newstection", "arxivtection")
 EPOCHS = (1, 3)
 QUERY_COUNTS = (1, 4, 16, 64)
@@ -399,7 +399,7 @@ def main() -> None:
         # standardizer is fitted inside _run_stat_method below.
         for family in ("logistic", "mlp"):
             name = f"Accept-K{queries}-stat-{family}"
-            from .stat_delta_mia import (_run_method)
+            from experiments.sd_membership_sft.archive.stat_delta_mia import (_run_method)
             result = _run_method(name, stats_input, labels, partitions, family, seeds, device, args.max_epochs, args.patience)
             scores = result.pop("scores")
             result["metrics"] = result["seed_metrics"][str(seeds[0])]["metrics"]

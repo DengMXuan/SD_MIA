@@ -27,10 +27,10 @@ from typing import Any
 
 import numpy as np
 
-from ..audit_metrics import (conformal_tail_pvalues)
-from ..directional_mia import (paired_bootstrap_method_delta, rank_auc)
-from .m1_fit import (_wilson_interval, make_partitions, partial_auc)
-from ..scoring_common import (ROOT)
+from experiments.sd_membership_sft.core.audit_metrics import (conformal_tail_pvalues)
+from experiments.sd_membership_sft.analysis.directional_mia import (paired_bootstrap_method_delta, rank_auc)
+from experiments.sd_membership_sft.archive.m1_fit import (_wilson_interval, make_partitions, partial_auc)
+from experiments.sd_membership_sft.core.scoring_common import (ROOT)
 
 ETA_RATES = (0.10, 0.05, 0.01)
 BOOTSTRAP_REPEATS = 2000

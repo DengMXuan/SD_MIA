@@ -9,9 +9,9 @@ from typing import Any
 
 import numpy as np
 
-from ..audit_metrics import (membership_metrics)
-from ..audit_runtime import (split_indices)
-from ..audit_runtime import (ROOT, SPLIT_SEED, _write_json)
+from experiments.sd_membership_sft.core.audit_metrics import (membership_metrics)
+from experiments.sd_membership_sft.core.audit_runtime import (split_indices)
+from experiments.sd_membership_sft.core.audit_runtime import (ROOT, SPLIT_SEED, _write_json)
 
 
 COMPARISONS = (
