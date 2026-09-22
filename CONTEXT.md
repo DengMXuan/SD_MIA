@@ -145,6 +145,27 @@ _Avoid_: tokenizer-specific split
 
 ## Edge–cloud speculative decoding
 
+**Acceptance-query multiplicity**:
+The number of fresh accept/reject judgments requested at each supported
+candidate-token position; a record's total budget is this multiplicity times
+its number of supported positions. It is distinct from verifier requests and
+model forward calls, and gives different-length records the same per-position
+allowance.
+_Avoid_: fixed per-record budget, whole-test-set budget, model-call count
+
+**Detector auxiliary-data budget**:
+The total number of trusted nonmember records reserved for detector training,
+validation, and independent calibration, disjoint from the test records and
+language-model adaptation records. The fitting allocation includes training
+and validation; calibration is a separate allocation.
+_Avoid_: draft auxiliary-data budget, training-only sample count
+
+**Detector auxiliary extension**:
+Additional trusted nonmember records selected from the frozen pool outside a
+condition's existing member, test-nonmember, draft-auxiliary, and detector-auxiliary
+assignments. They expand detector resources without changing those assignments.
+_Avoid_: borrowed test nonmembers, reused draft-training auxiliaries
+
 **Empirical ROC operating point**:
 A descriptive test-set operating point read from the ROC of audit scores and
 membership labels at a specified false-positive rate. It is not a threshold
