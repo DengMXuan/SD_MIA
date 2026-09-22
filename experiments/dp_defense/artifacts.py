@@ -19,8 +19,9 @@ def dp_runtime_files():
 
 
 def code_sources():
+    from experiments.cross_model_audit.artifacts import runtime_files as audit_runtime_files
     return [{"path": str(p.resolve()), "sha256": sha256_file(p)}
-            for p in [*runtime_files(), *dp_runtime_files()]]
+            for p in [*audit_runtime_files(), *dp_runtime_files()]]
 
 
 @contextmanager
@@ -67,8 +68,20 @@ def stage_key(request, role, teacher_sha=None):
     return digest({"request": request, "role": role, "teacher_sha256": teacher_sha})
 
 
+def stage_directory(output, role):
+    output = Path(output)
+    path = output / "DP_REQUEST.json"
+    request = json.loads(path.read_text()) if path.exists() else {}
+    if role not in ROLES:
+        raise ValueError("unknown DP stage")
+    if request.get("head_pair") and role != "target":
+        folder = "auxiliary_head" if role == "draft_auxiliary_distilled" else "member_head"
+        return output / "heads" / folder
+    return output / "checkpoints" / role
+
+
 def read_stage(output, role, key):
-    folder = output / "checkpoints" / role
+    folder = stage_directory(output, role)
     if not folder.exists():
         return None
     marker = folder / "DP_STAGE.json"
@@ -86,8 +99,8 @@ def read_stage(output, role, key):
     return {**metadata, "checkpoint_sha256": checkpoint_fingerprint(folder)}
 
 
-def save_stage(output, role, key, model, tokenizer, privacy):
-    folder = output / "checkpoints" / role
+def save_stage(output, role, key, model, tokenizer, privacy, *, marker=None, implementation=None):
+    folder = stage_directory(output, role)
     if folder.exists():
         raise ValueError("refusing to overwrite a published DP stage")
     # Only this owned staging path may be replaced after a failed save. No
@@ -98,6 +111,10 @@ def save_stage(output, role, key, model, tokenizer, privacy):
     temporary.mkdir(parents=True)
     model.save_pretrained(temporary, safe_serialization=True)
     tokenizer.save_pretrained(temporary)
+    if marker is not None:
+        _write_json(temporary / "_COMPLETE.json", {"status": "complete", **marker})
+    if implementation is not None:
+        shutil.copyfile(implementation, temporary / "eagle3.py")
     validate_weights(temporary)
     files = {str(p.relative_to(temporary)): sha256_file(p)
              for p in temporary.rglob("*") if p.is_file()}
@@ -119,9 +136,14 @@ def verify_run(output: Path):
     for source in request["sources"]:
         if sha256_file(Path(source["path"])) != source["sha256"]:
             raise ValueError(f"DP training source changed: {source['path']}")
+    if request.get("source_head"):
+        if checkpoint_fingerprint(Path(request["source_head"])) != request["source_head_sha256"]:
+            raise ValueError("initial native MTP source changed")
     stages = {}
     for role in ROLES:
-        teacher = stages["target"]["checkpoint_sha256"] if role == "draft_auxiliary_distilled" else None
+        teacher = (stages["target"]["checkpoint_sha256"]
+                   if role == "draft_auxiliary_distilled" or (request.get("head_pair") and role == "draft_member_sft")
+                   else None)
         stage = read_stage(output, role, stage_key(request, role, teacher))
         if stage is None or stage != artifact["privacy"]["stages"][role]:
             raise ValueError("DP stage missing or differs from training passport")

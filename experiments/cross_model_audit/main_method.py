@@ -48,11 +48,17 @@ def run_main(task, device, cfg, prepared, sources):
         if (envelope["contract"].get("matrix_request_key") != request
                 or digest(envelope["contract"]["sources"]) != digest(sources)):
             raise ValueError("observation parameters or frozen sources changed")
+        if adapter_kind != "plain" and (envelope["contract"].get("head_validation") or {}).get("status") != "passed":
+            raise ValueError("head observations lack the prefix-consistency validation gate")
     else:
         adapter = load_adapter(Path(task["run_dir"]), adapter_kind, device, task["draft_role"])
         record = prepared.records[int(parts["train"][0])]
         prompt = protocol_prompt_ids(record, prepared.tokenizer)
         response = list(record.response_ids)
+        validation = None
+        if adapter_kind != "plain":
+            from experiments.cross_model_audit.head_validation import validate_adapter
+            validation = validate_adapter(adapter, prompt, response)
         # One untimed warmup on a training auxiliary, never the test/calibration set.
         fixed_trace(adapter, prompt, response, seed=settings["audit_seed"])
         contract = dict(
@@ -61,7 +67,8 @@ def run_main(task, device, cfg, prepared, sources):
             rounds_per_start=0,
             seed=settings["audit_seed"], sources=sources, matrix_request_key=request,
             data_contract="four_role_600", execution="full_context_reconstruction",
-            head_real_model_validation="not_applicable" if adapter_kind == "plain" else "frozen_checkpoint_collection", timing_version=1,
+            head_real_model_validation="not_applicable" if adapter_kind == "plain" else "prefix_consistency_checked",
+            head_validation=validation, timing_version=1,
             hardware=dict(name=torch.cuda.get_device_name(device) if torch.device(device).type == "cuda" else "cpu",
                           device=str(device), attention="sdpa", torch=str(torch.__version__),
                           dtype=str(next(adapter.target.parameters()).dtype)),
@@ -134,7 +141,10 @@ def run_main(task, device, cfg, prepared, sources):
             model_pair=pair_for(task).name, adapter=adapter_kind,
             metrics=metrics(values, labels, cal, test, seed=settings["audit_seed"]),
             metric_conventions=METRIC_CONVENTIONS, cost=cost, cost_conventions=COST_CONVENTIONS,
-            access_channel="draft_features_and_acceptance_only", training_member_count=0,
+            access_channel=("draft_features_and_acceptance_only" if adapter_kind == "plain"
+                            else "edge_head_target_hidden_states_and_acceptance"),
+            detector_features="draft_features_and_acceptance_only", training_member_count=0,
+            head_validation=envelope["contract"].get("head_validation"),
             fit=fit_meta, detector={"file": "../detector.pt", "sha256": fit_meta["sha256"]},
             collection_phase_seconds=collection, inference_seconds=inference,
             hardware=envelope["contract"]["hardware"],

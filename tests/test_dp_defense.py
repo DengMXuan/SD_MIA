@@ -302,21 +302,36 @@ def test_default_matrix_has_54_conditions_with_one_shared_target_each(tmp_path):
     assert all("experiments.dp_defense.audit" in task["audit"] for task in tasks)
 
 
-def test_comparison_requires_identical_records_and_preserves_signed_changes(tmp_path):
+@pytest.mark.parametrize("dp_pair,reference_pair,dp_role,reference_role", [
+    ({}, {}, "draft_member_sft", "draft_member_sft"),
+    ({"model_pair": "qwen3"}, {}, "draft_member_sft", "draft_member_sft"),
+    ({"model_pair": "qwen3_8b_eagle3"}, {"pair": "qwen3_8b_eagle3"},
+     "member_head", "draft_member_sft"),
+])
+def test_comparison_requires_identical_records_and_preserves_signed_changes(
+        tmp_path, dp_pair, reference_pair, dp_role, reference_role):
     from experiments.dp_defense.compare import compare_reports, FIELDS
     common = dict(condition={"benchmark": "wikitection", "epoch": 1, "condition_seed": 1919},
                   method="main_fixed_sparse_positive", draft_role="draft_member_sft", settings={"seed": 1},
                   request_key="key", sources={"files": [], "checkpoints": []})
     for name, auc in (("dp", .5), ("reference", .8)):
         report = {**common, "metrics": {field: auc for field in FIELDS}}
+        report["condition"] = {**common["condition"], **(dp_pair if name == "dp" else reference_pair)}
+        report["draft_role"] = dp_role if name == "dp" else reference_role
         if name == "dp":
             report["privacy"] = dict(target_epsilon_cap=1., epsilon=2., delta=1e-5)
         save_result(tmp_path / name, record_ids=np.array(["cal", "mem", "non"]), labels=np.array([0, 1, 0]),
                     scores=np.array([0., 1., .5]), calibration=np.array([0]), test=np.array([1, 2]), report=report)
     row = compare_reports(tmp_path / "dp/REPORT.json", tmp_path / "reference/REPORT.json")
     assert row["change_auc"] == pytest.approx(-.3)
+    assert row["model_pair"] == dp_pair.get("model_pair", "qwen3")
     reference = json.loads((tmp_path / "reference/REPORT.json").read_text())
     reference["draft_role"] = "draft_auxiliary_distilled"
     (tmp_path / "reference/REPORT.json").write_text(json.dumps(reference))
     with pytest.raises(ValueError, match="draft"):
         compare_reports(tmp_path / "dp/REPORT.json", tmp_path / "reference/REPORT.json")
+    reference["draft_role"] = reference_role
+    reference["condition"]["model_pair"] = "gemma4"
+    (tmp_path / "reference/REPORT.json").write_text(json.dumps(reference))
+    with pytest.raises(ValueError, match="condition"):
+        compare_reports(str(tmp_path / "dp/REPORT.json"), str(tmp_path / "reference/REPORT.json"))

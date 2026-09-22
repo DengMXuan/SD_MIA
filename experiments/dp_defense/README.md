@@ -1,8 +1,13 @@
-# 全参数 DP 防御：Qwen3-8B / Qwen3-1.7B
+# DP 防御：独立草稿与 EAGLE-3 / MTP 草稿头
 
 独立扩展当前固定候选实验。两种部署共享同一个 DP 目标：KD 草稿在固定、
 独立的 2,000 条辅助记录上向该目标重新蒸馏；member 草稿从原始基础模型
-独立执行全参数 DP 微调。两次访问成员数据的训练分别计账。
+独立执行 DP 微调。目标及独立草稿采用全参数训练，EAGLE-3 / MTP 仅更新
+草稿头的可训练参数、冻结 DP 目标。两次访问成员数据的训练分别计账。
+
+Python 接口支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、Llama 3.1 EAGLE-3
+和 Qwen3.5 MTP 五类现有训练配方。使用 `plan_private_training` / `train_private`
+准备模型，再通过统一的 `evaluate_main` 检验主方法；见[接口与示例](../../docs/main_method_api.md)。
 
 | 目标 ε 上限 | member 草稿 ε 上限 | KD 部署预算上限 | member 部署预算上限 |
 |---:|---:|---|---|
@@ -16,6 +21,8 @@
 ## 安装与入口
 
 从仓库根目录运行。Opacus 是可选依赖，旧实验不要求安装：
+
+下面保留原 Qwen 独立草稿 CLI 示例；跨模型和草稿头实验使用上述 Python 接口。
 
 ```bash
 uv sync --locked --extra dp
@@ -79,12 +86,13 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 - 公开参考规模固定为 2,000，逻辑期望 batch 为旧配置中的 batch×accumulation
   （当前 16），采样率 q=0.008。每一步独立 Poisson 采样；epoch 1/3 对应
   125/375 个优化步骤，代表期望遍历次数，而不是旧的无放回打乱训练。
+  草稿头遵循现有独立配方，固定 384 次更新、期望 batch 16、学习率 2e-5。
 - 每个文档单独反向传播，对全部可训练参数的联合梯度作 L2 裁剪。累加后
   加入标准差 σC 的独立高斯噪声，除以固定期望 batch；不按实际抽中数量归一化。
   空采样批次也加噪、更新并记账，未使用的参数同样加噪。
 - Opacus RDP 会计根据 q、步数和 δ 反求 σ，并检查最终 ε 不超过目标。
   文档梯度不通过普通 batch 梯度裁剪近似；不进行依赖私有损失的早停或选模。
-- 使用 AdamW/原有 paged 8-bit AdamW 更新加噪梯度，保持全参数训练。
+- 使用 AdamW/原有 paged 8-bit AdamW 更新加噪梯度；独立模型更新全部参数，草稿头只更新可训练参数。
   逐文档物理 microbatch=1，FP32 累加器放在 CPU 以减少 GPU 占用；这会
   增加 CPU 内存及 CPU/GPU 传输开销。8B 的该累加器本身约需 32 GB 主机内存。
   原配置的 batch 和 accumulation 此时只定义逻辑期望 batch。
@@ -117,7 +125,8 @@ split manifest、记录 ID/成员标签、审计分数，以及含来源哈希�
 模型质量与真实生成吞吐仍需配套实测。固定候选成本不是生产 SD 加速指标。
 
 DP 检查点采用原有 `checkpoints/target`、`draft_auxiliary_distilled`、
-`draft_member_sft` 布局；预算放在独立字段，原 `Config` 无需修改。阶段通过
+`draft_member_sft` 布局；草稿头使用 `heads/auxiliary_head` 和 `heads/member_head`。
+预算放在独立字段，原 `Config` 无需修改。阶段通过
 原子目录发布与逐文件哈希校验恢复，KD 完成标记绑定教师权重指纹。未完成
 训练不发布检查点；中途停止后从基础模型重跑该阶段，不伪装成逐步优化恢复。
 已经完成的目标/KD 阶段可直接复用。恢复预算只覆盖最终发布的训练结果，

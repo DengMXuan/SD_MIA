@@ -170,7 +170,8 @@ def test_main_scores_and_resumes_head_or_plain_detector(tmp_path, monkeypatch, p
               record_ids=prepared.record_ids,record_roles=prepared.record_roles,labels=prepared.labels)
     sources={'files':[],'checkpoints':[]}
     contract=dict(protocol='fixed',starts=['fixed'],rounds_per_start=0,sources=sources,
-                  matrix_request_key=digest(task),hardware={'device':'cpu'})
+                  matrix_request_key=digest(task),hardware={'device':'cpu'},
+                  head_validation={'status':'passed'})
     costs=[dict(record_id=str(i),seconds=.01,target_forward_calls=1,draft_forward_calls=1,
                 target_input_tokens=3,draft_input_tokens=3,generated_tokens=0,peak_allocated_gpu_bytes=None,
                 hidden_state_bytes=24,supported_candidates=1,candidate_positions=1) for i in range(4600)]

@@ -38,7 +38,8 @@ def epsilon_for(noise_multiplier: float, sample_rate: float, steps: int, delta: 
 
 
 def make_plan(*, epsilon: float, delta: float = 5e-6, max_grad_norm: float = 1.,
-              population: int = 2000, expected_batch_size: int = 16, epochs: int = 1) -> PrivacyPlan:
+              population: int = 2000, expected_batch_size: int = 16, epochs: int = 1,
+              steps: int | None = None) -> PrivacyPlan:
     for value in (population, expected_batch_size, epochs):
         if type(value) is not int or value <= 0:
             raise ValueError("population, expected batch size and epochs must be positive integers")
@@ -50,7 +51,10 @@ def make_plan(*, epsilon: float, delta: float = 5e-6, max_grad_norm: float = 1.,
     q = expected_batch_size / population
     # Public reference population fixes q, step count and normalization even
     # across add/remove neighbors. Epochs denote expected passes, not shuffling.
-    steps = math.ceil(population / expected_batch_size) * epochs
+    if steps is None:
+        steps = math.ceil(population / expected_batch_size) * epochs
+    elif type(steps) is not int or steps <= 0:
+        raise ValueError("explicit optimizer steps must be a positive integer")
     sigma = float(get_noise_multiplier(
         target_epsilon=epsilon, target_delta=delta, sample_rate=q, steps=steps,
         accountant="rdp", epsilon_tolerance=min(.001, epsilon * .001),

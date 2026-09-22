@@ -1,4 +1,4 @@
-"""Train one opt-in DP condition from a frozen, existing Qwen experiment recipe."""
+"""Train one opt-in DP condition from a registered plain model-pair recipe."""
 from __future__ import annotations
 
 import argparse
@@ -22,11 +22,12 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
         raise ValueError("DP output must be separate from the reference experiment")
     artifact = json.loads((reference / "results.json").read_text())
     cfg = load_run_config(reference)
-    if (cfg.trainer != "full" or cfg.target_model != "Qwen/Qwen3-8B-Base"
-            or cfg.draft_model != "Qwen/Qwen3-1.7B-Base"
+    from experiments.cross_model_audit.model_registry import identify_pair
+    spec = identify_pair(artifact)
+    if (cfg.trainer != "full" or spec.adapter != "plain"
             or not cfg.target_revision or not cfg.draft_revision
             or cfg.seed != cfg.data_seed or artifact["material_passport"]["status"] != "COMPLETED"):
-        raise ValueError("reference must be a complete pinned full-parameter Qwen3-8B/1.7B condition")
+        raise ValueError("reference must be a complete pinned full-parameter plain model-pair condition")
     if (cfg.n_per_class, cfg.n_aux, cfg.n_audit_aux) != (2000, 2000, 600):
         raise ValueError("reference must use the four-role 2000/2000/2000/600 contract")
     if cfg.distill_steps <= 0 or cfg.target_lr <= 0 or cfg.draft_lr <= 0:
@@ -47,7 +48,8 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
     }
     source_files = [reference / "results.json", manifest, manifest.with_suffix(".audit.json")]
     request = dict(
-        schema="sd_mia_dp_request_v1", reference_run=str(reference), config=cfg.as_dict(),
+        schema="sd_mia_dp_request_v1", model_pair=spec.name,
+        reference_run=str(reference), config=cfg.as_dict(),
         plans={role: plan.as_dict() for role, plan in plans.items()},
         sources=code_sources() + [{"path": str(p), "sha256": sha256_file(p)} for p in source_files],
         environment={name: version(name) for name in ("torch", "transformers", "opacus", "numpy", "scipy", "bitsandbytes")},

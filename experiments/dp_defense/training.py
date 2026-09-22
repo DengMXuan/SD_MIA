@@ -83,7 +83,8 @@ class DocumentGradientSum:
 
 
 def dp_sft_train(model, records, tokenizer, device, plan: PrivacyPlan, *, lr=2e-5,
-                 optimizer_name="adamw8bit", progress=None, _randomness=None):
+                 optimizer_name="adamw8bit", progress=None, _randomness=None,
+                 document_loss=None, allow_frozen_parameters=False):
     """One privacy event per noisy optimizer step, including empty batches.
 
     `_randomness` is solely a test seam; production CLI never exposes it.
@@ -93,15 +94,19 @@ def dp_sft_train(model, records, tokenizer, device, plan: PrivacyPlan, *, lr=2e-
         raise ValueError("each raw document must occur once; duplicate document IDs")
     if len(records) > plan.population:
         raise ValueError("records exceed public reference population")
-    if any(not p.requires_grad for p in model.parameters()):
+    if not allow_frozen_parameters and any(not p.requires_grad for p in model.parameters()):
         raise ValueError("DP experiment requires full-parameter adaptation")
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    if not trainable:
+        raise ValueError("DP training requires trainable parameters")
     if any(isinstance(m, torch.nn.modules.batchnorm._BatchNorm) for m in model.modules()):
         raise ValueError("data-dependent BatchNorm buffers violate the supported mechanism")
     device = torch.device(device)
     randomness = _randomness if _randomness is not None else PrivateRandomness(device)
-    _enable_checkpointing(model)
+    if document_loss is None:
+        _enable_checkpointing(model)
     optimizer = _make_optimizer(model, lr, optimizer_name)
-    accumulator = DocumentGradientSum(model.parameters(), plan.max_grad_norm)
+    accumulator = DocumentGradientSum(trainable, plan.max_grad_norm)
     examples = [make_sft_example(record, tokenizer) for record in records]
     model.train()
     for step in range(plan.steps):
@@ -110,7 +115,7 @@ def dp_sft_train(model, records, tokenizer, device, plan: PrivacyPlan, *, lr=2e-
             batch = collate_sft([examples[int(index)]], tokenizer.pad_token_id)
             batch = {key: batch[key].to(device) for key in ("input_ids", "attention_mask", "labels")}
             with _autocast(device):
-                loss = model(**batch, use_cache=False).loss
+                loss = model(**batch, use_cache=False).loss if document_loss is None else document_loss(model, batch)
             loss.backward()
             accumulator.add_document()
             del loss, batch

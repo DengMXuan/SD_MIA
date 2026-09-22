@@ -52,6 +52,21 @@ def _registry():
 MODEL_PAIRS = _registry()
 
 
+def identify_pair(artifact):
+    """Resolve a saved condition using model names and pinned base revisions."""
+    cfg = artifact['config']
+    matches = [spec for spec in MODEL_PAIRS.values()
+               if (cfg.get('target_model'), cfg.get('draft_model'),
+                   cfg.get('target_revision'), cfg.get('draft_revision')) ==
+               (spec.target, spec.draft, spec.target_revision, spec.draft_revision)]
+    if len(matches) != 1:
+        raise ValueError('checkpoint passport does not identify a registered model pair')
+    spec = matches[0]
+    if spec.adapter != 'plain' and artifact.get('protocol_track', {}).get('pair') != spec.name:
+        raise ValueError('head pair differs from model identities')
+    return spec
+
+
 def pair_for(task):
     return MODEL_PAIRS[task.get('model_pair', 'qwen3')]
 

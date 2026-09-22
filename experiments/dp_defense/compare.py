@@ -16,11 +16,23 @@ FIELDS = ("auc", "pauc_10_normalized", "roc_tpr_at_1pct_fpr", "roc_tpr_at_10pct_
           "calibrated_tpr_at_10pct", "calibrated_actual_fpr_at_10pct")
 
 
+def _condition(report):
+    condition = dict(report["condition"])
+    pair = condition.pop("model_pair", condition.pop("pair", "qwen3"))
+    return pair, condition
+
+
+def _draft_role(report):
+    role = report.get("draft_role")
+    return {"auxiliary_head": "draft_auxiliary_distilled", "member_head": "draft_member_sft"}.get(role, role)
+
+
 def compare_reports(dp_path, reference_path):
+    dp_path, reference_path = Path(dp_path), Path(reference_path)
     dp, reference = read_result(dp_path.parent), read_result(reference_path.parent)
-    if dp["condition"] != reference["condition"] or dp["method"] != reference["method"]:
+    if _condition(dp) != _condition(reference) or dp["method"] != reference["method"]:
         raise ValueError("comparison condition or method mismatch")
-    if dp.get("draft_role") != reference.get("draft_role") or dp["settings"] != reference["settings"]:
+    if _draft_role(dp) != _draft_role(reference) or dp["settings"] != reference["settings"]:
         raise ValueError("comparison draft or audit settings mismatch")
     if "privacy" not in dp or "privacy" in reference:
         raise ValueError("comparison requires a DP report and an undefended reference")
@@ -28,7 +40,9 @@ def compare_reports(dp_path, reference_path):
         for name in ("record_ids", "labels", "calibration", "test"):
             if not np.array_equal(a[name], b[name]):
                 raise ValueError(f"comparison {name} mismatch")
-    row = {**dp["condition"], "draft_role": dp.get("draft_role", "target_only"), "method": dp["method"],
+    pair, condition = _condition(dp)
+    row = {**condition, "model_pair": pair,
+           "draft_role": dp.get("draft_role", "target_only"), "method": dp["method"],
            "target_epsilon_cap": dp["privacy"]["target_epsilon_cap"],
            "pair_epsilon": dp["privacy"]["epsilon"], "pair_delta": dp["privacy"]["delta"],
            "dp_report": str(dp_path), "reference_report": str(reference_path)}
@@ -51,7 +65,10 @@ def main():
         if "privacy" not in report:
             continue
         condition = report["condition"]
-        root = args.reference_root / condition["benchmark"] / f"epoch{condition['epoch']}" / f"seed{condition['condition_seed']}"
+        root = args.reference_root
+        if "model_pair" in condition or "pair" in condition:
+            root = root / _condition(report)[0]
+        root = root / condition["benchmark"] / f"epoch{condition['epoch']}" / f"seed{condition['condition_seed']}"
         subdir = Path(report["draft_role"]) / "fixed" if "draft_role" in report else Path("baseline")
         reference = root / subdir / report["method"] / "REPORT.json"
         try:
@@ -60,14 +77,14 @@ def main():
             errors.append({"report": str(path), "error": str(error)})
     groups = {}
     for row in rows:
-        key = (row["benchmark"], row["epoch"], row["draft_role"], row["method"], row["target_epsilon_cap"])
+        key = (row["model_pair"], row["benchmark"], row["epoch"], row["draft_role"], row["method"], row["target_epsilon_cap"])
         group = groups.setdefault(key, [])
         if any(item["condition_seed"] == row["condition_seed"] for item in group):
             raise ValueError("duplicate condition seed in DP comparison")
         group.append(row)
     aggregates = []
     for key, values in groups.items():
-        item = dict(zip(("benchmark", "epoch", "draft_role", "method", "target_epsilon_cap"), key))
+        item = dict(zip(("model_pair", "benchmark", "epoch", "draft_role", "method", "target_epsilon_cap"), key))
         item["completed_seeds"] = len(values)
         for field in FIELDS:
             changes = [row["change_" + field] for row in values]
