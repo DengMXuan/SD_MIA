@@ -71,22 +71,19 @@ def main():
     parser.add_argument("--rounds-per-start", type=int, default=32, help="legacy cache identity; no natural SD is scheduled")
     parser.add_argument("--audit-seed", type=int, default=20260914)
     parser.add_argument("--detector-epochs", type=int, default=30)
-    parser.add_argument("--reuse-robustness-reference", action="store_true",
-                        help="reuse one greedy reference across WS/RS/BT; requires a separate --output-root")
     args = parser.parse_args()
     if args.rounds_per_start < 1 or args.detector_epochs < 1:
         parser.error("round and detector epoch budgets must be positive")
-    if args.reuse_robustness_reference and args.output_root.resolve() == matrix.DEFAULT_OUTPUT_ROOT.resolve():
-        parser.error("--reuse-robustness-reference requires a separate --output-root")
+    if args.output_root.resolve().is_relative_to(matrix.LEGACY_OUTPUT_ROOT.resolve()):
+        parser.error("the historical audit output root is read-only; choose a separate --output-root")
     for values in (args.benchmarks, args.epochs, args.seeds, args.starts):
         if len(set(values)) != len(values):
             parser.error("duplicate matrix entries are not allowed")
     from experiments.sd_membership_sft.protocols.sd_protocol import resolve_starts
     resolve_starts(2048, args.starts)
     settings = dict(starts=args.starts, rounds_per_start=args.rounds_per_start, audit_seed=args.audit_seed,
-                    detector_epochs=args.detector_epochs, baseline=matrix.BASELINE_DEFAULTS)
-    if args.reuse_robustness_reference:
-        settings["reuse_robustness_reference"] = True
+                    detector_epochs=args.detector_epochs, baseline=matrix.BASELINE_DEFAULTS,
+                    baseline_execution="shared_robustness_reference_v1")
     tasks = fixed_tasks(args.model_root.resolve(), args.output_root.resolve(), args.benchmarks,
                         args.epochs, args.seeds, settings)
     if args.command in ("dry-run", "status"):

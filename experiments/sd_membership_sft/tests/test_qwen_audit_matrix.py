@@ -144,7 +144,7 @@ def test_baseline_adapter_uses_only_400_fit_records_and_200_independent_calibrat
     monkeypatch.setattr(runner, "load_finetuned_model", lambda *args, **kwargs: model)
     monkeypatch.setattr(runner, "TargetScorer", FakeScorer)
     called = []
-    def score(args, progress, scorer, records, auxiliary, tokenizer, methods):
+    def score(args, progress, scorer, records, auxiliary, tokenizer, methods, *, reference_cache):
         method = methods[0]
         called.append(method)
         assert len(records) == 4200
@@ -177,7 +177,6 @@ def test_optimized_baseline_adapter_reuses_reference_with_explicit_cost_mode(tmp
 
     task = tasks_at(tmp_path)[0]
     task["methods"] = ["ws", "rs", "bt"]
-    task["settings"]["reuse_robustness_reference"] = True
     prepared = prepared_records()
     monkeypatch.setattr(runner, "load_finetuned_model", lambda *args, **kwargs: torch.nn.Linear(1, 1))
     monkeypatch.setattr(runner, "TargetScorer", FakeScorer)
@@ -232,13 +231,40 @@ def test_optimized_baseline_adapter_reuses_reference_with_explicit_cost_mode(tmp
     assert "physical_incremental_amortized_ms_per_record" in rs_row
 
 
-def test_shared_reference_cli_requires_separate_output_root(monkeypatch):
+def test_failed_reference_owner_does_not_make_next_cost_incremental(tmp_path, monkeypatch):
+    import experiments.sd_membership_sft.matrix_baselines as runner
+
+    task = tasks_at(tmp_path)[0]
+    task["methods"] = ["ws", "rs"]
+    monkeypatch.setattr(runner, "load_finetuned_model", lambda *args, **kwargs: torch.nn.Linear(1, 1))
+    monkeypatch.setattr(runner, "TargetScorer", FakeScorer)
+    observed = []
+
+    def score(args, progress, scorer, records, auxiliary, tokenizer, methods, *, reference_cache):
+        observed.append((methods[0], "texts" in reference_cache))
+        reference_cache.setdefault("texts", ["reference"] * len(records))
+        scorer.cost_meter.generation([[1]] * len(records), [[[2]]] * len(records), set())
+        if methods[0] == "ws":
+            raise RuntimeError("scoring failed after reference generation")
+        return {methods[0]: np.linspace(0., 1., len(records))}
+
+    monkeypatch.setattr(runner, "_score_methods", score)
+    with pytest.raises(RuntimeError, match="failed baseline methods"):
+        runner.run_baselines(task, "cpu", SimpleNamespace(target_model="toy"), prepared_records(),
+                             {"files": [], "checkpoints": []})
+    assert observed == [("ws", False), ("rs", False)]
+    assert read_result(Path(task["output"]) / "rs")["cost"]["cost_basis"] == "standalone_measured"
+
+
+def test_shared_reference_cli_protects_historical_output_root(monkeypatch):
     import sys
     from experiments.sd_membership_sft.audit.qwen_audit_matrix import main
     from experiments.sd_membership_sft.audit.cli import main as current_main
 
+    from experiments.sd_membership_sft.audit.qwen_audit_matrix import LEGACY_OUTPUT_ROOT
+
     for entry in (main, current_main):
-        monkeypatch.setattr(sys, "argv", ["qwen_audit_matrix", "status", "--reuse-robustness-reference"])
+        monkeypatch.setattr(sys, "argv", ["qwen_audit_matrix", "status", "--output-root", str(LEGACY_OUTPUT_ROOT)])
         with pytest.raises(SystemExit) as error:
             entry()
         assert error.value.code == 2
@@ -250,11 +276,10 @@ def test_shared_reference_cli_records_mode_in_task_settings(tmp_path, monkeypatc
 
     settings_seen = []
     monkeypatch.setattr(cli, "fixed_tasks", lambda *args: settings_seen.append(args[-1]) or [])
-    monkeypatch.setattr(sys, "argv", ["audit", "status", "--output-root", str(tmp_path),
-                                  "--reuse-robustness-reference"])
+    monkeypatch.setattr(sys, "argv", ["audit", "status", "--output-root", str(tmp_path)])
     cli.main()
     capsys.readouterr()
-    assert settings_seen[0]["reuse_robustness_reference"] is True
+    assert settings_seen[0]["baseline_execution"] == "shared_robustness_reference_v1"
 
 
 @pytest.mark.parametrize("protocol", ["fixed", "natural"])

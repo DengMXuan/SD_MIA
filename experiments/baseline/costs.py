@@ -1,4 +1,4 @@
-"""Three comparable per-record costs for independently executed methods."""
+"""Per-record costs with explicit accounting for shared reference generation."""
 from __future__ import annotations
 
 import time
@@ -64,7 +64,7 @@ def cost_protocol(model, device, warmup_records, batch_size):
         dtype = str(next(model.parameters()).dtype)
     except (AttributeError, StopIteration):
         dtype = 'unknown'
-    return dict(version=1, execution='independent methods; one resident model',
+    return dict(version=2, execution='one resident model; WS/RS/BT share one greedy reference',
         time_scope='method preparation/calibration + scoring + postprocessing; CUDA synchronized',
         exclusions='model/data loading, warmup, result serialization; progress bookkeeping is included',
         amortization='all member and nonmember audit records; auxiliary costs included in numerator',
@@ -79,12 +79,17 @@ def cost_table(costs):
     if not costs:
         return []
     lines = ['', '## Cost and efficiency', '',
-        'Independent execution; setup/calibration amortized over the audit. Lower is better.', '',
+        'WS/RS/BT share one reference generation. A reused method has only physical incremental cost; its standalone cost is not measured.', '',
         '| Method | ms / record | Target sequences / record | Tokens / record |',
         '|---|---:|---:|---:|']
     for name, row in costs.items():
-        lines.append(f"| `{name}` | {row['amortized_ms_per_record']:.3f} | {row['target_sequences_per_record']:.3f} | {row['tokens_per_record']:.1f} |")
-    lines.extend(['', 'Time is batch-amortized cost, not batch-size-1 latency. Tokens are a workload proxy, not FLOPs or API billing.'])
+        if row.get('cost_basis') == 'physical_incremental':
+            lines.append(f"| `{name}` | — | — | — |")
+        else:
+            lines.append(f"| `{name}` | {row['amortized_ms_per_record']:.3f} | {row['target_sequences_per_record']:.3f} | {row['tokens_per_record']:.1f} |")
+    lines.extend(['', 'Reused methods record measured physical_incremental_* values in baseline_costs.json. '
+                  'These values exclude shared reference generation and cannot be compared as standalone method costs.',
+                  'Time is batch-amortized cost, not batch-size-1 latency. Tokens are a workload proxy, not FLOPs or API billing.'])
     return lines
 
 

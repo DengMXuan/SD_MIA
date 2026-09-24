@@ -377,8 +377,9 @@ CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.baseline.run \
 ```
 
 `--methods all` runs Loss, Min-K% Prob, Min-K%++, ReCaLL, ICP-MIA, PETAL,
-SEAD, WS, RS, BT and SaMIA. Each method is timed independently while one
-target model remains resident. A completed condition contains
+SEAD, WS, RS, BT and SaMIA. WS/RS/BT share one greedy reference generation;
+later methods report measured incremental costs separately from standalone
+costs. One target model remains resident. A completed condition contains
 `baseline_metrics.json`, `baseline_scores.npz`, `BASELINE_RESULTS.md`,
 `baseline_costs.json` and `BASELINE_COSTS.md`; the execution directory also
 keeps per-method recovery artifacts and `status.json`/`progress.jsonl`.

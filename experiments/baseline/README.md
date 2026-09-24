@@ -147,8 +147,8 @@ process/system logs.
 
 ## Cost and efficiency (recorded automatically)
 
-Each run records exactly three headline metrics, also shown in
-`BASELINE_RESULTS.md` and `BASELINE_COSTS.md`:
+Each run records three headline metrics for independently measured methods,
+also shown in `BASELINE_RESULTS.md` and `BASELINE_COSTS.md`:
 
 | Metric | Definition |
 |---|---|
@@ -161,12 +161,13 @@ autoregressive generation can have different time costs. Batch-amortized time is
 not single-request latency. Raw totals and separate input/generated token counts
 are retained to make the three metrics auditable and permit weighted aggregation.
 
-For fair method comparisons, `--methods all` now loads the model **once** and
-runs each method independently, with its own scorer/cache. Shared teacher-forced
-statistics and WS/RS/BT reference generations are recomputed for each dependent
-method. Therefore costs do not become zero or change merely because another
-method was requested first. This takes more total time than the former shared
-execution. A single-method command follows the same path.
+`--methods all` loads the model **once** and runs each method with its own
+scorer. WS/RS/BT share one greedy reference generation. The first requested
+robustness method pays for that generation and retains its full measured cost;
+later methods record only `physical_incremental_*` costs and leave the
+standalone headline fields empty. Those incremental costs exclude reference
+generation and must not be compared as standalone method costs. A single
+robustness method measures its full cost.
 
 One untimed teacher-forced warmup record precedes each method by default
 (`--cost-warmup-records 1`; use 0 to disable). Model/data loading and result-file
@@ -184,8 +185,9 @@ Examples of accounting:
   probe query, plus its index/retrieval time.
 - PETAL includes its auxiliary calibration forwards, amortized across audit N.
 - SEAD's local logits sampling is **not** counted as repeated model queries.
-- WS/RS each include their own reference generation; BT additionally includes
-  rewriting; SaMIA includes all `--samia-samples` returned sequences.
+- The first requested WS/RS/BT includes reference generation. Later WS/RS/BT
+  include only their own perturbation or rewrite work. SaMIA includes all
+  `--samia-samples` returned sequences and does not reuse the reference.
 
 `baseline_metrics.json` contains a `costs` entry; `baseline_costs.json` provides
 the same comparison separately. Each completed-method NPZ stores `cost_json`,

@@ -31,7 +31,7 @@ class Scorer:
         return [[[7, 8] for _ in range(num_return_sequences)] for _ in inputs]
 
 
-def test_shared_robustness_reference_preserves_scores_and_saves_two_generations(monkeypatch):
+def test_robustness_methods_share_one_reference_generation(monkeypatch):
     monkeypatch.setattr(baseline_run, "_response_prefix_text", lambda record, _tok, _ratio: ([1, 2], "prefix", "suffix"))
     monkeypatch.setattr(baseline_run, "prompt_prefix_ids", lambda _record, _tok: [3])
     monkeypatch.setattr(baseline_run, "_perturb_words", lambda text, _kind, _rate, _rng: text)
@@ -41,18 +41,15 @@ def test_shared_robustness_reference_preserves_scores_and_saves_two_generations(
     records = [SimpleNamespace(record=object()) for _ in range(2)]
     tokenizer = Tokenizer()
 
-    def score_all(cache):
-        scorer = Scorer()
-        scores = {}
-        for method in ("ws", "rs", "bt"):
-            scores.update(baseline_run._score_methods(args, Progress(), scorer, records, [], tokenizer,
-                                                       (method,), reference_cache=cache))
-        return scores, scorer.calls
+    scorer = Scorer()
+    reference_cache = {}
+    scores = {}
+    for method in ("ws", "rs", "bt"):
+        scores.update(baseline_run._score_methods(args, Progress(), scorer, records, [], tokenizer,
+                                                   (method,), reference_cache=reference_cache))
 
-    standalone_scores, standalone_calls = score_all(None)
-    shared_scores, shared_calls = score_all({})
-
-    assert shared_scores == standalone_scores
-    assert len(standalone_calls) == 7
-    assert len(shared_calls) == 5
-    assert [call[0] for call in shared_calls].count(args.seed + 10_000) == 1
+    assert set(scores) == {"ws", "rs", "bt"}
+    assert all(values == [1., 1.] for values in scores.values())
+    assert len(reference_cache["texts"]) == len(records)
+    assert len(scorer.calls) == 5
+    assert [call[0] for call in scorer.calls].count(args.seed + 10_000) == 1

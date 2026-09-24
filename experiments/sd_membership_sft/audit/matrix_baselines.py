@@ -1,4 +1,4 @@
-"""Four-role adapter for existing baseline implementations (kept unchanged)."""
+"""Four-role baseline adapter with shared WS/RS/BT reference generation."""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -87,8 +87,7 @@ def run_baselines(task, device, cfg, prepared, sources):
     remaining = [name for name in methods if not already_complete(output / name, digest({"task": task, "method": name}), sources)]
     if not remaining:
         return
-    reuse_reference = bool(settings.get("reuse_robustness_reference", False))
-    reference_cache = {} if reuse_reference else None
+    reference_cache = {}
     model = load_finetuned_model(Path(task["run_dir"]), cfg.target_model, torch.device(device),
                                  attn_implementation="sdpa")
     model.requires_grad_(False)
@@ -101,6 +100,7 @@ def run_baselines(task, device, cfg, prepared, sources):
         scorer = TargetScorer(model, prepared.tokenizer, torch.device(device), args.sead_samples,
                               args.sead_temperature, args.seed)
         handle = None
+        reused_reference = False
         try:
             scorer.stats(reference[0])  # untimed warmup, no calibration or test records
             set_seed(args.seed)
@@ -112,11 +112,11 @@ def run_baselines(task, device, cfg, prepared, sources):
                 forward_calls[meter.phase] += 1
             handle = model.register_forward_pre_hook(count_forward)
             scorer.cost_meter = meter
-            reused_reference = reference_cache is not None and method in ("ws", "rs", "bt") and "texts" in reference_cache
+            reused_reference = method in ("ws", "rs", "bt") and "texts" in reference_cache
             with timed(device) as elapsed:
-                score_kwargs = {"reference_cache": reference_cache} if reference_cache is not None and method in ("ws", "rs", "bt") else {}
                 values = np.asarray(_score_methods(args, progress, scorer, records, auxiliary,
-                                                   prepared.tokenizer, (method,), **score_kwargs)[method], dtype=float)
+                                                   prepared.tokenizer, (method,),
+                                                   reference_cache=reference_cache)[method], dtype=float)
             phases = dict(progress.seconds)
             # Preparation includes tokenization, reference construction and
             # per-method overhead outside record/batch iteration boundaries.
@@ -138,7 +138,7 @@ def run_baselines(task, device, cfg, prepared, sources):
             measured_cost = summarize_cost(phases, len(test), counters, peak_memory(device),
                                            execution_group=task["id"] + "/" + method)
             cost = measured_cost
-            if reuse_reference:
+            if method in ("ws", "rs", "bt"):
                 if reused_reference:
                     # These are measured costs of work actually done in this method's
                     # execution, excluding the reused reference generation.
@@ -151,7 +151,7 @@ def run_baselines(task, device, cfg, prepared, sources):
                     cost["reference_reused"] = False
                     cost["cost_basis"] = "standalone_measured"
             cost_conventions = dict(COST_CONVENTIONS)
-            if reuse_reference:
+            if method in ("ws", "rs", "bt"):
                 cost_conventions["reuse"] = ("physical incremental cost: the first pending WS/RS/BT method generates "
                                              "the shared greedy reference and retains standalone measured cost; later "
                                              "methods reuse it and report only explicitly prefixed incremental fields")
@@ -180,11 +180,15 @@ def run_baselines(task, device, cfg, prepared, sources):
             else:
                 report["phase_work"] = raw
                 report["phase_target_forward_calls"] = dict(forward_calls)
-            if reuse_reference:
+            if method in ("ws", "rs", "bt"):
                 report["baseline_execution_mode"] = "shared_robustness_reference"
             save_result(output / method, record_ids=ids, labels=labels, scores=values,
                         calibration=cal, test=test, report=report)
         except Exception as error:
+            if method in ("ws", "rs", "bt") and not reused_reference:
+                # A failed reference owner has no saved cost row. Regenerate on
+                # the next method so its measured cost includes that work.
+                reference_cache.clear()
             failures.append((method, str(error)))
             traceback.print_exc()
         finally:

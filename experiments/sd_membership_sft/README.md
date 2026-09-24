@@ -18,7 +18,7 @@
 | `compat/` | 旧 Python 模块名的薄兼容入口；实际实现仅在对应新目录维护 |
 | `tests/`、`docs/` | 回归测试、设计和历史说明 |
 
-根目录的旧 shell 启动器继续转发至 `scripts/`。旧 `python -m experiments.sd_membership_sft.<module>` 导入/入口仍兼容；新代码使用分层模块名。`MODULES.json` 记录映射。`experiments/baseline/` 的实现保持原样。
+根目录的旧 shell 启动器继续转发至 `scripts/`。旧 `python -m experiments.sd_membership_sft.<module>` 导入/入口仍兼容；新代码使用分层模块名。`MODULES.json` 记录映射。
 
 ## 保存目录
 
@@ -31,20 +31,21 @@ artifacts/
     legacy/                    # 旧轮次权重，仍保留
   runs/
     training/controlled_sft_v2/ # 训练护照、日志，权重目录为链接
-    audits/qwen_fixed_v1/      # 每个方法的 REPORT.json、scores.npz、执行日志
-  cache/audits/qwen_fixed_v1/  # 主方法观测、检测器、未完成轨迹
+    audits/qwen_fixed_v1/      # 历史审计结果，只读保留
+    audits/qwen_shared_reference_v1/ # 当前审计结果
+  cache/audits/qwen_fixed_v1/  # 历史主方法观测、检测器、未完成轨迹
   data/
     pools/                     # 冻结数据池
     splits/controlled_sft_v2/   # 共享数据划分与审核证明
   archive/                     # 历史实验和已停用流程的产物
-  migrations/20260922_layout/  # 迁移前元数据备份、文件指纹、迁移清单与核验结果
+  migrations/20260922_layout/  # 迁移文件指纹、清单与核验结果
 ```
 
-`experiments/results/` 与 `experiments/data` 下的旧入口是兼容链接，不是另一份数据。训练护照内的历史路径不改写，以保留训练时的原始记录及 SHA256；它们通过这些链接继续有效。不要删除这些链接。当前审计元数据使用新路径，并保留迁移前备份。
+`experiments/results/` 与 `experiments/data` 下的旧入口是兼容链接，不是另一份数据。训练护照内的历史路径不改写，以保留训练时的原始记录及 SHA256；它们通过这些链接继续有效。不要删除这些链接。
 
 自然 SD 的已有产物保留在对应审计条件的 `natural/` 子目录；当前入口不会继续调度它。自定义 `--output-root` 的审计缓存放在该任务自己的 `cache/`，避免多个独立实验共用缓存。
 
-## 继续已暂停的审计
+## 运行当前审计
 
 从仓库根目录执行。先检查，再选择 GPU 开始：
 
@@ -53,7 +54,7 @@ bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh status
 bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh run --gpus 0 1 2
 ```
 
-单卡用 `--gpus 0`；改 GPU 列表不改变实验配置。默认模型根目录为 `artifacts/runs/training/controlled_sft_v2/model_pairs/qwen3`，审计结果根目录为 `artifacts/runs/audits/qwen_fixed_v1`。显式使用旧的两个根目录也会解析到同一位置。不要更换实验输出根目录或已固定的数据/评分参数，否则不再是同一次实验。
+单卡用 `--gpus 0`；改 GPU 列表不改变实验配置。默认模型根目录为 `artifacts/runs/training/controlled_sft_v2/model_pairs/qwen3`，审计结果根目录为 `artifacts/runs/audits/qwen_shared_reference_v1`。旧 `qwen_fixed_v1` 为历史快照，当前入口禁止写入。
 
 - 完整方法报告通过配置、来源、分数及检测器校验后跳过。
 - 主方法未采完的轨迹逐条校验后复用，从缺失部分继续。
@@ -67,21 +68,20 @@ bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh run --gpus 0
 bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh summarize
 ```
 
-写入 `artifacts/runs/audits/qwen_fixed_v1/fixed_only_summary/`，包括 `SUMMARY.json` 和 CSV 报表；矩阵尚未完成时返回码为 2，部分结果仍会写出。原始全矩阵汇总保留作为历史快照，以当前 `fixed_only_summary/` 为准。
+写入 `artifacts/runs/audits/qwen_shared_reference_v1/fixed_only_summary/`，包括 `SUMMARY.json` 和 CSV 报表；矩阵尚未完成时返回码为 2，部分结果仍会写出。旧 `qwen_fixed_v1` 结果保留为历史快照。
 
-### 可选：复用 WS/RS/BT 的原始生成
+### WS/RS/BT 共享原始生成
 
-`--reuse-robustness-reference` 让同一条件的 WS、RS、BT 复用一次相同种子、相同输入的贪心原始续写，后续方法仍独立生成扰动/改写后的续写。SaMIA 的 10 路采样不复用，方法定义及其耗时不变。此模式要求独立的 `--output-root`，不能写入上面的在跑审计目录；它也会把这一模式写进任务配置和每个方法的报告。示例：
+WS、RS、BT 在同一次条件审计中复用一次相同种子、相同输入的贪心原始续写，后续方法仍独立生成扰动/改写后的续写。SaMIA 的 10 路采样不复用。新审计默认写入 `artifacts/runs/audits/qwen_shared_reference_v1/`；原 `qwen_fixed_v1/` 结果保留为历史快照，不能用新代码继续写入。示例：
 
 ```bash
 SD_AUDIT_PYTHON=/path/to/existing/.venv/bin/python \
   bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh status \
   --model-root /path/to/existing/artifacts/runs/training/controlled_sft_v2/model_pairs/qwen3 \
-  --output-root artifacts/runs/audits/qwen_shared_reference_v1 \
-  --reuse-robustness-reference
+  --output-root artifacts/runs/audits/qwen_shared_reference_v1
 ```
 
-该模式将成本口径分开：第一个运行的 WS/RS/BT 包含原始续写生成，保留完整独立方法成本；后续方法只记录 `physical_incremental_*` 物理增量字段，旧的独立成本字段留空。汇总的实际计算时间使用 `execution_group_seconds`，不把共享原始生成重复计入。因此不能用后续方法的增量耗时与上面的独立方法耗时直接比较；分数应保持一致，但正式使用前仍需在 GPU 上核对一次。默认不启用此模式。
+成本口径分开：第一个运行的 WS/RS/BT 包含原始续写生成，保留完整独立方法成本；后续方法只记录 `physical_incremental_*` 物理增量字段，独立成本字段留空。汇总的实际计算时间使用 `execution_group_seconds`，不把共享原始生成重复计入。后续方法的增量耗时不可与独立方法耗时直接比较；正式使用前仍需在 GPU 上核对分数。
 
 ## 训练与验证
 

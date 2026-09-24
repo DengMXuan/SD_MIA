@@ -93,11 +93,15 @@ def test_baseline_all_methods_on_pretrained_target(pretrained_fixture, monkeypat
     assert report['protocol']['token_contract']['append_eos'] is False
     assert set(report['metrics']) == set(run.METHODS)
     expected_queries = dict(loss=1, min_k_prob=1, min_k_pp=1, recall=2, icp_mia=2,
-                            petal=85/80, sead=1, ws=2, rs=2, bt=3, samia=1)
+                            petal=85/80, sead=1, ws=2, rs=1, bt=2, samia=1)
     for method, count in expected_queries.items():
         cost = report['costs'][method]
-        assert cost['target_sequences_per_record'] == pytest.approx(count)
-        assert cost['amortized_ms_per_record'] > 0
+        prefix = 'physical_incremental_' if method in ('rs', 'bt') else ''
+        assert cost[prefix + 'target_sequences_per_record'] == pytest.approx(count)
+        assert cost[prefix + 'amortized_ms_per_record'] > 0
+        if prefix:
+            assert 'amortized_ms_per_record' not in cost
+            assert cost['reference_reused'] is True
     for method in ('loss', 'min_k_prob', 'min_k_pp', 'sead'):
         assert report['costs'][method]['tokens_per_record'] == 4
     assert report['costs']['petal']['tokens_per_record'] == 4.25

@@ -632,7 +632,7 @@ def _normalise_methods(value: str) -> tuple[str, ...]:
 
 
 def _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, methods,
-                   *, reference_cache: dict | None = None):
+                   *, reference_cache: dict):
     needs_aux = bool({"recall", "icp_mia", "petal"} & set(methods))
     if needs_aux and not auxiliary:
         raise RuntimeError("the requested target-only methods need non-member auxiliary records")
@@ -767,7 +767,7 @@ def _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, me
                     )
 
         if {"ws", "rs", "bt"} & generation_methods:
-            if reference_cache is not None and "texts" in reference_cache:
+            if "texts" in reference_cache:
                 baseline_texts = reference_cache["texts"]
                 if len(baseline_texts) != len(all_records):
                     raise ValueError("robustness reference cache has the wrong record count")
@@ -786,8 +786,7 @@ def _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, me
                             trim(rows[0], max_news[start + offset]),
                             skip_special_tokens=True,
                         )
-                if reference_cache is not None:
-                    reference_cache["texts"] = baseline_texts
+                reference_cache["texts"] = baseline_texts
 
         for kind in ("ws", "rs"):
             if kind not in generation_methods:
@@ -972,6 +971,7 @@ def _run(args: argparse.Namespace, progress: RunProgress) -> None:
         raise ValueError("warmup must be nonnegative and audit must be nonempty")
     protocol["cost_measurement"] = cost_protocol(model, device, min(warmup_records, len(all_records)), args.generation_batch_size)
     scores, costs = {}, {}
+    reference_cache: dict[str, list[str]] = {}
     for method in methods:
         progress.active_method = method
         scorer = TargetScorer(model, tokenizer, device, args.sead_samples, args.sead_temperature, args.seed)
@@ -983,10 +983,22 @@ def _run(args: argparse.Namespace, progress: RunProgress) -> None:
             meter = CostMeter(device, len(all_records))
             scorer.cost_meter = meter
             progress.event("method started", method=method)
+            reused_reference = method in ("ws", "rs", "bt") and "texts" in reference_cache
             with meter.measure():
-                values = _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, (method,))
+                values = _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer,
+                                        (method,), reference_cache=reference_cache)
             scores[method] = values[method]
-            costs[method] = meter.result()
+            measured_cost = meter.result()
+            if method in ("ws", "rs", "bt"):
+                if reused_reference:
+                    costs[method] = {"cost_basis": "physical_incremental", "reference_reused": True,
+                                     **{"physical_incremental_" + key: value
+                                        for key, value in measured_cost.items()}}
+                else:
+                    costs[method] = {**measured_cost, "cost_basis": "standalone_measured",
+                                     "reference_reused": False}
+            else:
+                costs[method] = measured_cost
             progress.save_method(method, scores[method], cost=costs[method])
         finally:
             scorer._probe_vector.cache_clear()

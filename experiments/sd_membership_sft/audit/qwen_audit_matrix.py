@@ -28,7 +28,9 @@ from experiments.sd_membership_sft.audit.matrix_main import MAIN_METHODS
 
 ROLES = ("draft_auxiliary_distilled", "draft_member_sft")
 ALL_METHODS = (*MAIN_METHODS["fixed"], *MAIN_METHODS["natural"], *METHODS)
-from experiments.paths import QWEN_MODELS as DEFAULT_MODEL_ROOT, QWEN_AUDIT as DEFAULT_OUTPUT_ROOT
+from experiments.paths import QWEN_MODELS as DEFAULT_MODEL_ROOT, QWEN_AUDIT as LEGACY_OUTPUT_ROOT
+
+DEFAULT_OUTPUT_ROOT = LEGACY_OUTPUT_ROOT.parent / "qwen_shared_reference_v1"
 
 
 def make_tasks(model_root, output_root, benchmarks, epochs, seeds, settings):
@@ -367,8 +369,6 @@ def main():
     parser.add_argument("--rounds-per-start", type=int, default=32)
     parser.add_argument("--audit-seed", type=int, default=20260914)
     parser.add_argument("--detector-epochs", type=int, default=30)
-    parser.add_argument("--reuse-robustness-reference", action="store_true",
-                        help="reuse one greedy reference across WS/RS/BT; requires a separate --output-root")
     parser.add_argument("--task-file", type=Path)
     args = parser.parse_args()
     if args.command == "worker":
@@ -378,17 +378,16 @@ def main():
         return
     if args.rounds_per_start < 1 or args.detector_epochs < 1:
         parser.error("round and detector epoch budgets must be positive")
-    if args.reuse_robustness_reference and args.output_root.resolve() == DEFAULT_OUTPUT_ROOT.resolve():
-        parser.error("--reuse-robustness-reference requires a separate --output-root")
+    if args.output_root.resolve().is_relative_to(LEGACY_OUTPUT_ROOT.resolve()):
+        parser.error("the historical audit output root is read-only; choose a separate --output-root")
     for values in (args.benchmarks, args.epochs, args.seeds, args.starts):
         if len(set(values)) != len(values):
             parser.error("duplicate matrix entries are not allowed")
     from experiments.sd_membership_sft.protocols.sd_protocol import resolve_starts
     resolve_starts(2048, args.starts)
     settings = dict(starts=args.starts, rounds_per_start=args.rounds_per_start, audit_seed=args.audit_seed,
-                    detector_epochs=args.detector_epochs, baseline=BASELINE_DEFAULTS)
-    if args.reuse_robustness_reference:
-        settings["reuse_robustness_reference"] = True
+                    detector_epochs=args.detector_epochs, baseline=BASELINE_DEFAULTS,
+                    baseline_execution="shared_robustness_reference_v1")
     tasks = make_tasks(args.model_root.resolve(), args.output_root.resolve(), args.benchmarks, args.epochs, args.seeds, settings)
     if args.command in ("dry-run", "status"):
         states = {task["id"]: inspect_task(task) for task in tasks}
