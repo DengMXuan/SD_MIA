@@ -1,4 +1,4 @@
-"""Measured fixed-candidate/natural-SD main methods for one draft condition."""
+"""Measured fixed-candidate main method for one draft condition."""
 from __future__ import annotations
 
 import gc
@@ -16,15 +16,14 @@ from experiments.shared.methods.conditional_accept_only import ConditionalCountT
 from experiments.shared.core.deployment_archive import sha256_file
 from experiments.shared.protocols.protocol_archive import load_archive
 from experiments.shared.models.loading import load_adapter
-from experiments.shared.methods.protocol_accept_only import CausalAcceptanceGRU, fit_causal, natural_features, trajectory_partitions, predict
-from experiments.shared.protocols.sd_protocol import natural_trace, fixed_trace, resolve_starts
+from experiments.shared.methods.protocol_accept_only import trajectory_partitions, predict
+from experiments.shared.protocols.sd_protocol import fixed_trace
 from experiments.shared.audit.artifacts import already_complete, digest, save_result
 from experiments.shared.audit.costs import PHASES, timed, peak_memory, summarize_cost, COST_CONVENTIONS
 from experiments.shared.audit.metrics import metrics, METRIC_CONVENTIONS
 
 MAIN_METHODS = {
     "fixed": ("main_fixed_sparse_positive",),
-    "natural": ("main_natural_sparse_positive", "main_natural_sparse_two_sided"),
 }
 
 
@@ -58,20 +57,16 @@ def fit_detector(data, parts, task, output):
     key = digest({"task": task, "archive": sha256_file(output / "observations.npz")})
     manifest = output / "FIT.json"
     with timed() as fitting:
-        x = (natural_features(data["features"], data["counts"], data["lengths"])
-             if protocol == "natural" else data["features"][:, [0, 4, 1, 2, 3]])
+        x = data["features"][:, [0, 4, 1, 2, 3]]
         if manifest.exists():
             metadata = json.loads(manifest.read_text())
             if metadata["key"] != key or metadata["sha256"] != sha256_file(output / "detector.pt"):
                 raise ValueError("detector source/cache mismatch")
             checkpoint = torch.load(output / "detector.pt", map_location="cpu", weights_only=True)
-            model = CausalAcceptanceGRU(x.shape[1]) if protocol == "natural" else ConditionalCountTCN(x.shape[1], 2)
+            model = ConditionalCountTCN(x.shape[1], 2)
             model.load_state_dict(checkpoint["state_dict"])
             return model, x, checkpoint["mean"].numpy(), checkpoint["scale"].numpy(), metadata
-        if protocol == "natural":
-            fit = fit_causal
-        else:
-            from experiments.shared.methods.difficulty_accept_only import fit
+        from experiments.shared.methods.difficulty_accept_only import fit
         model, mean, scale, history, best_epoch = fit(
             x, data["counts"], data["lengths"], trajectory_partitions(parts, data["document_indices"]),
             seed=settings["audit_seed"], device="cpu", epochs=settings["detector_epochs"],
@@ -80,12 +75,14 @@ def fit_detector(data, parts, task, output):
     torch.save({"state_dict": model.state_dict(), "mean": torch.tensor(mean), "scale": torch.tensor(scale)}, temporary)
     temporary.replace((output / "detector.pt").resolve())
     metadata = dict(key=key, sha256=sha256_file(output / "detector.pt"), seconds=fitting["seconds"],
-                    history=history, best_epoch=best_epoch, architecture="causal_gru" if protocol == "natural" else "count_tcn")
+                    history=history, best_epoch=best_epoch, architecture="count_tcn")
     _write_json(manifest, metadata)
     return model, x, mean, scale, metadata
 
 
 def run_main(task, device, cfg, prepared, sources):
+    if task.get("protocol") not in MAIN_METHODS:
+        raise ValueError("unsupported audit protocol")
     from experiments.paths import prepare_audit_cache
     output = Path(task["output"])
     output.mkdir(parents=True, exist_ok=True)
@@ -110,16 +107,11 @@ def run_main(task, device, cfg, prepared, sources):
         prompt = protocol_prompt_ids(record, prepared.tokenizer)
         response = list(record.response_ids)
         # One untimed warmup on a training auxiliary, never the test/calibration set.
-        if protocol == "natural":
-            position = resolve_starts(len(response), settings["starts"])[0]
-            natural_trace(adapter, prompt + response[:position], rounds=1,
-                          seed=settings["audit_seed"], start_fraction=position / len(response))
-        else:
-            fixed_trace(adapter, prompt, response, seed=settings["audit_seed"])
+        fixed_trace(adapter, prompt, response, seed=settings["audit_seed"])
         contract = dict(
             protocol=protocol, adapter="plain", draft_role=task["draft_role"],
-            starts=settings["starts"] if protocol == "natural" else ["fixed"],
-            rounds_per_start=settings["rounds_per_start"] if protocol == "natural" else 0,
+            starts=["fixed"],
+            rounds_per_start=0,
             seed=settings["audit_seed"], sources=sources, matrix_request_key=request,
             data_contract="four_role_600", execution="full_context_reconstruction",
             head_real_model_validation="not_applicable", timing_version=1,

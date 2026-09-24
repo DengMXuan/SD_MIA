@@ -26,7 +26,7 @@ def summarize(paths, comparisons, *, repeats=500, legacy_root=None):
             report["metrics"]["legacy_neural_fusion"] = membership_metrics(archive["legacy_neural_fusion"], archive["labels"], archive["calibration"], archive["test"])
         condition = report.get("benchmark", "") + str(report.get("epoch", ""))
         if not condition:
-            condition = path.parent.name if "serial" in str(path) else path.parent.parent.name
+            condition = path.parent.parent.name
         for other in groups.get(condition, []):
             for key in ("labels", "record_ids", "test", "calibration"):
                 if not np.array_equal(archive[key], archives[other][key]):
@@ -102,27 +102,16 @@ def render(name, report):
 
 
 def protocol_costs(root):
-    serial = {}
-    for path in sorted((root / "serial").glob("*/COSTS.json")):
-        if not (path.parent / "REPORT.json").exists():
-            continue
-        rows = json.loads(path.read_text())["records"]
-        with np.load(path.parent / "scores.npz", allow_pickle=False) as scores:
-            indices = scores["test"]
-        serial[path.parent.name] = {
-            "test_records": len(indices),
-            **{f"mean_{key}": float(np.mean([rows[i][key] for i in indices]))
-               for key in ("rounds", "reached_decisions", "verified_candidate_positions", "generated_tokens")}}
     active = [json.loads(path.read_text()) for path in sorted((root / "active").glob("*/seed*/REPORT.json"))]
     stopping = {}
     if active:
         stopping = {level: {key: float(np.mean([report["positive_stopping"][level][key] for report in active]))
                             for key in ("tpr", "actual_fpr", "mean_decisions", "max_decisions")}
                     for level in ("0.01", "0.05")}
-    return {"serial_test_costs": serial, "joint_positive_stopping_macro": stopping,
+    return {"joint_positive_stopping_macro": stopping,
             "active_reference_queries_per_condition_seed": 400 * 64 * 10,
             "active_fixed_decisions_per_test_record": {"B2": 128, "B8": 512},
-            "note": "active stopping is checked only at registered B=1,2,4,8; serial verifier rounds and reached bits are different cost units"}
+            "note": "active stopping is checked only at registered B=1,2,4,8"}
 
 
 def main():
@@ -135,10 +124,7 @@ def main():
     phases = [("conditional_b2", sorted((args.root.parent / "conditional_accept_only").glob("*/b2_seed*/REPORT.json")), 18,
                [(name, baseline) for name in ("original_global", "original_span", "original_fusion") for baseline in ("lowq", "legacy_neural_fusion")]),
               ("active", sorted((args.root / "active").glob("*/seed*/REPORT.json")), 18,
-               [(f"{method}_b{b}", f"uniform_ladder_b{b}") for b in (2, 8) for method in ("fixed_q", "adaptive_q", "adaptive_position", "joint")]),
-              ("serial", sorted((args.root / "serial").glob("*/REPORT.json")), 2,
-               [("hazard_evidence", "accept_rate"), ("hazard_per_decision", "accept_rate"),
-                ("hazard_rejection", "reject_rate"), ("hazard_two_sided", "rate_two_sided")])]
+               [(f"{method}_b{b}", f"uniform_ladder_b{b}") for b in (2, 8) for method in ("fixed_q", "adaptive_q", "adaptive_position", "joint")])]
     for budget in (2, 8):
         phases.append((f"paired_b{budget}", sorted((args.root / "paired").glob(f"*/b{budget}_seed*/REPORT.json")), 18,
                        [(f"paired_{kind}", f"original_{kind}") for kind in ("global", "span", "fusion")]))
@@ -156,7 +142,7 @@ def main():
               "warning": "candidate scopes/protocols differ across phases; compare within phase only"}
     _write_json(args.root / "DIRECTIONS_REPORT.json", report)
     lines = ["# Frozen-model direction validation", "", "Target/draft weights remain frozen. Only real trusted nonmembers fit and select detectors.",
-             "Do not compare absolute AUC across whole-document, suffix, and natural-generation scopes.",
+             "Do not compare absolute AUC across whole-document and suffix scopes.",
              "Intervals condition on fitted models; nominal low-FPR TPR must be read with actual FPR.",
              "Paired 95% intervals are exploratory and not adjusted for multiple comparisons.",
              "pAUC@10% is ROC area over FPR 0–0.10 divided by 0.10; random ranking has expected value 0.05.", ""]
@@ -169,12 +155,6 @@ def main():
               "| Nominal FPR | TPR | Actual FPR | Mean decisions | Maximum decisions |", "|---|---:|---:|---:|---:|"]
     for level, value in costs["joint_positive_stopping_macro"].items():
         lines.append(f"| {float(level):.0%} | {value['tpr']:.4f} | {value['actual_fpr']:.4f} | {value['mean_decisions']:.2f} | {value['max_decisions']:.0f} |")
-    lines += ["", "Natural SD test transcripts (all detectors share these costs):", "",
-              "| Condition | Mean verifier rounds | Mean reached decisions | Mean verified candidate positions | Mean generated tokens |",
-              "|---|---:|---:|---:|---:|"]
-    for condition, value in costs["serial_test_costs"].items():
-        lines.append(f"| {condition} | " + " | ".join(f"{value[f'mean_{key}']:.2f}" for key in
-                     ("rounds", "reached_decisions", "verified_candidate_positions", "generated_tokens")) + " |")
     (args.root / "DIRECTIONS_REPORT.md").write_text("\n".join(lines) + "\n")
     print(args.root / "DIRECTIONS_REPORT.md")
 

@@ -24,29 +24,6 @@ seeds: 20260914, 20260915, 20260916. Report all conditions, including failures.
    training examples. Compare fixed-q, uniform ladder, adaptive-q, adaptive
    position, and joint JS-based design at B=2/8. Stop-rule calibration uses
    nonmember maxima over the entire registered query path.
-4. Serial feedback: evaluate first-rejection censoring explicitly; unvisited
-   candidate positions are missing, never rejected. Also collect a small
-   genuine sampling-based SD experiment on saved Wiki epoch-1/3 checkpoints:
-   gamma=4, 8 verifier rounds, original prefix before the final 64 tokens.
-   Target correction/bonus tokens update protocol state but are not detector
-   inputs. Only local q/entropy, round boundaries and reached accept bits are
-   exported. Fit a causal nonmember hazard model; compare against acceptance
-   rate on identical transcripts. This changes the observation experiment and
-   must not be pooled with fixed-candidate results.
-   This natural-SD pilot uses seed 20260914 and 1,400 selected records per
-   checkpoint (400 reference nonmembers, 200 calibration nonmembers, 800 test
-   records). It is a two-checkpoint mechanism test, not the six-condition,
-   three-seed matrix used for the cheaper cached/paired directions.
-   Report summed hazard evidence and a per-reached-decision normalization
-   alongside raw acceptance rate; this controls variable transcript length
-   without selecting an aggregation rule using member test outcomes.
-   For sampled proposals, expected acceptance equals 1-TV(p,q), so membership
-   need not increase acceptance. Before inspecting natural-SD metrics, fix
-   negative and two-sided hazard alternatives too, and report all directions.
-   Compare them with rejection rate and the absolute deviation from nonmember
-   validation acceptance rate, respectively; do not select the best direction
-   on members. All thresholds still use the separate nonmember calibration set.
-
 Acceptance criteria: matched-budget paired AUC/pAUC differences, per-condition
 consistency, and actual FPR alongside nominal low-FPR TPR. Bootstrap the same
 record indices across seeds and checkpoints with identical test records; intervals condition on fitted
@@ -59,6 +36,4 @@ integrates ROC area over FPR 0–0.10 and divides by 0.10 (random expectation
 For counterfactuals, shorter context also changes positions and general
 prediction difficulty. An advantage alone is not proof of causal memorization.
 For active q, distinguish a simulator-valid normalized proposal from an API
-that actually permits client-selected proposal distributions. For natural SD,
-the runtime needs correction tokens for synchronization, but the detector
-is restricted to acceptance feedback and local draft features.
+that actually permits client-selected proposal distributions.

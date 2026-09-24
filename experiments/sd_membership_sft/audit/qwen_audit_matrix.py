@@ -20,7 +20,7 @@ from experiments.shared.audit.baselines import BASELINE_DEFAULTS
 from experiments.shared.audit.main import MAIN_METHODS
 
 ROLES = ("draft_auxiliary_distilled", "draft_member_sft")
-ALL_METHODS = (*MAIN_METHODS["fixed"], *MAIN_METHODS["natural"], *METHODS)
+ALL_METHODS = (*MAIN_METHODS["fixed"], *METHODS)
 from experiments.paths import QWEN_MODELS as DEFAULT_MODEL_ROOT, QWEN_AUDIT as LEGACY_OUTPUT_ROOT, QWEN_CURRENT_AUDIT, audit_executions, audit_reports
 
 DEFAULT_OUTPUT_ROOT = QWEN_CURRENT_AUDIT
@@ -139,6 +139,8 @@ def summarize(tasks, output_root, *, execution_root=None, methods=None):
 
 
 def execute_worker(task):
+    if task["kind"] == "main" and task.get("protocol") not in MAIN_METHODS:
+        raise ValueError("unsupported audit protocol")
     import torch
     from experiments.shared.models.loading import prepare_records
     from experiments.shared.audit.baselines import run_baselines
@@ -169,8 +171,8 @@ def main():
     parser.add_argument("--epochs", nargs="+", type=int, choices=(1, 3), default=[1, 3])
     parser.add_argument("--seeds", nargs="+", type=int, choices=(1919, 1949, 1978), default=[1919, 1949, 1978])
     parser.add_argument("--gpus", nargs="+", type=int, default=[0])
-    parser.add_argument("--starts", nargs="+", default=["suffix64"])
-    parser.add_argument("--rounds-per-start", type=int, default=32)
+    parser.add_argument("--starts", nargs="+", default=["suffix64"], help="legacy request identity only")
+    parser.add_argument("--rounds-per-start", type=int, default=32, help="legacy request identity only")
     parser.add_argument("--audit-seed", type=int, default=20260914)
     parser.add_argument("--detector-epochs", type=int, default=30)
     parser.add_argument("--task-file", type=Path)
@@ -187,14 +189,12 @@ def main():
     for values in (args.benchmarks, args.epochs, args.seeds, args.starts):
         if len(set(values)) != len(values):
             parser.error("duplicate matrix entries are not allowed")
-    from experiments.shared.protocols.sd_protocol import resolve_starts
-    resolve_starts(2048, args.starts)
     settings = audit_settings(audit_seed=args.audit_seed, detector_epochs=args.detector_epochs, starts=args.starts, rounds_per_start=args.rounds_per_start)
     tasks = make_tasks(args.model_root.resolve(), args.output_root.resolve(), args.benchmarks, args.epochs, args.seeds, settings)
     if args.command in ("dry-run", "status"):
         states = {task["id"]: inspect_task(task) for task in tasks}
-        print(json.dumps({"audit_configurations": len(tasks) // 5 * 2, "worker_tasks": len(tasks),
-                          "expected_method_rows": len(tasks) // 5 * 2 * len(ALL_METHODS),
+        print(json.dumps({"audit_configurations": len(tasks) // 3 * 2, "worker_tasks": len(tasks),
+                          "expected_method_rows": len(tasks) // 3 * 2 * len(ALL_METHODS),
                           "settings": settings, "states": states}, indent=2))
     elif args.command == "summarize":
         result = summarize(tasks, audit_reports(args.output_root), execution_root=audit_executions(args.output_root))

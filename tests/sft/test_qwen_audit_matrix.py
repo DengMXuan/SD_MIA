@@ -30,15 +30,15 @@ def tasks_at(tmp_path, seeds=(1919, 1949, 1978)):
     return make_tasks(tmp_path / "models", tmp_path / "results", ["wikitection"], [1], list(seeds), settings())
 
 
-def test_matrix_has_36_configs_90_jobs_and_504_method_rows(tmp_path):
+def test_matrix_has_36_configs_54_jobs_and_432_method_rows(tmp_path):
     tasks = make_tasks(tmp_path, tmp_path / "out", ["wikitection", "newstection", "arxivtection"],
                        [1, 3], [1919, 1949, 1978], settings())
-    assert len(tasks) == len({t["id"] for t in tasks}) == 90
+    assert len(tasks) == len({t["id"] for t in tasks}) == 54
     assert sum(t["kind"] == "baseline" for t in tasks) == 18
-    assert sum(t.get("protocol") == "natural" for t in tasks) == 36
-    assert sum(len(t["methods"]) for t in tasks) == 306  # unique method outputs
-    assert 18 * 2 * (11 + 1 + 2) == 504
-    assert len({t["output"] for t in tasks}) == 90
+    assert sum(t.get("protocol") == "fixed" for t in tasks) == 36
+    assert sum(len(t["methods"]) for t in tasks) == 234  # unique method outputs
+    assert 18 * 2 * (11 + 1) == 432
+    assert len({t["output"] for t in tasks}) == 54
 
 
 def test_roc_does_not_split_ties_and_pauc_conventions_are_explicit():
@@ -99,7 +99,7 @@ def test_baseline_reuse_does_not_double_costs_or_seed_sample_size(tmp_path):
     for index, task in enumerate(t for t in tasks if t["kind"] == "baseline"):
         write_example_result(task, "loss", .7 + .1 * index)
     result = summarize(tasks, tmp_path / "results")
-    assert result["expected_rows"] == 84
+    assert result["expected_rows"] == 72
     assert result["completed_rows"] == 6
     assert not result["complete"]
     assert result["unique_successful_execution_groups"] == 3
@@ -282,24 +282,24 @@ def test_shared_reference_cli_records_mode_in_task_settings(tmp_path, monkeypatc
     assert settings_seen[0]["baseline_execution"] == "shared_robustness_reference_v1"
 
 
-@pytest.mark.parametrize("protocol", ["fixed", "natural"])
-def test_main_matrix_uses_both_draft_roles_and_resumes_frozen_detector(tmp_path, protocol):
+@pytest.mark.parametrize("role", ["draft_auxiliary_distilled", "draft_member_sft"])
+def test_main_matrix_uses_both_draft_roles_and_resumes_frozen_detector(tmp_path, role):
     from experiments.shared.audit.main import run_main
     from experiments.shared.protocols.protocol_archive import save_archive
 
-    task = next(t for t in tasks_at(tmp_path) if t.get("protocol") == protocol and t.get("draft_role") == "draft_member_sft")
+    task = next(t for t in tasks_at(tmp_path) if t.get("protocol") == "fixed" and t.get("draft_role") == role)
     prepared = prepared_records()
     output = Path(task["output"])
     output.mkdir(parents=True)
     x = np.zeros((4600, 6), dtype=np.float32)
     x[:, 0], x[:, 1], x[:, 5] = -.8, .5, .5
-    counts = (np.arange(4600) % (2 if protocol == "natural" else 3)).astype(np.uint8)
+    counts = (np.arange(4600) % 3).astype(np.uint8)
     data = dict(features=x, counts=counts, lengths=np.ones(4600, dtype=int),
                 document_indices=np.arange(4600), start_indices=np.zeros(4600, dtype=int),
                 record_ids=prepared.record_ids, record_roles=prepared.record_roles, labels=prepared.labels)
     sources = {"files": [], "checkpoints": []}
-    contract = dict(protocol=protocol, starts=["suffix64"] if protocol == "natural" else ["fixed"],
-                    rounds_per_start=32, sources=sources, matrix_request_key=digest(task), hardware={"device": "cpu"})
+    contract = dict(protocol="fixed", starts=["fixed"],
+                    rounds_per_start=0, sources=sources, matrix_request_key=digest(task), hardware={"device": "cpu"})
     costs = [dict(record_id=str(i), seconds=.01, target_forward_calls=1, draft_forward_calls=1,
                   target_input_tokens=3, draft_input_tokens=3, generated_tokens=1,
                   peak_allocated_gpu_bytes=None) for i in range(4600)]
@@ -309,7 +309,7 @@ def test_main_matrix_uses_both_draft_roles_and_resumes_frozen_detector(tmp_path,
     assert report["training_member_count"] == 0
     assert report["metrics"]["n_calibration"] == 200
     assert report["metrics"]["n_test_member"] == 2000
-    assert report["draft_role"] == "draft_member_sft"
+    assert report["draft_role"] == role
     assert report["collection_phase_seconds"]["preparation"] == pytest.approx(4.)
     old_detector = (output / "detector.pt").read_bytes()
     (output / task["methods"][-1] / "REPORT.json").unlink()

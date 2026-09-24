@@ -1,4 +1,4 @@
-"""Collect fixed probes or multi-start, single-proposal natural SD observations.
+"""Collect fixed-candidate observations over frozen model pairs.
 
 Usage: python -m experiments.sd_membership_sft.collect_protocol_observations --help
 Head adapters are implemented but await real-model validation on new checkpoints.
@@ -19,10 +19,10 @@ from experiments.shared.core.audit_partitions import deployment_partitions
 from experiments.shared.core.audit_runtime import _write_json
 from experiments.shared.data.data import SFTRecord, prompt_prefix_ids, _hash_ids
 from experiments.shared.core.deployment_archive import sha256_file
-from experiments.shared.protocols.protocol_archive import atomic_npz, save_archive
+from experiments.shared.protocols.protocol_archive import atomic_npz, save_archive, validate_contract
 from experiments.shared.models.loading import checkpoint_paths, load_adapter, prepare_records, source_contract, local_tokenizer, DRAFT_ROLES
 from experiments.shared.audit.costs import timed, reset_peak, peak_memory
-from experiments.shared.protocols.sd_protocol import fixed_trace, natural_trace, resolve_starts, trajectory_seed
+from experiments.shared.protocols.sd_protocol import fixed_trace, trajectory_seed
 
 
 def _digest(value):
@@ -45,21 +45,14 @@ def protocol_prompt_ids(record, tokenizer):
 
 def collect_records(prepared, adapter, output: Path, contract: dict) -> Path:
     """Collect whole records with checksum-validated per-trajectory recovery."""
+    validate_contract(contract)
     starts = contract["starts"]
-    inputs, positions, failures = [], [], []
+    inputs, positions = [], []
     for record in prepared.records:
         prompt = protocol_prompt_ids(record, prepared.tokenizer)
         response = list(record.response_ids)
-        try:
-            resolved = resolve_starts(len(response), starts) if contract["protocol"] == "natural" else [0]
-        except ValueError as error:
-            failures.append({"record_id": record.record_id, "reason": str(error)})
-            continue
-        positions.append(resolved)
+        positions.append([0])
         inputs.append((prompt, response))
-    if failures:
-        _write_json(output / "PREFLIGHT_FAILURES.json", failures)
-        raise ValueError("invalid starts; see PREFLIGHT_FAILURES.json (no records silently excluded)")
     contract = {**contract, "record_ids": prepared.record_ids.tolist(),
                 "record_roles": prepared.record_roles.tolist(),
                 "input_hashes": [_hash_ids(p + r) for p, r in inputs],
@@ -72,8 +65,6 @@ def collect_records(prepared, adapter, output: Path, contract: dict) -> Path:
     records_dir = output / "trajectories"
     records_dir.mkdir(exist_ok=True)
     features, counts, lengths, owners, start_ids, all_costs = [], [], [], [], [], []
-    eos = prepared.tokenizer.eos_token_id
-    eos_ids = tuple(eos) if isinstance(eos, (list, tuple)) else (() if eos is None else (int(eos),))
     for i, record in enumerate(prepared.records):
         prompt, response = inputs[i]
         for j, start in enumerate(starts):
@@ -93,14 +84,7 @@ def collect_records(prepared, adapter, output: Path, contract: dict) -> Path:
                 before = asdict(adapter.cost)
                 reset_peak(adapter.device)
                 with timed(adapter.device) as elapsed:
-                    if contract["protocol"] == "natural":
-                        position = positions[i][j]
-                        trace = natural_trace(
-                            adapter, prompt + response[:position], rounds=contract["rounds_per_start"],
-                            seed=seed, start_fraction=position / len(response), eos_ids=eos_ids,
-                        )
-                    else:
-                        trace = fixed_trace(adapter, prompt, response, seed=seed)
+                    trace = fixed_trace(adapter, prompt, response, seed=seed)
                 cost = {key: value for key, value in trace.items() if key not in ("features", "counts")}
                 cost.update({key: value - before[key] for key, value in asdict(adapter.cost).items()})
                 cost.update(record_id=record.record_id, start=start)
@@ -132,16 +116,12 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--adapter", choices=("plain", "eagle3", "mtp"), default="plain")
     parser.add_argument("--draft-role", choices=DRAFT_ROLES, default=DRAFT_ROLES[0])
-    parser.add_argument("--protocol", choices=("natural", "fixed"), default="natural")
-    parser.add_argument("--starts", nargs="+", default=["0.5", "0.75"], help="response token fractions or suffix64")
-    parser.add_argument("--rounds-per-start", type=int, default=32)
+    parser.add_argument("--protocol", choices=("fixed",), default="fixed")
     parser.add_argument("--seed", type=int, default=20260914)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--smoke-text-file", type=Path, help="optional text for a runtime-only smoke test")
     args = parser.parse_args()
-    if args.rounds_per_start < 1:
-        parser.error("rounds-per-start must be positive")
     if args.command == "collect" and args.smoke_text_file is not None:
         parser.error("smoke text is only permitted for the smoke command")
     run_dir = args.run_dir.resolve()
@@ -179,8 +159,8 @@ def main():
         contract = {
             "protocol": args.protocol, "adapter": args.adapter, "draft_role": args.draft_role,
             "timing_version": 1,
-            "starts": args.starts if args.protocol == "natural" else ["fixed"],
-            "rounds_per_start": args.rounds_per_start if args.protocol == "natural" else 0,
+            "starts": ["fixed"],
+            "rounds_per_start": 0,
             "seed": args.seed, "temperature": 1., "top_k": None, "top_p": None,
             "proposals_per_round": 1, "sources": sources,
             "execution": "full_context_reconstruction",

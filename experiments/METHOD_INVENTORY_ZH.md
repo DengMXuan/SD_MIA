@@ -32,7 +32,6 @@
 | 18 | 条件模型的 span、固定残差融合、普通 NLL、q-only 变体 | `conditional_accept_only.py` | **span/融合退出默认路径，归档结果；q-only 与 NLL 保留诊断**。span/fusion AUC 0.9205/0.9168，弱于 global 0.9303。NLL 仍用于非成员训练与检查点选择，不能因其攻击 AUC 差而删除训练损失。 |
 | 19 | 原始/截断前缀配对反事实 | `collect_counterfactual_accept_only.py`, `conditional_accept_only.py` 的 paired 分支 | **归档、停止默认采集**。同后缀 B=2 AUC 0.7686→0.7197；B=8 仍退化。只针对当前截断实现。 |
 | 20 | 非成员潜在混合模型 + JS 主动选 q/位置 + 路径早停 | `active_protocol_design.py` | **实验策略归档**。同后缀 B=2 AUC 0.7123→0.6621，B=8 亦无优势；早停节省有限。潜在混合相关实现被优先实验动态导入，删除前核对函数依赖。 |
-| 21 | 自然串行 SD + GRU hazard；正向、反向、双侧证据及接受率对照 | `serial_accept_only.py` | **保留为独立协议验证，暂停扩展**。仅 Wiki 两检查点短轨迹验证，AUC 约 0.49–0.51。采集器有独立价值；不能将固定候选成功当作自然 SD 成功，也不能据此否定所有串行方法。 |
 | 22 | 条件 TCN 加因果接受历史 | `priority_accept_only.py` 的 causal 分支 | **删除候选实验分支**。AUC 0.9303→0.9297，非成员验证 NLL 也没有改善。 |
 | 23 | 三初始化 PMF 平均、不确定性折扣 | `priority_accept_only.py` 的 ensemble/discount 分支 | **删除候选实验分支**。AUC 约 0.9304，差值区间含零；增加拟合成本，当前折扣几乎不起作用。 |
 | 24 | 草稿难度增强：预测熵、候选对数排名、top1–top2 logit 差 | `collect_draft_difficulty.py`, `priority_accept_only.py` | **核心保留，可关闭消融**。匹配 q 对照 AUC 0.9301→0.9342，六条件均提升；仅冻结草稿前向。 |

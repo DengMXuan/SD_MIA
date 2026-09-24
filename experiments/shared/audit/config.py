@@ -6,6 +6,8 @@ BASELINE_DEFAULTS = dict(k_percent=20., recall_shots=4, icp_top_k=5, icp_aggrega
 
 def audit_settings(*, audit_seed=20260914, detector_epochs=30,
                    starts=None, rounds_per_start=32):
+    # These two legacy fields remain part of the saved request identity only.
+    # Collection always verifies the complete response with B=2.
     if type(audit_seed) is not int or audit_seed < 0 or detector_epochs < 1 or rounds_per_start < 1:
         raise ValueError('nonnegative audit seed and positive detector/round budgets required')
     return dict(starts=list(starts) if starts is not None else ['suffix64'],

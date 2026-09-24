@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 import torch
 
-from experiments.shared.protocols.sd_protocol import FEATURE_NAMES, FrozenAdapter, RuntimeCost, draft_features, fixed_trace, map_eagle_logits, natural_trace, resolve_starts, trajectory_seed
+from experiments.shared.protocols.sd_protocol import FEATURE_NAMES, FrozenAdapter, RuntimeCost, draft_features, fixed_trace, map_eagle_logits, trajectory_seed
 from experiments.shared.protocols.protocol_archive import load_archive, save_archive, validate_arrays
-from experiments.shared.methods.protocol_accept_only import CausalAcceptanceGRU, document_scores, evidence_components, fit_causal, natural_features, trajectory_partitions
+from experiments.shared.methods.protocol_accept_only import document_scores, evidence_components, trajectory_partitions
 
 
 @pytest.fixture(autouse=True)
@@ -19,65 +19,30 @@ def threads():
     torch.set_num_threads(previous)
 
 
-def test_start_positions_and_stable_streams():
-    assert resolve_starts(1000, ["0.5", "0.75", "suffix64"]) == [500, 750, 936]
-    assert resolve_starts(7, ["0.5", "0.75"]) == [3, 5]
-    for starts in (["nan"], ["0"], ["1"], ["0.5", "0.51"], ["suffix64"], []):
-        with pytest.raises(ValueError):
-            resolve_starts(8, starts)
-    assert trajectory_seed(7, "doc-a", "0.5") == trajectory_seed(7, "doc-a", "0.5")
-    assert trajectory_seed(7, "doc-a", "0.5") != trajectory_seed(7, "doc-a", "0.75")
+def test_document_random_streams_are_stable_and_distinct():
+    assert trajectory_seed(7, "doc-a", "fixed") == trajectory_seed(7, "doc-a", "fixed")
+    assert trajectory_seed(7, "doc-a", "fixed") != trajectory_seed(7, "doc-b", "fixed")
+    assert trajectory_seed(7, "doc-a", "fixed") != trajectory_seed(8, "doc-a", "fixed")
 
 
 class ControlledAdapter:
     device = torch.device("cpu")
 
-    def __init__(self, reject=False):
-        self.reject = reject
+    def __init__(self):
         self.contexts = []
         self.cost = RuntimeCost()
 
-    def next(self, context):
-        self.contexts.append(list(context))
-        self.cost.target_forward_calls += 1
-        q = torch.tensor([.8, .2, 0.]).log()
-        p = torch.tensor([0., 0., 1.]).log() if self.reject else q
-        return p, q
 
-    def target_next(self, context):
-        self.contexts.append(list(context))
-        return torch.tensor([0., 0., 1.]).log()
 
     def rows(self, tokens):
+        self.contexts.append(list(tokens))
+        self.cost.target_forward_calls += 1
         q = torch.tensor([.8, .2, 0.]).log().repeat(len(tokens), 1)
         return q.clone(), q
 
 
-def test_rejection_changes_next_prefix_and_no_tokens_escape():
-    adapter = ControlledAdapter(reject=True)
-    prefix = [1, 0]
-    trace = natural_trace(adapter, prefix, rounds=3, seed=17, start_fraction=.5)
-    assert prefix == [1, 0]
-    assert adapter.contexts == [[1, 0], [1, 0, 2], [1, 0, 2, 2]]
-    assert trace["counts"].tolist() == [0, 0, 0]
-    assert trace["generated_tokens"] == 3
-    assert trace["features"].shape == (3, len(FEATURE_NAMES))
-    assert not {"tokens", "logp", "hidden_states", "delta"}.intersection(trace)
 
 
-def test_acceptance_bonus_and_eos_boundaries():
-    trace = natural_trace(ControlledAdapter(), [0, 1], rounds=4, seed=1, start_fraction=.75)
-    assert trace["counts"].tolist() == [1] * 4
-    assert trace["generated_tokens"] == 8
-    for reject, reason in ((False, "bonus_eos"), (True, "correction_eos")):
-        trace = natural_trace(ControlledAdapter(reject), [0, 1], rounds=4, seed=1,
-                              start_fraction=.75, eos_ids=(2,))
-        assert trace["rounds"] == 1
-        assert trace["termination"] == reason
-    trace = natural_trace(ControlledAdapter(), [0, 1], rounds=4, seed=1,
-                          start_fraction=.75, eos_ids=(0, 1))
-    assert trace["termination"] == "accepted_eos"
-    assert trace["generated_tokens"] == 1
 
 
 def test_fixed_probes_exclude_and_count_unsupported_candidates():
@@ -179,7 +144,7 @@ def test_multi_step_mtp_exports_fail_explicitly():
         FrozenAdapter(TinyTarget(), head, "mtp", "cpu")
 
 
-def archive_fixture(n=4, starts=2):
+def archive_fixture(n=4, starts=1):
     lengths = np.full(n * starts, 3, dtype=np.int64)
     x = np.zeros((int(lengths.sum()), 6), dtype=np.float32)
     x[:, 0] = -.7
@@ -190,8 +155,8 @@ def archive_fixture(n=4, starts=2):
                 document_indices=np.repeat(np.arange(n), starts), start_indices=np.tile(np.arange(starts), n),
                 record_ids=np.asarray([f"record-{i}" for i in range(n)]), record_roles=roles,
                 labels=(roles == "member").astype(int))
-    contract = {"protocol": "natural", "starts": ["0.5", "0.75"][:starts],
-                "rounds_per_start": 3, "sources": {}, "data_contract": "four_role_600"}
+    contract = {"protocol": "fixed", "starts": ["fixed"],
+                "rounds_per_start": 0, "sources": {}, "data_contract": "four_role_600"}
     return data, contract
 
 
@@ -208,19 +173,21 @@ def test_archive_roundtrip_and_checksum_rejects_changes(tmp_path):
         load_archive(path)
 
 
-@pytest.mark.parametrize("mutation", ["logp", "duplicate", "counts", "labels", "budget", "nan"])
+@pytest.mark.parametrize("mutation", ["logp", "duplicate", "counts", "labels", "starts", "nan", "protocol"])
 def test_archive_rejects_invalid_or_forbidden_data(mutation):
     data, contract = archive_fixture()
     if mutation == "logp":
         data["logp"] = np.zeros(len(data["features"]))
     elif mutation == "duplicate":
-        data["start_indices"][1] = 0
+        data["document_indices"][1] = 0
     elif mutation == "counts":
-        data["counts"][0] = 2
+        data["counts"][0] = 3
     elif mutation == "labels":
         data["labels"][0] = 1
-    elif mutation == "budget":
-        contract["rounds_per_start"] = 2
+    elif mutation == "starts":
+        contract["starts"] = ["0.5"]
+    elif mutation == "protocol":
+        contract["protocol"] = "natural"
     else:
         data["features"][0, 0] = np.nan
     with pytest.raises(ValueError):
@@ -229,39 +196,25 @@ def test_archive_rejects_invalid_or_forbidden_data(mutation):
 
 def test_training_and_calibration_split_at_document_boundary():
     parts = {"train": np.array([0]), "validation": np.array([1]), "calibration": np.array([2]), "test": np.array([3])}
-    owners = np.repeat(np.arange(4), 2)
+    owners = np.arange(4)
     mapped = trajectory_partitions(parts, owners)
-    assert mapped["train"].tolist() == [0, 1]
-    assert mapped["calibration"].tolist() == [4, 5]
+    assert mapped["train"].tolist() == [0]
+    assert mapped["calibration"].tolist() == [2]
     assert not set(mapped["train"]).intersection(mapped["test"])
 
 
-def test_causal_inputs_reset_each_start_and_never_see_future_outcomes():
-    raw = np.zeros((8, 6), dtype=np.float32)
-    counts = np.ones(8, dtype=np.uint8)
-    features = natural_features(raw, counts, np.array([4, 4]))
-    assert features[0, -1] == features[4, -1] == 0
-    changed = counts.copy()
-    changed[2] = 0
-    np.testing.assert_array_equal(features[:3], natural_features(raw, changed, np.array([4, 4]))[:3])
-    model = CausalAcceptanceGRU(7).eval()
-    x = torch.from_numpy(features[:4])[None]
-    with torch.no_grad():
-        original = model(x, None)
-        x[:, 3] = 100
-        modified = model(x, None)
-    torch.testing.assert_close(original[:, :3], modified[:, :3])
 
 
 def test_fit_is_independent_of_test_and_calibration_features_and_outcomes():
     data, _ = archive_fixture(n=6)
     parts = trajectory_partitions({"train": [0, 1], "validation": [2], "calibration": [3], "test": [4, 5]}, data["document_indices"])
-    x = natural_features(data["features"], data["counts"], data["lengths"])
-    first = fit_causal(x, data["counts"], data["lengths"], parts, seed=17, epochs=2)
-    x[18:] = 200
+    from experiments.shared.methods.difficulty_accept_only import fit
+    x = data["features"][:, [0, 4, 1, 2, 3]].copy()
+    first = fit(x, data["counts"], data["lengths"], parts, seed=17, device="cpu", epochs=2)
+    x[9:] = 200
     counts = data["counts"].copy()
-    counts[18:] = 1
-    second = fit_causal(x, counts, data["lengths"], parts, seed=17, epochs=2)
+    counts[9:] = 2
+    second = fit(x, counts, data["lengths"], parts, seed=17, device="cpu", epochs=2)
     for key, value in first[0].state_dict().items():
         torch.testing.assert_close(value, second[0].state_dict()[key], rtol=0, atol=0)
     np.testing.assert_array_equal(first[1], second[1])
@@ -286,8 +239,7 @@ def test_combined_scores_are_document_level_and_order_invariant():
     logpmf = np.tile(np.log([.7, .3]), (len(data["counts"]), 1))
     combined = document_scores(data, logpmf)
     assert all(value.shape == (4,) for value in combined.values())
-    assert not np.allclose(combined["global_positive"], document_scores(data, logpmf, start_index=0)["global_positive"])
-    order = np.arange(8)[::-1]
+    order = np.arange(4)[::-1]
     events = np.concatenate([np.arange(3 * i, 3 * i + 3) for i in order])
     reordered = {**data, "features": data["features"][events], "counts": data["counts"][events],
                  "document_indices": data["document_indices"][order], "start_indices": data["start_indices"][order]}
@@ -333,7 +285,7 @@ def test_transformers_batchencoding_prompt_compatibility():
     assert protocol_prompt_ids(record, Tokenizer()) == [1, 2]
 
 
-def test_multistart_collection_resumes_and_detects_corruption(tmp_path):
+def test_fixed_collection_resumes_and_detects_corruption(tmp_path):
     from experiments.shared.protocols.collect_protocol_observations import collect_records
     from experiments.shared.data.data import SFTRecord
 
@@ -342,43 +294,36 @@ def test_multistart_collection_resumes_and_detects_corruption(tmp_path):
         records=[record], tokenizer=SimpleNamespace(eos_token_id=None),
         record_ids=np.array(["doc"]), record_roles=np.array(["smoke"]), labels=np.array([0]),
     )
-    contract = {"starts": ["0.5", "0.75"], "protocol": "natural", "seed": 9,
-                "rounds_per_start": 2, "sources": {}, "data_contract": "runtime_smoke_no_membership_claim"}
-    first = ControlledAdapter(reject=True)
+    contract = {"starts": ["fixed"], "protocol": "fixed", "seed": 9,
+                "rounds_per_start": 0, "sources": {}, "data_contract": "runtime_smoke_no_membership_claim"}
+    first = ControlledAdapter()
     path = collect_records(prepared, first, tmp_path, contract)
-    assert first.contexts[0] == [1, 0, 1, 0, 1]
-    assert first.contexts[2] == [1, 0, 1, 0, 1, 0, 1]
+    assert first.contexts == [[1, 0, 1, 0, 1, 0, 1, 0, 1]]
     data, envelope = load_archive(path)
-    assert data["document_indices"].tolist() == [0, 0]
-    assert data["start_indices"].tolist() == [0, 1]
+    assert data["document_indices"].tolist() == [0]
+    assert data["start_indices"].tolist() == [0]
     second = ControlledAdapter()
     collect_records(prepared, second, tmp_path, contract)
     assert not second.contexts
     with pytest.raises(ValueError, match="configuration"):
-        collect_records(prepared, second, tmp_path, {**contract, "rounds_per_start": 3})
+        collect_records(prepared, second, tmp_path, {**contract, "seed": 10})
     with (tmp_path / "trajectories/0_0.npz").open("ab") as stream:
         stream.write(b"bad")
     with pytest.raises(ValueError, match="hash mismatch"):
         collect_records(prepared, second, tmp_path, contract)
 
 
-@pytest.mark.parametrize("protocol", ["natural", "fixed"])
-def test_evaluation_pipeline_calibrates_documents_and_saves_detector(tmp_path, monkeypatch, protocol):
+def test_evaluation_pipeline_calibrates_documents_and_saves_detector(tmp_path, monkeypatch):
     import experiments.shared.methods.protocol_accept_only as scoring
 
-    starts = 2 if protocol == "natural" else 1
-    data, contract = archive_fixture(n=10, starts=starts)
+    data, contract = archive_fixture(n=10)
     # Small controlled fixture; production evaluate still requires 600+2000+2000.
     parts = {"train": np.array([0, 1, 2]), "validation": np.array([3, 4]),
              "reference": np.arange(5), "calibration": np.array([5, 6, 7]), "test": np.array([8, 9])}
     monkeypatch.setattr(scoring, "deployment_partitions", lambda *args: parts)
-    contract.update(protocol=protocol, adapter="plain", head_real_model_validation="not_applicable",
+    contract.update(protocol="fixed", adapter="plain", head_real_model_validation="not_applicable",
                     execution="full_context_reconstruction")
-    if protocol == "fixed":
-        contract["starts"] = ["fixed"]
-        data["counts"][::2] = 2
-    else:
-        data["counts"][::2] = 1
+    data["counts"][::2] = 2
     archive = tmp_path / "observations.npz"
     save_archive(archive, data, contract, [{}] * len(data["lengths"]))
     scoring.evaluate(archive, tmp_path / "evaluation", epochs=2)
@@ -389,7 +334,7 @@ def test_evaluation_pipeline_calibrates_documents_and_saves_detector(tmp_path, m
     with np.load(tmp_path / "evaluation/scores.npz") as scores:
         assert scores["combined__sparse_positive"].shape == (10,)
     saved = torch.load(tmp_path / "evaluation/detector.pt", weights_only=True)
-    assert saved["architecture"] == ("causal_gru_binary" if protocol == "natural" else "difficulty_tcn_count_b2")
+    assert saved["architecture"] == "difficulty_tcn_count_b2"
 
 
 def test_smoke_archive_cannot_be_used_as_membership_evaluation(tmp_path):
@@ -401,3 +346,46 @@ def test_smoke_archive_cannot_be_used_as_membership_evaluation(tmp_path):
     save_archive(path, data, contract, [{}] * len(data["lengths"]))
     with pytest.raises(ValueError, match="smoke"):
         evaluate(path, tmp_path / "evaluation")
+
+
+def test_removed_protocol_cannot_collect_or_launch_a_saved_task(tmp_path):
+    from experiments.shared.protocols.collect_protocol_observations import collect_records
+    from experiments.shared.audit import main, fixed
+    from experiments.sd_membership_sft.audit.qwen_audit_matrix import execute_worker
+
+    output = tmp_path / "removed"
+    contract = {"protocol": "natural", "starts": ["suffix64"]}
+    with pytest.raises(ValueError, match="unsupported audit protocol"):
+        collect_records(None, None, output, contract)
+    task = dict(kind="main", protocol="natural", output=str(output))
+    for runner in (main.run_main, fixed.run_main):
+        with pytest.raises(ValueError, match="unsupported audit protocol"):
+            runner(task, "cpu", None, None, {})
+    with pytest.raises(ValueError, match="unsupported audit protocol"):
+        execute_worker(task)
+    assert not output.exists()
+    assert main.MAIN_METHODS == fixed.MAIN_METHODS == {"fixed": ("main_fixed_sparse_positive",)}
+
+
+def test_retired_serial_entry_points_are_not_importable():
+    import importlib
+
+    for name in ("experiments.shared.protocols.serial_accept_only",
+                 "experiments.sd_membership_sft.serial_accept_only",
+                 "experiments.sd_membership_sft.protocols.serial_accept_only"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(name)
+
+
+def test_direction_cost_summary_keeps_active_costs_without_serial_inputs(tmp_path):
+    from experiments.sd_membership_sft.analysis.summarize_direction_validation import protocol_costs
+
+    assert protocol_costs(tmp_path)["joint_positive_stopping_macro"] == {}
+    folder = tmp_path / "active/condition/seed1"
+    folder.mkdir(parents=True)
+    expected = {level: dict(tpr=.5, actual_fpr=.01, mean_decisions=128., max_decisions=512.)
+                for level in ("0.01", "0.05")}
+    (folder / "REPORT.json").write_text(json.dumps({"positive_stopping": expected}))
+    result = protocol_costs(tmp_path)
+    assert result["joint_positive_stopping_macro"] == expected
+    assert "serial_test_costs" not in result

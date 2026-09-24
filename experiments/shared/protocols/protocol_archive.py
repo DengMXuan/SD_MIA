@@ -1,4 +1,4 @@
-"""Strict observable-only archives for head probes and natural SD trajectories."""
+"""Strict observable-only archives for fixed-candidate probes."""
 from __future__ import annotations
 
 import json
@@ -25,7 +25,15 @@ def atomic_npz(path: Path, values: dict) -> None:
     temporary.replace(path)
 
 
+def validate_contract(contract: dict) -> None:
+    if contract.get("protocol") != "fixed":
+        raise ValueError("unsupported audit protocol")
+    if contract.get("starts") != ["fixed"]:
+        raise ValueError("fixed probes have one document trajectory")
+
+
 def validate_arrays(data: dict, contract: dict) -> None:
+    validate_contract(contract)
     if set(data) != FIELDS:
         raise ValueError(f"unexpected/missing observation fields: {set(data) ^ FIELDS}")
     lengths = data["lengths"]
@@ -58,18 +66,9 @@ def validate_arrays(data: dict, contract: dict) -> None:
             or (x[:, 1:3] > 1 + 1e-5).any() or (x[:, 3:] < 0).any()
             or (x[:, 4:] > 1).any()):
         raise ValueError("invalid observable draft features")
-    protocol = contract["protocol"]
-    if protocol not in ("natural", "fixed"):
-        raise ValueError("unknown protocol")
-    k = 1 if protocol == "natural" else 2
     if (counts.shape != (len(x),) or not np.issubdtype(counts.dtype, np.integer)
-            or (counts < 0).any() or (counts > k).any()):
+            or (counts < 0).any() or (counts > 2).any()):
         raise ValueError("invalid acceptance counts")
-    if protocol == "natural":
-        if contract["rounds_per_start"] < 1 or (lengths > contract["rounds_per_start"]).any():
-            raise ValueError("trajectory exceeds round cap")
-    elif contract["starts"] != ["fixed"]:
-        raise ValueError("fixed probes have one document trajectory")
 
 
 def verify_sources(sources: dict) -> None:

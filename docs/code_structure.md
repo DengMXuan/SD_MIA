@@ -61,7 +61,9 @@ DP sweep 支持 `--model-pairs`。矩阵目录包含 `<model_pair>/epsilon<预�
 
 ## 兼容与验证
 
-旧 Python 名称通过 `MODULE_ALIASES.json` 延迟解析到同一个正式模块对象；旧 `python -m` 入口继续转发到其 `main()`。内部代码只导入正式模块，不再维护 80 个 wrapper 或修改 `__path__`。旧 shell 转发入口和产物软链接继续保留。
+已移除的自然 SD 串行采集器及其旧别名不再提供入口。主方法名称 `main_fixed_sparse_positive`、输出路径及 B=2/TCN/校准规则保持不变。`starts` 和 `rounds_per_start` 仅作为旧请求身份字段保留，不再对应任何生成分支。
+
+其余旧 Python 名称通过 `MODULE_ALIASES.json` 延迟解析到同一个正式模块对象；旧 `python -m` 入口继续转发到其 `main()`。内部代码只导入正式模块，不再维护 80 个 wrapper 或修改 `__path__`。旧 shell 转发入口和产物软链接继续保留。
 
 来源哈希覆盖共享实现、模型目录表、baseline 实现和兼容清单。历史报告保持原始请求与来源指纹；重构不会重新签署历史结果。新代码运行应使用新批次，已有来源不匹配会明确拒绝恢复。
 

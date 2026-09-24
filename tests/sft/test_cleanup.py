@@ -22,7 +22,7 @@ import importlib, sys
 for name in (
     'conditional_accept_only', 'difficulty_accept_only', 'combined_accept_only',
     'collect_draft_difficulty', 'collect_deployment_observations',
-    'deployment_accept_only', 'serial_accept_only',
+    'deployment_accept_only',
     'summarize_combination_validation', 'summarize_priority_validation',
 ):
     importlib.import_module('experiments.sd_membership_sft.' + name)

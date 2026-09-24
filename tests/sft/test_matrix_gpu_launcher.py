@@ -76,7 +76,7 @@ def test_fixed_scope_keeps_original_task_signatures(tmp_path):
         assert digest(task) == digest(previous)
 
 
-def test_fixed_summary_preserves_existing_outputs_and_excludes_natural_cost(tmp_path):
+def test_fixed_summary_preserves_existing_outputs_and_excludes_unselected_worker_cost(tmp_path):
     import json
     from tests.sft.test_qwen_audit_matrix import tasks_at, write_example_result
 
@@ -87,12 +87,12 @@ def test_fixed_summary_preserves_existing_outputs_and_excludes_natural_cost(tmp_
     root = tmp_path / "results"
     (root / "SUMMARY.json").write_text('{"historical":true}')
     before = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
-    for i, task in enumerate((tasks[0], next(t for t in tasks if t.get('protocol') == 'natural'))):
+    for i, task_id in enumerate((tasks[0]['id'], 'retired-worker-task')):
         folder = root / "executions" / str(i)
         folder.mkdir(parents=True)
-        (folder / "STATUS.json").write_text(json.dumps(dict(task=task['id'], worker_wall_seconds=10)))
+        (folder / "STATUS.json").write_text(json.dumps(dict(task=task_id, worker_wall_seconds=10)))
     original_methods = matrix.ALL_METHODS
-    result = launcher_namespace()["summarize_fixed"]([t for t in tasks if t.get('protocol') != 'natural'], root)
+    result = launcher_namespace()["summarize_fixed"](tasks, root)
     assert result['complete'] and result['expected_rows'] == result['completed_rows'] == 24
     assert result['attempted_worker_wall_seconds_sum'] == 10
     assert result['unique_successful_execution_groups'] == 13

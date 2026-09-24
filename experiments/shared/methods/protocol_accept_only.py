@@ -1,95 +1,30 @@
 """Nonmember-only prediction, sparse evidence, and document-level calibration.
 
-Natural SD uses a causal GRU over reached binary outcomes. Fixed probes reuse
-the current difficulty/count TCN. Starts are never split into separate records.
+Fixed probes use the difficulty/count TCN. Records remain disjoint across
+detector training, validation, calibration and testing.
 """
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 from pathlib import Path
 
 import numpy as np
 from scipy.special import logsumexp
 import torch
-from torch import nn
 
 from experiments.shared.core.audit_metrics import membership_metrics, conformal_tail_pvalues, rank_auc
 from experiments.shared.core.audit_partitions import deployment_partitions
 from experiments.shared.core.audit_runtime import _write_json
-from experiments.shared.methods.conditional_accept_only import make_batch, count_nll, assert_partition_contract
+from experiments.shared.methods.conditional_accept_only import make_batch, assert_partition_contract
 from experiments.shared.methods.deployment_accept_only import _decisions
 from experiments.shared.core.deployment_archive import sha256_file
 from experiments.shared.protocols.protocol_archive import load_archive, atomic_npz
 
 
-class CausalAcceptanceGRU(nn.Module):
-    def __init__(self, input_dim: int, channels: int = 24):
-        super().__init__()
-        self.gru = nn.GRU(input_dim, channels, batch_first=True)
-        self.head = nn.Linear(channels, 2)
-
-    def forward(self, x, mask):
-        return torch.log_softmax(self.head(self.gru(x)[0]), dim=-1)
-
-
-def natural_features(features, counts, lengths):
-    previous = np.zeros(len(counts), dtype=np.float32)
-    offset = 0
-    for length in lengths:
-        previous[offset + 1:offset + length] = counts[offset:offset + length - 1]
-        offset += length
-    return np.column_stack((features, previous)).astype(np.float32)
-
-
 def trajectory_partitions(parts, owners):
-    """All starts inherit the document partition, including calibration."""
+    """Map observation rows to document partitions, including calibration."""
     return {name: np.flatnonzero(np.isin(owners, indices)) for name, indices in parts.items()}
-
-
-def fit_causal(x, counts, lengths, parts, *, seed, device="cpu", epochs=30):
-    if epochs < 1:
-        raise ValueError("epochs must be positive")
-    torch.manual_seed(seed)
-    rng = np.random.default_rng(seed)
-    offsets = np.r_[0, lengths.cumsum()]
-    training = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in parts["train"]])
-    mean, scale = x[training].mean(0), x[training].std(0)
-    scale = np.where(scale < 1e-6, 1., scale)
-    standardized = (x - mean) / scale
-    model = CausalAcceptanceGRU(x.shape[1]).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-3)
-    best, best_epoch, state, history = np.inf, 0, None, []
-    for epoch in range(1, epochs + 1):
-        row = {"epoch": epoch}
-        for phase in ("train", "validation"):
-            model.train(phase == "train")
-            indices = rng.permutation(parts[phase]) if phase == "train" else parts[phase]
-            if not len(indices):
-                raise ValueError(f"empty {phase} partition")
-            total = 0.
-            with torch.set_grad_enabled(phase == "train"):
-                for start in range(0, len(indices), 32):
-                    batch = indices[start:start + 32]
-                    bx, by, mask = make_batch(standardized, counts, offsets, batch, device)
-                    loss = count_nll(model(bx, mask), by, mask)
-                    if not torch.isfinite(loss):
-                        raise ValueError("nonfinite conditional acceptance loss")
-                    if phase == "train":
-                        optimizer.zero_grad()
-                        loss.backward()
-                        nn.utils.clip_grad_norm_(model.parameters(), 1.)
-                        optimizer.step()
-                    total += float(loss.detach()) * len(batch)
-            row[phase + "_nll"] = total / len(indices)
-        history.append(row)
-        if row["validation_nll"] < best - 1e-5:
-            best, best_epoch, state = row["validation_nll"], epoch, copy.deepcopy(model.state_dict())
-        if epoch - best_epoch >= 5:
-            break
-    model.load_state_dict(state)
-    return model, mean, scale, history, best_epoch
 
 
 def predict(model, x, counts, lengths, device):
@@ -117,17 +52,14 @@ def evidence_components(logpmf, counts, *, sparse):
     return evidence[:, None, :]
 
 
-def document_scores(data, logpmf, *, start_index=None):
+def document_scores(data, logpmf):
     """Sum fixed alternative evidence within each document, then mix alternatives.
 
-    This does not assume starts are independent for calibration validity:
-    the combined score is calibrated on identically queried nonmember documents.
+    The score is calibrated on identically queried nonmember documents.
     """
     n = len(data["record_ids"])
     offsets = np.r_[0, data["lengths"].cumsum()]
     selected = np.arange(len(data["lengths"]))
-    if start_index is not None:
-        selected = selected[data["start_indices"] == start_index]
     scores = {}
     for sparse in (False, True):
         components = evidence_components(logpmf, data["counts"], sparse=sparse)
@@ -188,26 +120,16 @@ def evaluate(path: Path, output: Path, *, seed=20260914, epochs=30, device="cpu"
     _write_json(config_path, source)
     trajectory_parts = trajectory_partitions(parts, data["document_indices"])
     counts, lengths = data["counts"], data["lengths"]
-    if contract["protocol"] == "natural":
-        x = natural_features(data["features"], counts, lengths)
-        fit = fit_causal
-        architecture = "causal_gru_binary"
-    else:
-        from experiments.shared.methods.difficulty_accept_only import fit
-        x = data["features"][:, [0, 4, 1, 2, 3]]
-        architecture = "difficulty_tcn_count_b2"
+    from experiments.shared.methods.difficulty_accept_only import fit
+    x = data["features"][:, [0, 4, 1, 2, 3]]
+    architecture = "difficulty_tcn_count_b2"
     model, mean, scale, history, best_epoch = fit(
         x, counts, lengths, trajectory_parts, seed=seed, device=device, epochs=epochs,
     )
     logpmf = predict(model, (x - mean) / scale, counts, lengths, device)
-    all_scores, reports = {}, {}
-    scopes = [("combined", None)]
-    if len(contract["starts"]) > 1:
-        scopes.extend((f"start_{index}", index) for index in range(len(contract["starts"])))
-    for scope, start in scopes:
-        scores = document_scores(data, logpmf, start_index=start)
-        reports[scope] = score_metrics(scores, data["labels"], parts, seed=seed)
-        all_scores.update({f"{scope}__{name}": values for name, values in scores.items()})
+    scores = document_scores(data, logpmf)
+    reports = {"combined": score_metrics(scores, data["labels"], parts, seed=seed)}
+    all_scores = {f"combined__{name}": values for name, values in scores.items()}
     checkpoint = output / "detector.pt"
     torch.save({"architecture": architecture, "state_dict": model.state_dict(),
                 "input_dim": x.shape[1], "mean": torch.tensor(mean), "scale": torch.tensor(scale),
@@ -224,7 +146,7 @@ def evaluate(path: Path, output: Path, *, seed=20260914, epochs=30, device="cpu"
         "scores_sha256": sha256_file(output / "scores.npz"),
         "metrics": reports, "costs": envelope["costs"],
         "aggregation": "fixed alternative evidence summed over document trajectories before mixing",
-        "selection": "no direction/start/score selected with member test labels",
+        "selection": "no direction/score selected with member test labels",
         "uncertainty": "document bootstrap AUC; Wilson decision intervals conditional on fitted detector/calibration",
         "head_real_model_validation": contract["head_real_model_validation"],
         "execution": contract["execution"],

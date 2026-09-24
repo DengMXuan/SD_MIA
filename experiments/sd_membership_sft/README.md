@@ -1,6 +1,6 @@
 # SD 成员推理实验
 
-当前批量审计：冻结 Qwen3 8B/1.7B，运行**固定候选主方法和 11 个 baseline**，不再调度自然 SD。主方法是非成员条件接受分布 TCN、草稿难度特征、正向稀疏评分和独立非成员校准。审计辅助集 600 条按 320/80/200 划分为训练、验证、校准；测试集含 2,000 成员和 2,000 非成员。算法、数据划分和指标定义没有因目录重构改变。
+当前批量审计：冻结 Qwen3 8B/1.7B，运行**固定候选主方法和 11 个 baseline**，自然 SD 实现及入口已移除，主方法标识仍为 `main_fixed_sparse_positive`。主方法是非成员条件接受分布 TCN、草稿难度特征、正向稀疏评分和独立非成员校准。审计辅助集 600 条按 320/80/200 划分为训练、验证、校准；测试集含 2,000 成员和 2,000 非成员。算法、数据划分和指标定义没有因目录重构改变。
 
 ## 代码导航
 
@@ -88,4 +88,4 @@ bash experiments/sd_membership_sft/scripts/retrain_unified_matrix.sh --status
 
 默认训练写入上述训练区，权重写入模型区。自定义训练根目录时保持原有独立目录行为；自定义数据划分位置可设置 `SPLIT_ROOT`。
 
-详细设计：[批量审计](docs/QWEN_AUDIT_MATRIX_DESIGN.md)、[自然 SD](docs/NATURAL_SD_DESIGN.md)。旧方法、旧命令和历史结果说明完整保存在 [重构前文档](docs/history/README_before_20260922.md)，其中路径和入口按当时状态记录。迁移核验和恢复说明见 [维护文档](../maintenance/README.md)。
+详细设计：[批量审计](docs/QWEN_AUDIT_MATRIX_DESIGN.md)。旧方法、旧命令和历史结果说明完整保存在 [重构前文档](docs/history/README_before_20260922.md)，其中路径和入口按当时状态记录。迁移核验和恢复说明见 [维护文档](../maintenance/README.md)。

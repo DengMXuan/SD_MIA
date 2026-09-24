@@ -12,8 +12,8 @@ from experiments.shared.audit.devices import check_gpus
 
 
 def fixed_tasks(*args):
-    # Filter whole original task dictionaries: do not alter cache identities.
-    return [task for task in matrix.make_tasks(*args) if task.get("protocol") != "natural"]
+    # Preserve the established public helper and task identities.
+    return matrix.make_tasks(*args)
 
 
 def summarize_fixed(tasks, output_root):
@@ -22,13 +22,13 @@ def summarize_fixed(tasks, output_root):
     result = matrix.summarize(tasks, destination,
                               methods=(*matrix.MAIN_METHODS["fixed"], *matrix.METHODS),
                               execution_root=audit_executions(output_root))
-    result["scope"] = "fixed_candidate_and_baselines_only; natural SD artifacts excluded and preserved"
+    result["scope"] = "fixed_candidate_and_baselines_only"
     matrix._write_json(destination / "SUMMARY.json", result)
     return result
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Qwen fixed-candidate + 11 baselines; resume original outputs, skip natural SD.")
+    parser = argparse.ArgumentParser(description="Qwen fixed-candidate + 11 baselines; resume checked outputs.")
     parser.add_argument("command", choices=("dry-run", "run", "status", "summarize"))
     parser.add_argument("--model-root", type=Path, default=matrix.DEFAULT_MODEL_ROOT)
     parser.add_argument("--output-root", type=Path, default=matrix.DEFAULT_OUTPUT_ROOT)
@@ -37,8 +37,8 @@ def main():
     parser.add_argument("--seeds", nargs="+", type=int, choices=(1919, 1949, 1978), default=[1919, 1949, 1978])
     parser.add_argument("--gpus", nargs="+", type=int, default=[0])
     # Retained exactly for compatibility with pre-existing task signatures.
-    parser.add_argument("--starts", nargs="+", default=["suffix64"], help="legacy cache identity; no natural SD is scheduled")
-    parser.add_argument("--rounds-per-start", type=int, default=32, help="legacy cache identity; no natural SD is scheduled")
+    parser.add_argument("--starts", nargs="+", default=["suffix64"], help="legacy request identity only; does not affect observations")
+    parser.add_argument("--rounds-per-start", type=int, default=32, help="legacy request identity only; does not affect observations")
     parser.add_argument("--audit-seed", type=int, default=20260914)
     parser.add_argument("--detector-epochs", type=int, default=30)
     args = parser.parse_args()
@@ -49,8 +49,6 @@ def main():
     for values in (args.benchmarks, args.epochs, args.seeds, args.starts):
         if len(set(values)) != len(values):
             parser.error("duplicate matrix entries are not allowed")
-    from experiments.shared.protocols.sd_protocol import resolve_starts
-    resolve_starts(2048, args.starts)
     settings = audit_settings(audit_seed=args.audit_seed, detector_epochs=args.detector_epochs, starts=args.starts, rounds_per_start=args.rounds_per_start)
     tasks = fixed_tasks(args.model_root.resolve(), args.output_root.resolve(), args.benchmarks,
                         args.epochs, args.seeds, settings)

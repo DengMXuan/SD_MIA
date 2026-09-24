@@ -28,6 +28,8 @@ from experiments.shared.audit.main import select_documents, sparse_scores, fit_d
 
 
 def run_main(task, device, cfg, prepared, sources):
+    if task.get("protocol") not in MAIN_METHODS:
+        raise ValueError("unsupported audit protocol")
     from experiments.paths import prepare_audit_cache
     from experiments.shared.models.registry import pair_for
     spec = pair_for(task)

@@ -183,12 +183,6 @@ A membership audit that verifies tokens taken from the candidate record under
 that record's original prefixes, regardless of earlier verification outcomes.
 _Avoid_: natural SD trajectory, ordinary generation
 
-**Natural-SD audit**:
-A membership audit based on draft-generated proposals and observable verifier
-feedback along the actual generated continuation of an initial prefix.
-Corrections affect subsequent context rather than resetting it to the record.
-_Avoid_: fixed-candidate replay, teacher-forced continuation
-
 **Edge-side hidden-conditioned drafter**:
 An EAGLE-3 or native MTP prediction head run by the client using the target
 hidden states supplied by the cloud protocol. Its proposal distribution is

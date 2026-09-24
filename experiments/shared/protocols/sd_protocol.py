@@ -1,6 +1,6 @@
-"""Single-proposal SD and fixed-candidate probes over frozen model adapters.
+"""Fixed-candidate probes over frozen model adapters.
 
-Target distributions and generated tokens stay inside this runtime. Returned
+Target distributions stay inside this runtime. Returned
 traces contain only draft features, reached feedback, and accounting metadata.
 Context reconstruction deliberately avoids unsupported hybrid-cache rollback.
 """
@@ -18,27 +18,6 @@ FEATURE_NAMES = (
     "logq", "q_entropy_norm", "q_rank_norm", "q_top1_margin",
     "position_fraction", "start_fraction",
 )
-
-
-def resolve_starts(length: int, starts: list[str]) -> list[int]:
-    """Fractions refer to response tokens, excluding prompt and appended EOS."""
-    if not starts:
-        raise ValueError("at least one start is required")
-    positions = []
-    for start in starts:
-        if start == "suffix64":
-            position = length - 64
-        else:
-            fraction = float(start)
-            if not math.isfinite(fraction) or not 0 < fraction < 1:
-                raise ValueError(f"invalid start fraction: {start}")
-            position = math.floor(fraction * length)
-        if not 0 < position < length:
-            raise ValueError(f"start {start} leaves an empty prefix or suffix at length {length}")
-        if position in positions:
-            raise ValueError(f"duplicate resolved start at response token {position}")
-        positions.append(position)
-    return positions
 
 
 def trajectory_seed(seed: int, record_id: str, start: str) -> int:
@@ -169,54 +148,6 @@ class FrozenAdapter:
     def next(self, tokens: list[int]):
         p, q = self.rows(tokens)
         return p[-1], q[-1]
-
-    @torch.inference_mode()
-    def target_next(self, tokens: list[int]):
-        ids = torch.tensor([tokens], device=self.device)
-        return normalized(self._target(ids).logits[0, -1])
-
-
-@torch.inference_mode()
-def natural_trace(adapter, prefix: list[int], *, rounds: int, seed: int,
-                  start_fraction: float, eos_ids: tuple[int, ...] = ()) -> dict:
-    if not prefix or rounds < 1:
-        raise ValueError("nonempty prefix and positive round budget required")
-    generator = torch.Generator(device=adapter.device).manual_seed(seed)
-    context = list(prefix)
-    features, bits = [], []
-    reason = "round_cap"
-    for index in range(rounds):
-        logp, logq = adapter.next(context)
-        token = int(torch.multinomial(logq.exp(), 1, generator=generator))
-        alpha = torch.exp(torch.minimum(logp[token] - logq[token], logp.new_zeros(())))
-        accepted = bool(torch.rand((), device=adapter.device, generator=generator) < alpha)
-        features.append(draft_features(logq, token, index / rounds, start_fraction))
-        bits.append(int(accepted))
-        if accepted:
-            context.append(token)
-            if token in eos_ids:
-                reason = "accepted_eos"
-                break
-            distribution = adapter.target_next(context).exp()
-        else:
-            distribution = (logp.exp() - logq.exp()).clamp_min(0)
-            mass = distribution.sum()
-            if not mass > 0:
-                raise ValueError("rejection without residual probability mass")
-            distribution = distribution / mass
-        correction_or_bonus = int(torch.multinomial(distribution, 1, generator=generator))
-        context.append(correction_or_bonus)
-        if correction_or_bonus in eos_ids:
-            reason = "bonus_eos" if accepted else "correction_eos"
-            break
-    return {
-        "features": np.asarray(features, dtype=np.float32),
-        "counts": np.asarray(bits, dtype=np.uint8),
-        "generated_tokens": len(context) - len(prefix),
-        "prefix_tokens": len(prefix), "rounds": len(bits),
-        "termination": reason, "supported_candidates": len(bits),
-        "candidate_positions": len(bits),
-    }
 
 
 @torch.inference_mode()

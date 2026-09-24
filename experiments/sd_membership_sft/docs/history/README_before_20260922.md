@@ -1,5 +1,7 @@
 # SD 成员推理实现
 
+> 历史说明：2026-09-25 已移除自然 SD 代码及其旧命令示例。当前入口和目录以 [现行 README](../../README.md) 为准。
+
 2026-09-17 清理后，当前方法与历史实验分开维护。清理仅涉及本目录；`experiments/baseline/`、`experiments/pretraining/`、已有 `tests/` 和实验结果/检查点均未修改。
 
 ## 当前方法
@@ -15,10 +17,9 @@
 | `collect_deployment_observations.py` | 从四角色训练护照重建600+2000+2000条记录；冻结草稿和目标模型，持久化草稿难度特征与B=2接受位，目标概率只在验证器内存中短暂存在 |
 | `deployment_accept_only.py` | 当前独立600条非成员资源合同：重新拟合小型难度TCN、使用稀疏评分＋200统一校准，在2000＋2000测试集上评估 |
 | `lowq_baseline.py` | 固定 low-q 多尺度基线，不再计算不需要的 learned-window 分支 |
-| `serial_accept_only.py` | 独立的自然串行 SD 采集/评估，不能与固定候选指标混排 |
-| `sd_protocol.py`, `protocol_models.py` | 新的独立草稿/EAGLE-3/MTP 冻结适配器；单步自然 SD 与固定候选验证 |
-| `collect_protocol_observations.py`, `protocol_archive.py` | 多起点自然轨迹、固定候选观测、四角色来源校验和断点恢复 |
-| `protocol_accept_only.py` | 自然 SD 因果检测器、固定候选 TCN、稀疏评分与文档级独立校准 |
+| `sd_protocol.py`, `protocol_models.py` | 新的独立草稿/EAGLE-3/MTP 冻结适配器；固定候选验证 |
+| `collect_protocol_observations.py`, `protocol_archive.py` | 固定候选观测、四角色来源校验和断点恢复 |
+| `protocol_accept_only.py` | 固定候选 TCN、稀疏评分与文档级独立校准 |
 | `analyze_conditional_accept_only.py`, `summarize_*_validation.py` | 已有实验的完整汇总，保留负结果及协议边界 |
 
 历史组合实验仍保留 q/位置或难度特征 × global或sparse × 三种校准方式。当前部署候选固定为难度特征＋sparse＋200条统一校准，不再要求1200条校准或默认难度分组。测试集扩大只改变评估精度，不参与检测器拟合、评分选择或阈值设定。
@@ -53,72 +54,6 @@
 ```
 
 以上默认 CPU；语言模型特征采集仍可按原命令使用可用 GPU。
-
-## 多起点自然 SD 与预测头适配（2026-09-19）
-
-新增入口支持独立草稿、EAGLE-3、原生单层 MTP。自然 SD 从正文 token 的
-指定比例处启动，例如 `--starts 0.5 0.75`；也可使用 `--starts suffix64`。
-每个起点使用独立轨迹和随机流，拒绝后的修正影响后续前缀，不恢复原文。
-同一文档的所有轨迹始终属于同一训练/验证/校准/测试角色。
-
-首版每轮提议一个 token，接受后可补充目标 token，拒绝后采样修正 token，
-遇到 EOS 提前停止。`--rounds-per-start 32` 是**每个起点**的上限，两个
-起点最多合计 64 轮；相同总预算的比较可以使用单起点 32 轮与双起点各
-16 轮。此实现不是完整 EAGLE-3 树搜索，也不宣称推理加速：采用完整前缀
-重算以保证正确性，记录实际模型前向次数、输入 token 工作量和生成长度。
-隐藏状态字节数是逻辑张量传输量，并非实测网络流量。
-
-先指定一个**已完成且具有四角色数据合同**的训练目录，然后采集：
-
-```bash
-SD_AUDIT_RUN_DIR=/absolute/path/to/completed/condition
-
-.venv/bin/python -m experiments.sd_membership_sft.collect_protocol_observations collect \
-  --run-dir "$SD_AUDIT_RUN_DIR" --adapter plain --protocol natural \
-  --starts 0.5 0.75 --rounds-per-start 16 --device cuda:0 \
-  --output-dir experiments/results/sft_runs/protocol_audit/example_natural
-
-.venv/bin/python -m experiments.sd_membership_sft.protocol_accept_only \
-  --observations experiments/results/sft_runs/protocol_audit/example_natural/observations.npz \
-  --output-dir experiments/results/sft_runs/protocol_audit/example_natural/evaluation
-```
-
-EAGLE-3/MTP 分别使用 `--adapter eagle3` / `--adapter mtp`，并将 run-dir
-指向对应新矩阵的条件目录；要求 `checkpoints/target` 和
-`heads/auxiliary_head` 都有完成标记，训练护照和共享划分审计一致。端侧
-预测头使用云端隐藏状态，但检测器观测归档仅保存草稿特征和接受计数。
-MTP 使用与冻结目标匹配的 embedding/output 权重，并检查原生一步预测
-的位置偏移。两个头适配器目前只经过接口/协议测试，**尚未经过真实模型验证**。
-
-固定候选对照使用同一采集命令的 `--protocol fixed`，另设输出目录；
-它对真实正文候选进行 B=2 验证，不使用自然轨迹起点。EAGLE 草稿词表外
-的候选不伪造有限 q，不产生接受样本；每篇文档记录总候选数和支持数，
-没有任何支持候选时明确失败。不同协议和不同候选覆盖率不能混报。
-
-自然 SD 使用因果 GRU 预测当前接受分布，只输入已发生的接受历史；固定
-候选复用难度 TCN。两个协议都报告预先固定的正向、负向和双侧 global /
-sparse 评分，以及 q-only 和接受率对照。所有起点的固定备择证据先按
-文档累积再混合，用同预算的独立非成员文档校准；另报各起点的结果。
-测试成员不参与方向、起点、评分或阈值选择。600 条审计辅助数据仍固定
-划分为 320/80/200，完整 2,000+2,000 条审计对象只用于测试。
-
-每个轨迹持久化后可恢复；参数、输入、程序或模型来源变化会拒绝复用。
-每个 `.npz` 都带哈希校验 sidecar。正式评估拒绝不满足四角色合同的旧
-检查点数据，也拒绝运行冒烟归档。旧模型可用以下独立入口验证流程：
-
-```bash
-.venv/bin/python -m experiments.sd_membership_sft.collect_protocol_observations smoke \
-  --run-dir experiments/results/sft_runs/wikitection_qwen3_8b_epoch1 \
-  --adapter plain --starts 0.5 0.75 --rounds-per-start 2 --device cuda:0 \
-  --output-dir experiments/results/sft_runs/protocol_audit/old_qwen_smoke
-```
-
-`smoke` 默认使用合成文本，也可通过 `--smoke-text-file` 指定文本；不拟合
-检测器、不报告成员推理指标。旧 Qwen 的实测归档见
-`experiments/results/sft_runs/natural_sd_extension_smoke_20260919/`：50% 起点
-在第一轮接受 EOS 后停止，75% 起点完成两轮；只证明运行和提前终止流程。
-原有 `serial_accept_only.py` 保留为旧划分下的历史多 token 原型，不作为
-本次正式四角色评估入口。设计与验证说明见 `NATURAL_SD_DESIGN.md`。
 
 ## 四角色数据池
 
@@ -179,7 +114,7 @@ sparse 评分，以及 q-only 和接受率对照。所有起点的固定备择�
 
 入口为 `run_qwen_audit_matrix.sh`，复用已经微调好的 Qwen3-8B / 1.7B。
 默认组合为三个数据集 × epoch 1/3 × seed 1919/1949/1978 × KD/member 两种草稿。
-2026-09-20 起，按用户要求停止后续自然 SD 审计。shell 入口默认每个配置只报告以下 12 个变体：
+每个配置报告以下 12 个变体：
 
 - 固定候选主方法：难度条件 TCN + 正向稀疏评分。
 - 11 个 baseline：loss、min_k_prob、min_k_pp、recall、icp_mia、petal、sead、ws、rs、bt、samia。
@@ -187,13 +122,6 @@ sparse 评分，以及 q-only 和接受率对照。所有起点的固定备择�
 18 个目标条件展开为 **54 个 worker 任务、234 份独立方法输出、432 行配置/方法结果**。
 baseline 只依赖目标模型，每个目标运行一次，两种草稿配置引用同一结果；汇总成本
 不会重复计算，也不会把这些重复展示的行当作额外 seed。
-
-已经保存的自然 SD 报告、轨迹和检测器全部保留，但不再调度或纳入新汇总。
-本次范围调整仅在 shell 启动入口完成：实验 Python 源文件、保留任务的参数、
-标识、输出路径与哈希均不改变，已完成固定候选/baseline 结果继续复用。
-新汇总写入原结果目录下的 `fixed_only_summary/`，不覆盖旧的全方法汇总。
-正在运行的旧进程仍使用旧计划；需 Ctrl-C 并等其退出后，用下面的 shell 命令
-重新启动。直接 `python -m ...qwen_audit_matrix` 仍为原来的含自然 SD 全矩阵入口。
 
 在仓库根目录执行：
 
@@ -229,13 +157,7 @@ bash experiments/sd_membership_sft/run_qwen_audit_matrix.sh run \
   --benchmarks wikitection --epochs 1 --seeds 1919 --gpus 0
 ```
 
-历史自然 SD 默认 `--starts suffix64 --rounds-per-start 32`，从原回答尾部 64 token
-之前开始，每轮提议一个 token，接受/修正后沿实际生成前缀继续，EOS 提前停止。
-这表示最多 32 个候选判定，不是保证生成 64 token。保留 `--starts 0.5 0.75`
-等多起点设置，文档内各起点证据合并后再校准。固定候选始终使用完整原回答，
-B=2；两种协议不是等查询预算，比较时应同时查看成本。
-现在的 shell 入口保留上述参数仅为兼容已有任务签名，不会因此运行自然 SD。
-恢复时继续使用原值，不要为取消自然 SD 而更改这些参数。
+主方法使用完整原回答，B=2；旧任务身份中的起点和轮数字段只作兼容占位。
 
 `--audit-seed 20260914` 控制审计随机性，与三个模型训练/数据 seed 分开；
 `--detector-epochs 30` 控制仅在非成员上拟合的小检测器。大模型始终冻结。
@@ -270,8 +192,7 @@ ROC TPR@10%/1%FPR（保持并列分数完整，取不超过 FPR 上限的可实�
 ms/record、吞吐、目标/草稿调用、输入/输出 token 工作量及峰值 allocated 显存。
 GPU 计时边界同步，数值为墙钟时间。主指标排除模型/数据加载、预热、归档 I/O
 和 ROC/bootstrap 报告开销；worker 总耗时另外记录。逻辑生成序列数与真实
-forward 调用数分开，token 工作量不称为 FLOPs。自然 SD 两种评分共享采集与
-拟合，每行保留独立使用成本，汇总按 execution group 去重。
+forward 调用数分开，token 工作量不称为 FLOPs。汇总按 execution group 去重。
 当前 SD 验证器重建完整前缀，所测速度反映此实验实现，不代表带 KV cache 的
 生产 SD 引擎。检测器在 CPU 上拟合；GPU 主要用于冻结模型的观测采集。
 
