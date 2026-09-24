@@ -17,9 +17,9 @@ from typing import Any
 
 import numpy as np
 
-from experiments.sd_membership_sft.core.replay_cache import (load_delta_data)
-from experiments.sd_membership_sft.analysis.token_signal_anatomy import (ROOT, build_roles, fast_partial_auc)
-from experiments.sd_membership_sft.core.replay_cache import (drop_final_cached_token, load_paired_logps)
+from experiments.shared.core.replay_cache import load_delta_data
+from experiments.sd_membership_sft.analysis.token_signal_anatomy import ROOT, build_roles, fast_partial_auc
+from experiments.shared.core.replay_cache import drop_final_cached_token, load_paired_logps
 
 
 FRACTIONS = (0.01, 0.02, 0.05, 0.10, 0.20, 0.50)

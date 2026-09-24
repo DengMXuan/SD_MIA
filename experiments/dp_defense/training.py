@@ -12,9 +12,9 @@ import secrets
 import numpy as np
 import torch
 
-from experiments.sd_membership_sft.data import collate_sft, make_sft_example
-from experiments.sd_membership_sft.training import _enable_checkpointing, _make_optimizer, _autocast
-from .accounting import PrivacyPlan, epsilon_for
+from experiments.shared.data.data import collate_sft, make_sft_example
+from experiments.shared.training.training import _enable_checkpointing, _make_optimizer, _autocast
+from experiments.dp_defense.accounting import PrivacyPlan, epsilon_for
 
 CHUNK_ELEMENTS = 1 << 20
 

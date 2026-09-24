@@ -7,9 +7,10 @@ import json
 from pathlib import Path
 import shutil
 
-from experiments.sd_membership_sft.audit_runtime import _write_json
-from experiments.sd_membership_sft.deployment_archive import sha256_file, checkpoint_fingerprint
-from experiments.sd_membership_sft.matrix_artifacts import digest, runtime_files
+from experiments.paths import prepare_training_storage
+from experiments.shared.core.audit_runtime import _write_json
+from experiments.shared.core.deployment_archive import sha256_file, checkpoint_fingerprint
+from experiments.shared.audit.artifacts import digest, runtime_files
 
 ROLES = ("target", "draft_auxiliary_distilled", "draft_member_sft")
 
@@ -19,7 +20,7 @@ def dp_runtime_files():
 
 
 def code_sources():
-    from experiments.cross_model_audit.artifacts import runtime_files as audit_runtime_files
+    from experiments.shared.audit.provenance import runtime_files as audit_runtime_files
     return [{"path": str(p.resolve()), "sha256": sha256_file(p)}
             for p in [*audit_runtime_files(), *dp_runtime_files()]]
 
@@ -39,6 +40,7 @@ def owned_run(output: Path, request: dict):
             if any(p.name != ".dp.lock" for p in output.iterdir()):
                 raise ValueError("refusing to adopt a nonempty directory without DP provenance")
             _write_json(path, request)
+        prepare_training_storage(output)
         yield output
 
 
@@ -148,7 +150,7 @@ def verify_run(output: Path):
         if stage is None or stage != artifact["privacy"]["stages"][role]:
             raise ValueError("DP stage missing or differs from training passport")
         stages[role] = stage
-    from .accounting import epsilon_for, pair_budgets
+    from experiments.dp_defense.accounting import epsilon_for, pair_budgets
     for role in ("target", "draft_member_sft"):
         value = stages[role]["privacy"]
         if any(value.get(k) != v for k, v in request["plans"][role].items()):
@@ -162,3 +164,9 @@ def verify_run(output: Path):
     if pairs != artifact["privacy"]["pairs"]:
         raise ValueError("DP deployment-pair accounting mismatch")
     return artifact
+
+
+def evaluation_verification():
+    """DP proof supplied to the common evaluator, without a reverse dependency."""
+    from experiments.shared.audit.evaluation import RunVerification
+    return RunVerification(verify=verify_run, source_files=dp_runtime_files)

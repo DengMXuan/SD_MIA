@@ -5,7 +5,7 @@
 独立执行 DP 微调。目标及独立草稿采用全参数训练，EAGLE-3 / MTP 仅更新
 草稿头的可训练参数、冻结 DP 目标。两次访问成员数据的训练分别计账。
 
-Python 接口支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、Llama 3.1 EAGLE-3
+Python 接口及 train/audit/sweep CLI 支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、Llama 3.1 EAGLE-3
 和 Qwen3.5 MTP 五类现有训练配方。使用 `plan_private_training` / `train_private`
 准备模型，再通过统一的 `evaluate_main` 检验主方法；见[接口与示例](../../docs/main_method_api.md)。
 
@@ -22,14 +22,14 @@ Python 接口支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、Llama 3.1 EAGLE-3
 
 从仓库根目录运行。Opacus 是可选依赖，旧实验不要求安装：
 
-下面保留原 Qwen 独立草稿 CLI 示例；跨模型和草稿头实验使用上述 Python 接口。
+以下以 Qwen 独立草稿为例；更换参考训练目录即可使用已注册的其他基座与 EAGLE-3/MTP 草稿头。CLI 根据训练护照选择对应训练实现。
 
 ```bash
 uv sync --locked --extra dp
 
-DP_REF=experiments/results/sft_runs/unified_matrix_audit600_v2/model_pairs/qwen3/wikitection/epoch1/seed1919
-DP_RUN=experiments/results/sft_runs/dp_defense_v1/models/epsilon4/wikitection/epoch1/seed1919
-DP_AUDIT=experiments/results/sft_runs/dp_defense_v1/audits/epsilon4/wikitection/epoch1/seed1919
+DP_REF=artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3/wikitection/epoch1/seed1919
+DP_RUN=artifacts/training/dp_defense_v1/runs/qwen3/epsilon4/wikitection/epoch1/seed1919
+DP_AUDIT=artifacts/audits/dp_defense_v1/tasks/qwen3/epsilon4/wikitection/epoch1/seed1919
 
 # 只读规划：读取训练护照、来源指纹，反求噪声；不加载模型、不创建结果目录。
 .venv/bin/python -m experiments.dp_defense.train dry-run \
@@ -54,24 +54,33 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 .venv/bin/python -m experiments.dp_defense.audit summarize \
   --run-dir "$DP_RUN" --output-dir "$DP_AUDIT" --include-baselines
 
-# 与原矩阵的非 DP 结果对齐；不存在或不匹配的参考报告会明确报错。
+# 与使用当前代码和同一审计设置生成的非 DP 参考批次对齐。
+# 历史 qwen_fixed_v1 不能作为当前共享生成配置的可比参考。
 .venv/bin/python -m experiments.dp_defense.compare \
-  --dp-root experiments/results/sft_runs/dp_defense_v1/audits \
-  --reference-root experiments/results/sft_runs/qwen_audit_matrix_v1 \
-  --output-dir experiments/results/sft_runs/dp_defense_v1/comparison
+  --dp-root artifacts/audits/dp_defense_v1/tasks \
+  --reference-root artifacts/audits/dp_reference_v1/tasks \
+  --output-dir artifacts/audits/dp_defense_v1/reports
 ```
+
+上述 `dp_reference_v1` 是需要先生成的参考批次，可用跨模型 CLI 的 `--output-root artifacts/audits/dp_reference_v1/tasks` 运行相同模型、数据条件与审计参数。比较器拒绝缺失或不匹配的报告。
 
 单条件 `--max-grad-norm` 默认 1.0，可显式调整；改设置必须换新结果目录。
 恢复时应使用相同参数、运行环境和源码。参考实验只提供数据合同和训练配方，
 不会用其已经非 DP 微调的权重初始化 DP 训练。
 
-矩阵规划提供三个数据集 × 两个 epoch × 三个 seed × 三个 ε，共 54 个条件、
+默认仅选择 `qwen3`。每个模型组合的矩阵规划提供三个数据集 × 两个 epoch × 三个 seed × 三个 ε，共 54 个条件、
 162 份模型产物、108 个草稿审计配置；每个条件只有一份共享目标。
 以下仅打印计划：
 
 ```bash
 .venv/bin/python -m experiments.dp_defense.sweep dry-run
+
+# 五种模型组合：270 个条件、810 份模型产物、540 个草稿审计配置。
+.venv/bin/python -m experiments.dp_defense.sweep dry-run \
+  --model-pairs qwen3 gemma4 qwen3_8b_eagle3 llama31_8b_eagle3 qwen35_9b_mtp
 ```
+
+矩阵训练目录为 `runs/<model_pair>/epsilon<ε>/<benchmark>/epoch<N>/seed<N>`，审计使用相同相对路径放入 `tasks/`，避免跨模型覆盖。旧单模型目录仍可通过单条件命令显式指定；比较器兼容旧布局。`--reference-root` 仅用于单模型覆盖，默认从共享模型注册表读取各自参考根目录。
 
 显式将 `dry-run` 替换为 `train` 或 `audit` 才执行相应阶段。默认顺序执行于
 一个 GPU，不启动后台作业；Ctrl-C 停止当前子进程。可用 `--benchmarks`、
@@ -132,13 +141,12 @@ DP 检查点采用原有 `checkpoints/target`、`draft_auxiliary_distilled`、
 已经完成的目标/KD 阶段可直接复用。恢复预算只覆盖最终发布的训练结果，
 不包括另行暴露的中间模型或先前训练尝试。
 
-新实现放在 `experiments/dp_defense/`，没有修改旧实验源码或其来源指纹算法。
-既有命令、非 DP 默认行为和已有结果不变；新审计则额外绑定 DP 源码及来源。
+防御专属训练、会计与验证放在 `experiments/dp_defense/`，数据、模型加载和检测复用 `experiments/shared/`。新审计额外绑定 DP 源码及来源；历史结果保留原始指纹，代码重构后不重新签署或直接续写旧缓存。
 普通检查点不能被当作 DP 检查点复用，来源/预算/模型变更必须使用新的结果目录。
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_dp_defense.py
-.venv/bin/python -m pytest -q tests experiments/sd_membership_sft/tests
+.venv/bin/python -m pytest -q tests/dp_defense
+.venv/bin/python -m pytest -q
 ```
 
 单元/集成测试覆盖噪声会计、全局逐文档裁剪、空批次、非有限梯度、真实小型

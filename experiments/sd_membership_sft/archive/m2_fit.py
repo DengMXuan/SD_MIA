@@ -34,12 +34,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from experiments.sd_membership_sft.archive.m1_fit import (partial_auc)
-from experiments.sd_membership_sft.archive.m2_features import (M2Features, _u_pool, _w_pool, build_m2_features)
-from experiments.sd_membership_sft.archive.m2_models import (DOC_BATCH, LOGISTIC_L2_GRID, NET_DROPOUTS, NET_WEIGHT_DECAYS, TokenBatcher, TokenGatedNet, DocMLP, fit_doc_standardizer, fit_logistic_grid, search_small_net, train_small_net)
-from experiments.sd_membership_sft.archive.m1_fit import (load_m1_data, make_partitions)
-from experiments.sd_membership_sft.core.scoring_common import (ROOT)
-from experiments.sd_membership_sft.finetune.training import (set_seed)
+from experiments.sd_membership_sft.archive.m1_fit import partial_auc
+from experiments.sd_membership_sft.archive.m2_features import M2Features, _u_pool, _w_pool, build_m2_features
+from experiments.sd_membership_sft.archive.m2_models import DOC_BATCH, LOGISTIC_L2_GRID, NET_DROPOUTS, NET_WEIGHT_DECAYS, TokenBatcher, TokenGatedNet, DocMLP, fit_doc_standardizer, fit_logistic_grid, search_small_net, train_small_net
+from experiments.sd_membership_sft.archive.m1_fit import load_m1_data, make_partitions
+from experiments.shared.core.scoring_common import ROOT
+from experiments.shared.training.training import set_seed
 
 LOGISTIC_METHODS = (
     "B1",

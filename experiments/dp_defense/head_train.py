@@ -11,17 +11,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from experiments.sd_membership_sft.audit_runtime import _write_json
-from experiments.sd_membership_sft.data import collate_sft, make_sft_example
-from experiments.sd_membership_sft.deployment_archive import sha256_file, checkpoint_fingerprint
-from experiments.sd_membership_sft.drafts.common import PAIR_MODELS, cached_snapshot
-from experiments.sd_membership_sft.generalization import load_run_config
-from .head_contract import inspect_head_run, validate_checkpoint
-from experiments.sd_membership_sft.matrix_artifacts import digest
-from experiments.sd_membership_sft.training import load_causal_lm, _autocast, set_seed
-from .accounting import make_plan, pair_budgets
-from .artifacts import ROLES, code_sources, owned_run, read_stage, save_stage, stage_key, verify_run
-from .training import dp_sft_train
+from experiments.shared.core.audit_runtime import _write_json
+from experiments.shared.data.data import collate_sft, make_sft_example
+from experiments.shared.core.deployment_archive import sha256_file, checkpoint_fingerprint
+from experiments.shared.drafts.common import PAIR_MODELS, cached_snapshot
+from experiments.shared.training.generalization import load_run_config
+from experiments.dp_defense.head_contract import inspect_head_run, validate_checkpoint
+from experiments.shared.audit.artifacts import digest
+from experiments.shared.training.training import load_causal_lm, _autocast, set_seed
+from experiments.dp_defense.accounting import make_plan, pair_budgets
+from experiments.dp_defense.artifacts import ROLES, code_sources, owned_run, read_stage, save_stage, stage_key, verify_run
+from experiments.dp_defense.training import dp_sft_train
 
 
 def prepare_request(reference, output, epsilon, clip, gpu):
@@ -29,6 +29,8 @@ def prepare_request(reference, output, epsilon, clip, gpu):
     if reference == output or reference in output.parents or output in reference.parents:
         raise ValueError("DP output must be separate from reference models")
     details = inspect_head_run(reference)
+    if details["kind"] not in ("eagle3", "mtp"):
+        raise ValueError(f"DP training is not implemented for draft family: {details['kind']}")
     cfg = replace(load_run_config(reference), trainer="full", optimizer="adamw8bit", output_dir=output, gpu=gpu,
                   pool_path=details["pool"], run_auxiliary_draft=True, run_member_draft=True)
     for role in ("draft_auxiliary_distilled", "draft_member_sft"):
@@ -68,7 +70,7 @@ def head_loss(kind, target, speculator, batch, device, *, member, temperature=2.
     if any(p.requires_grad for p in target.parameters()) or target.training:
         raise ValueError("head adaptation requires a frozen eval-mode target")
     if kind == "eagle3":
-        from experiments.sd_membership_sft.drafts.eagle3 import _eagle_kd_loss
+        from experiments.shared.drafts.eagle3 import _eagle_kd_loss
         return _eagle_kd_loss(speculator, target, batch, device, temperature)[0]
     with torch.no_grad(), _autocast(device):
         output = target(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
@@ -118,7 +120,7 @@ def fit_auxiliary(model, target, records, tokenizer, device, kind, *, seed, upda
 
 
 def load_initial_head(pair, source_head, target_checkpoint, device):
-    from experiments.sd_membership_sft.drafts.heads import load_eagle3_speculator, load_mtp_speculator
+    from experiments.shared.drafts.heads import load_eagle3_speculator, load_mtp_speculator
     spec = PAIR_MODELS[pair]
     if spec["kind"] == "eagle3":
         return load_eagle3_speculator(spec["speculator"], device, spec["speculator_revision"])
@@ -126,8 +128,8 @@ def load_initial_head(pair, source_head, target_checkpoint, device):
 
 
 def run(reference, output, epsilon, clip, gpu):
-    from experiments.sd_membership_sft.drafts.common import tokenizer_for, tokenizer_source_for
-    from experiments.sd_membership_sft.splits import build_controlled_split_from_shared_manifest
+    from experiments.shared.drafts.common import tokenizer_for, tokenizer_source_for
+    from experiments.shared.data.splits import build_controlled_split_from_shared_manifest
     cfg, details, plans, request = prepare_request(reference, output, epsilon, clip, gpu)
     with owned_run(output, request) as output:
         if (output / "results.json").exists():

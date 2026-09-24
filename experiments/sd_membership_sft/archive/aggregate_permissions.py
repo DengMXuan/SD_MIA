@@ -14,8 +14,8 @@ from typing import Any
 
 import numpy as np
 
-from experiments.sd_membership_sft.archive.full_delta_mia import (_operating_point)
-from experiments.sd_membership_sft.core.audit_metrics import (partial_auc, rank_auc)
+from experiments.sd_membership_sft.archive.full_delta_mia import _operating_point
+from experiments.shared.core.audit_metrics import partial_auc, rank_auc
 
 from experiments.paths import ROOT
 CONDITIONS = tuple((benchmark, epoch) for benchmark in ("wikitection", "newstection", "arxivtection") for epoch in (1, 3))

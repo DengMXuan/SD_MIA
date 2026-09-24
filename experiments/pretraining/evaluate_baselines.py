@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ..sd_membership_sft.m1_fit import make_partitions, evaluate_score_vector, _jsonable
-from .data import load_evaluation
+from experiments.sd_membership_sft.archive.m1_fit import make_partitions, evaluate_score_vector, _jsonable
+from experiments.pretraining.data import load_evaluation
 
 
 def evaluate(manifest_path, baseline_dir, partition_path, output):

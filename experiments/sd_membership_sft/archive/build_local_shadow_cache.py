@@ -10,13 +10,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from experiments.sd_membership_sft.core.audit_runtime import (_deterministic_subset)
-from experiments.sd_membership_sft.core.audit_runtime import (split_indices)
-from experiments.sd_membership_sft.finetune.generalization import (load_run_config)
-from experiments.sd_membership_sft.core.audit_runtime import (BENCHMARKS, N_REF, ROOT, SPLIT_SEED)
-from experiments.sd_membership_sft.analysis.pq_gap_mia import (record_logprobabilities)
-from experiments.sd_membership_sft.core.scoring_common import (prepare_scoring_records)
-from experiments.sd_membership_sft.finetune.training import (add_lora, load_causal_lm, set_seed, sft_train)
+from experiments.shared.core.audit_runtime import _deterministic_subset
+from experiments.shared.core.audit_runtime import split_indices
+from experiments.shared.training.generalization import load_run_config
+from experiments.shared.core.audit_runtime import BENCHMARKS, N_REF, ROOT, SPLIT_SEED
+from experiments.shared.models.token_scores import record_logprobabilities
+from experiments.shared.core.scoring_common import prepare_scoring_records
+from experiments.shared.training.training import add_lora, load_causal_lm, set_seed, sft_train
 
 
 def main() -> None:

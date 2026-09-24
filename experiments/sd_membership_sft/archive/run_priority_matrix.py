@@ -7,7 +7,7 @@ import os
 import queue
 import subprocess
 import sys
-from experiments.sd_membership_sft.methods.difficulty_accept_only import (OUTPUT, feature_root)
+from experiments.shared.methods.difficulty_accept_only import OUTPUT, feature_root
 
 
 def main():
@@ -35,7 +35,7 @@ def main():
         path=OUTPUT/'logs'/f'{a.phase}_{benchmark}_epoch{epoch}_seed{seed}.log'
         env=os.environ.copy()
         if gpu is not None:env['CUDA_VISIBLE_DEVICES']=gpu
-        command=[sys.executable,'-m','experiments.sd_membership_sft.priority_accept_only',a.phase,
+        command=[sys.executable,'-m','experiments.sd_membership_sft.archive.priority_accept_only',a.phase,
                  '--benchmark',benchmark,'--epoch',str(epoch),'--seed',str(seed),
                  '--device','cuda:0' if gpu is not None else 'cpu']
         try:

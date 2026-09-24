@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from . import METHODS
+from experiments.baseline import METHODS
 
 
 CONDITIONS = (

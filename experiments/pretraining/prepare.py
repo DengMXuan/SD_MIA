@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 from huggingface_hub import hf_hub_download
 
-from .data import TARGET, DRAFT, MIMIR_REVISION, TOKEN_CONTRACT, load_tokenizer, tokenizer_hash, sha256
-from ..sd_membership_sft.data import _hash_ids
+from experiments.pretraining.data import TARGET, DRAFT, MIMIR_REVISION, TOKEN_CONTRACT, load_tokenizer, tokenizer_hash, sha256
+from experiments.shared.data.data import _hash_ids
 
 SOURCES = ('arxiv', 'dm_mathematics', 'github', 'hackernews', 'pile_cc', 'pubmed_central', 'wikipedia_(en)', 'full_pile')
 

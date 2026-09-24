@@ -16,11 +16,11 @@ shared tokenizer vocabulary and record that contract in every manifest.
 Generated data and reports use this layout:
 
 ```text
-experiments/data/pretraining/<name>/
+artifacts/data/pretraining/<name>/
 ├── records.jsonl
 └── manifest.json
 
-experiments/results/pretraining/<name>/
+artifacts/audits/pretraining_v1/tasks/<name>/
 ├── baseline/
 │   ├── baseline_metrics.json
 │   ├── baseline_scores.npz
@@ -44,7 +44,7 @@ When pinning a physical GPU with `CUDA_VISIBLE_DEVICES=<n>`, use
 ./.venv/bin/python -m experiments.pretraining.prepare \
   --source 'wikipedia_(en)' --split ngram_13_0.8 \
   --n-per-class 800 --n-aux 100 \
-  --output-dir experiments/data/pretraining/mimir_wikipedia
+  --output-dir artifacts/data/pretraining/mimir_wikipedia
 ```
 
 The official per-domain caches contain 1000 samples per class. The default
@@ -64,7 +64,7 @@ If downloading is unavailable, import the same official cache files:
   --source 'wikipedia_(en)' --split ngram_13_0.8 \
   --member-file /absolute/path/to/train/wikipedia_\(en\)_ngram_13_0.8.jsonl \
   --nonmember-file /absolute/path/to/test/wikipedia_\(en\)_ngram_13_0.8.jsonl \
-  --output-dir experiments/data/pretraining/mimir_wikipedia
+  --output-dir artifacts/data/pretraining/mimir_wikipedia
 ```
 
 Official cache rows are JSON strings. Objects with a `text` field are accepted
@@ -96,9 +96,9 @@ that includes padded rows in its normalizer.
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 ./.venv/bin/python -u -m experiments.baseline.run \
-  --pretraining-manifest experiments/data/pretraining/mimir_wikipedia/manifest.json \
+  --pretraining-manifest artifacts/data/pretraining/mimir_wikipedia/manifest.json \
   --gpu 0 --methods all --attn-implementation sdpa --generation-batch-size 8 \
-  --output-dir experiments/results/pretraining/mimir_wikipedia/baseline
+  --output-dir artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/baseline
 ```
 
 All 11 existing methods use the same scoring functions, progress logging and
@@ -119,9 +119,9 @@ an atomic NPZ before the next method starts. See the recovery instructions in
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 ./.venv/bin/python -u -m experiments.pretraining.extract \
-  --manifest experiments/data/pretraining/mimir_wikipedia/manifest.json \
+  --manifest artifacts/data/pretraining/mimir_wikipedia/manifest.json \
   --device cuda:0 --batch-size 1 --attn-implementation sdpa \
-  --output-dir experiments/results/pretraining/mimir_wikipedia/m1
+  --output-dir artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/m1
 ```
 
 Models are loaded sequentially, not simultaneously. Completed target/draft
@@ -159,11 +159,11 @@ meaningful low-FPR claims. These scaled splits are separate from the original
 
 ```bash
 ./.venv/bin/python -u -m experiments.sd_membership_sft.m1_fit \
-  --feature-dir experiments/results/pretraining/mimir_wikipedia/m1/features \
-  --probability-dir experiments/results/pretraining/mimir_wikipedia/m1/probabilities \
+  --feature-dir artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/m1/features \
+  --probability-dir artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/m1/probabilities \
   --role draft_pretrained --conditional-family linear --detector-families logistic \
   --device cpu \
-  --output-dir experiments/results/pretraining/mimir_wikipedia/m1/fit_linear_logistic
+  --output-dir artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/m1/fit_linear_logistic
 ```
 
 This reuses the existing conditional Q/QH calibration, detectors, validation-only
@@ -178,10 +178,10 @@ For an aligned comparison, evaluate baselines on the **same M1 C/T records**:
 
 ```bash
 ./.venv/bin/python -m experiments.pretraining.evaluate_baselines \
-  --manifest experiments/data/pretraining/mimir_wikipedia/manifest.json \
-  --baseline-dir experiments/results/pretraining/mimir_wikipedia/baseline \
-  --partition-manifest experiments/results/pretraining/mimir_wikipedia/m1/features/partition_manifest.json \
-  --output experiments/results/pretraining/mimir_wikipedia/baseline/m1_matched_metrics.json
+  --manifest artifacts/data/pretraining/mimir_wikipedia/manifest.json \
+  --baseline-dir artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/baseline \
+  --partition-manifest artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/m1/features/partition_manifest.json \
+  --output artifacts/audits/pretraining_v1/tasks/mimir_wikipedia/baseline/m1_matched_metrics.json
 ```
 
 Do not directly compare the baseline full-audit AUC with M1's test-subset AUC.
@@ -189,7 +189,7 @@ Run each source separately and report its actual calibration/test counts.
 
 ## Validation
 
-`tests/test_pretraining.py` uses local, randomly initialized tiny GPT-NeoX models
+`tests/pretraining/test_pretraining.py` uses local, randomly initialized tiny GPT-NeoX models
 with different padded vocab sizes. It runs all baselines, extracts p/q + Q/H,
 fits M1, checks original labels/no-EOS masks, disjoint partitions and detects
 cache tampering. It requires no network or large checkpoint. It verifies the

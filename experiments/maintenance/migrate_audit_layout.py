@@ -14,12 +14,10 @@ from pathlib import Path
 import numpy as np
 
 from experiments.paths import ROOT, TRAINING, QWEN_AUDIT, audit_cache
-from experiments.sd_membership_sft.audit.matrix_artifacts import (
-    checkpoint_inventory, digest, runtime_files, read_result,
-)
-from experiments.sd_membership_sft.core.audit_runtime import _write_json
-from experiments.sd_membership_sft.core.deployment_archive import sha256_file
-from experiments.sd_membership_sft.protocols.protocol_archive import load_archive
+from experiments.shared.audit.artifacts import checkpoint_inventory, digest, runtime_files, read_result
+from experiments.shared.core.audit_runtime import _write_json
+from experiments.shared.core.deployment_archive import sha256_file
+from experiments.shared.protocols.protocol_archive import load_archive
 
 BACKUP = ROOT / 'artifacts/migrations/20260922_layout'
 

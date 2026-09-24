@@ -9,12 +9,12 @@ import tempfile
 import numpy as np
 import torch
 
-from experiments.sd_membership_sft.audit.matrix_costs import timed
-from experiments.sd_membership_sft.audit.matrix_main import select_documents
-from experiments.sd_membership_sft.methods.conditional_accept_only import ConditionalCountTCN, make_batch, count_nll
-from .observations import arrays_digest
-from .partitions import partition_indices
-from .storage import atomic_json, code_fingerprint, digest, file_sha, workspace
+from experiments.shared.audit.costs import timed
+from experiments.shared.audit.main import select_documents
+from experiments.shared.methods.conditional_accept_only import ConditionalCountTCN, make_batch, count_nll
+from experiments.resource_curves.observations import arrays_digest
+from experiments.resource_curves.partitions import partition_indices
+from experiments.resource_curves.storage import atomic_json, code_fingerprint, digest, file_sha, workspace
 
 FEATURE_COLUMNS = [0, 4, 1, 2, 3]
 

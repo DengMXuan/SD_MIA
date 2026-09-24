@@ -97,9 +97,9 @@ into its own directory. All APIs are explicit about the selected budget.
 
 New outputs default to dedicated roots:
 
-- `artifacts/data/splits/resource_curves_v1/`: extension and study manifests.
-- `artifacts/cache/audits/resource_curves_v1/`: observation records and detectors.
-- `artifacts/runs/audits/resource_curves_v1/`: reports and scored records.
+- `artifacts/audits/resource_curves_v1/splits/`: extension and study manifests.
+- `artifacts/audits/resource_curves_v1/intermediate/`: observation records and detectors.
+- `artifacts/audits/resource_curves_v1/tasks/`: reports and scored records.
 
 The library refuses existing unrelated output directories and old artifact
 roots, including aliases through symlinks. Reuse of the same collection/result
@@ -154,7 +154,7 @@ collection recovery, immutable extension selection and runtime provenance.
 ```bash
 CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 \
   TRANSFORMERS_OFFLINE=1 OMP_NUM_THREADS=1 .venv/bin/python -B -m pytest \
-  -q -p no:cacheprovider experiments/resource_curves/tests
+  -q -p no:cacheprovider tests/resource_curves
 ```
 
 No GPU/model experiment or actual pool expansion has been run as part of this

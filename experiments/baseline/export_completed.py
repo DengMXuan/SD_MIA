@@ -7,9 +7,9 @@ from pathlib import Path
 
 import numpy as np
 
-from . import METHODS
-from .run import _render_report
-from .costs import write_cost_report
+from experiments.baseline import METHODS
+from experiments.baseline.reporting import render_report
+from experiments.baseline.costs import write_cost_report
 
 
 def export_completed(execution_dir: Path, output_dir: Path) -> None:
@@ -44,7 +44,7 @@ def export_completed(execution_dir: Path, output_dir: Path) -> None:
             raise FileExistsError(output_dir / name)
     protocol = {**protocol, 'methods': list(scores), 'recovered_from': str(execution_dir)}
     if np.unique(labels).size >= 2:
-        _render_report(output_dir, protocol, scores, labels, costs=costs or None)
+        render_report(output_dir, protocol, scores, labels, costs=costs or None)
     else:
         (output_dir / 'baseline_metrics.json').write_text(json.dumps(
             dict(protocol=protocol, metrics={}, scores=scores, costs=costs), indent=2), encoding='utf-8')

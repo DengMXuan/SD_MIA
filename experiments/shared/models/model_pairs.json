@@ -1,0 +1,42 @@
+{
+  "qwen3": {
+    "name": "qwen3",
+    "adapter": "plain",
+    "target": "Qwen/Qwen3-8B-Base",
+    "draft": "Qwen/Qwen3-1.7B-Base",
+    "target_revision": "49e3418fbbbca6ecbdf9608b4d22e5a407081db4",
+    "draft_revision": "ea980cb0a6c2ae4b936e82123acc929f1cec04c1"
+  },
+  "gemma4": {
+    "name": "gemma4",
+    "adapter": "plain",
+    "target": "google/gemma-4-12B",
+    "draft": "google/gemma-4-E2B",
+    "target_revision": "023679ed352de9bb66cc873c9009ce3482585c08",
+    "draft_revision": "d29ff6b45f081a49ee2733a859c9c9c2d95d1a6f"
+  },
+  "qwen3_8b_eagle3": {
+    "name": "qwen3_8b_eagle3",
+    "adapter": "eagle3",
+    "target": "Qwen/Qwen3-8B",
+    "draft": "RedHatAI/Qwen3-8B-speculator.eagle3",
+    "target_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "draft_revision": "08610ffa01dd9f16731fe8f627b85905b6aa51c4"
+  },
+  "llama31_8b_eagle3": {
+    "name": "llama31_8b_eagle3",
+    "adapter": "eagle3",
+    "target": "unsloth/Meta-Llama-3.1-8B-Instruct",
+    "draft": "RedHatAI/Llama-3.1-8B-Instruct-speculator.eagle3",
+    "target_revision": "a2856192dd7c25b842431f39c179a6c2c2f627d1",
+    "draft_revision": "f4fa34a8f803a0ba75d048d6b3dbc1ad5149e9ac"
+  },
+  "qwen35_9b_mtp": {
+    "name": "qwen35_9b_mtp",
+    "adapter": "mtp",
+    "target": "Qwen/Qwen3.5-9B-Base",
+    "draft": "Qwen/Qwen3.5-9B-Base",
+    "target_revision": "68c46c4b3498877f3ef123c856ecfde50c39f404",
+    "draft_revision": "68c46c4b3498877f3ef123c856ecfde50c39f404"
+  }
+}

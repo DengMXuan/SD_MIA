@@ -1,4 +1,4 @@
-"""Train one opt-in DP condition from a registered plain model-pair recipe."""
+"""DP CLI for registered model pairs, plus the plain-pair training implementation."""
 from __future__ import annotations
 
 import argparse
@@ -8,12 +8,12 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 
-from experiments.sd_membership_sft.audit_runtime import ROOT, _write_json
-from experiments.sd_membership_sft.deployment_archive import sha256_file
-from experiments.sd_membership_sft.generalization import load_run_config
-from experiments.sd_membership_sft.matrix_artifacts import digest
-from .accounting import make_plan, pair_budgets
-from .artifacts import code_sources, owned_run, read_stage, save_stage, stage_key, ROLES
+from experiments.shared.core.audit_runtime import ROOT, _write_json
+from experiments.shared.core.deployment_archive import sha256_file
+from experiments.shared.training.generalization import load_run_config
+from experiments.shared.audit.artifacts import digest
+from experiments.dp_defense.accounting import make_plan, pair_budgets
+from experiments.dp_defense.artifacts import code_sources, owned_run, read_stage, save_stage, stage_key, ROLES
 
 
 def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, gpu: int):
@@ -22,7 +22,7 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
         raise ValueError("DP output must be separate from the reference experiment")
     artifact = json.loads((reference / "results.json").read_text())
     cfg = load_run_config(reference)
-    from experiments.cross_model_audit.model_registry import identify_pair
+    from experiments.shared.models.registry import identify_pair
     spec = identify_pair(artifact)
     if (cfg.trainer != "full" or spec.adapter != "plain"
             or not cfg.target_revision or not cfg.draft_revision
@@ -60,15 +60,15 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
 
 def run(reference, output, epsilon, clip, gpu):
     import torch
-    from experiments.sd_membership_sft.data import records_metadata
-    from experiments.sd_membership_sft.drafts.plain import _load_condition_split
-    from experiments.sd_membership_sft.training import load_causal_lm, load_tokenizer, distill_on_auxiliary, set_seed
-    from .training import dp_sft_train
+    from experiments.shared.data.data import records_metadata
+    from experiments.shared.drafts.plain import _load_condition_split
+    from experiments.shared.training.training import load_causal_lm, load_tokenizer, distill_on_auxiliary, set_seed
+    from experiments.dp_defense.training import dp_sft_train
 
     cfg, reference_artifact, manifest, plans, request = prepare_request(reference, output, epsilon, clip, gpu)
     with owned_run(output, request) as output:
         if (output / "results.json").exists():
-            from .artifacts import verify_run
+            from experiments.dp_defense.artifacts import verify_run
             verify_run(output)
             print(json.dumps({"complete": str(output), "reused": True}))
             return
@@ -93,7 +93,7 @@ def run(reference, output, epsilon, clip, gpu):
             raise ValueError("DP data reconstruction differs from the reference experiment")
         stages = {}
         for role in ROLES:
-            teacher_sha = stages["target"]["checkpoint_sha256"] if role == "draft_auxiliary_distilled" else None
+            teacher_sha = stages["target"]["checkpoint_sha256"] if role == "draft_auxiliary_distilled" or (request.get("head_pair") and role == "draft_member_sft") else None
             key = stage_key(request, role, teacher_sha)
             cached = read_stage(output, role, key)
             if cached is not None:
@@ -150,10 +150,12 @@ def main():
     args = parser.parse_args()
     if args.gpu < 0:
         parser.error("GPU index must be nonnegative")
+    from .api import _trainer
+    trainer = _trainer(args.reference_run)
     if args.command == "run":
-        run(args.reference_run, args.output_dir, args.epsilon, args.max_grad_norm, args.gpu)
+        trainer.run(args.reference_run, args.output_dir, args.epsilon, args.max_grad_norm, args.gpu)
         return
-    _, _, _, plans, request = prepare_request(args.reference_run, args.output_dir,
+    *_, plans, request = trainer.prepare_request(args.reference_run, args.output_dir,
                                              args.epsilon, args.max_grad_norm, args.gpu)
     if args.command == "dry-run":
         print(json.dumps({"request": request, "pairs": pair_budgets(*(p.as_dict() for p in plans.values()))}, indent=2))
@@ -163,7 +165,7 @@ def main():
         if manifest.exists() and json.loads(manifest.read_text()) != request:
             raise ValueError("DP request changed")
         for role in ROLES:
-            teacher = stages.get("target", {}).get("checkpoint_sha256") if role == "draft_auxiliary_distilled" else None
+            teacher = stages.get("target", {}).get("checkpoint_sha256") if role == "draft_auxiliary_distilled" or (request.get("head_pair") and role == "draft_member_sft") else None
             stage = read_stage(args.output_dir, role, stage_key(request, role, teacher))
             stages[role] = stage or {}
         print(json.dumps({"stages": {k: "complete" if v else "pending" for k, v in stages.items()}}, indent=2))

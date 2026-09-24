@@ -1,30 +1,34 @@
 """Refit the existing B=2 difficulty TCN separately for each DP draft condition."""
 from __future__ import annotations
 
+from experiments.shared.audit.config import audit_settings
 import argparse
 from contextlib import ExitStack
 import fcntl
 import json
 from pathlib import Path
 
-from experiments.sd_membership_sft.audit_runtime import _write_json
-from experiments.sd_membership_sft.deployment_archive import sha256_file
-from experiments.sd_membership_sft.matrix_artifacts import digest, sources_for, read_result
-from experiments.sd_membership_sft.matrix_baselines import BASELINE_DEFAULTS, METHODS
-from .artifacts import dp_runtime_files, verify_run
+from experiments.shared.core.audit_runtime import _write_json
+from experiments.shared.core.deployment_archive import sha256_file
+from experiments.shared.audit.provenance import digest, sources_for, read_result
+from experiments.shared.models.registry import identify_pair
+from experiments.shared.models.loading import prepare_records
+from experiments.shared.audit.fixed import run_main
+from experiments.shared.audit.baselines import BASELINE_DEFAULTS, METHODS
+from experiments.dp_defense.artifacts import dp_runtime_files, verify_run
 
 
 def make_tasks(run_dir, output, artifact, *, seed=20260914, epochs=30, baselines=False):
     if epochs <= 0:
         raise ValueError("detector epochs must be positive")
     cfg = artifact["config"]
-    condition = dict(benchmark=cfg["benchmark"], epoch=cfg["target_epochs"], condition_seed=cfg["seed"])
-    settings = dict(starts=["suffix64"], rounds_per_start=32, audit_seed=seed,
-                    detector_epochs=epochs, baseline=BASELINE_DEFAULTS)
-    common = dict(run_dir=str(run_dir.resolve()), condition=condition, settings=settings,
+    spec = identify_pair(artifact)
+    condition = dict(benchmark=cfg["benchmark"], epoch=cfg["target_epochs"], condition_seed=cfg["seed"], model_pair=spec.name)
+    settings = audit_settings(audit_seed=seed, detector_epochs=epochs)
+    common = dict(run_dir=str(run_dir.resolve()), condition=condition, settings=settings, model_pair=spec.name,
                   dp_request_key=artifact["privacy"]["request_key"])
     tasks = []
-    for role in ("draft_auxiliary_distilled", "draft_member_sft"):
+    for role in spec.roles:
         tasks.append({**common, "id": str(output.resolve() / role / "fixed"),
                       "output": str(output.resolve() / role / "fixed"), "kind": "main",
                       "draft_role": role, "protocol": "fixed", "methods": ["main_fixed_sparse_positive"]})
@@ -34,8 +38,8 @@ def make_tasks(run_dir, output, artifact, *, seed=20260914, epochs=30, baselines
     return tasks
 
 
-def audit_sources(run_dir, roles):
-    sources = sources_for(run_dir, roles)
+def audit_sources(run_dir, roles, *, adapter="plain"):
+    sources = sources_for(run_dir, roles, adapter=adapter)
     sources["files"] += [{"path": str(p.resolve()), "sha256": sha256_file(p)}
                          for p in [*dp_runtime_files(), run_dir / "DP_REQUEST.json"]]
     return sources
@@ -87,21 +91,21 @@ def run_audit(run_dir, output, *, device="cuda:0", seed=20260914, epochs=30, bas
             _write_json(request, tasks)
         if execute:
             import torch
-            from experiments.sd_membership_sft.protocol_models import prepare_records
-            from experiments.sd_membership_sft.matrix_main import run_main
-            from experiments.sd_membership_sft.matrix_baselines import run_baselines
+            from experiments.shared.audit.baselines import run_baselines
             torch.set_num_threads(2)
             if torch.device(device).type != "cuda" or not torch.cuda.is_available():
                 raise RuntimeError("real-model audit requires CUDA")
-            cfg, prepared = prepare_records(run_dir, "plain")
+            spec = identify_pair(artifact)
             for task in tasks:
+                cfg, prepared = prepare_records(run_dir, spec.adapter, task.get("draft_role"))
                 roles = ["target"] if task["kind"] == "baseline" else ["target", task["draft_role"]]
-                sources = audit_sources(run_dir, roles)
+                sources = audit_sources(run_dir, roles, adapter=spec.adapter)
                 (run_baselines if task["kind"] == "baseline" else run_main)(task, device, cfg, prepared, sources)
                 for method in task["methods"]:
                     path = Path(task["output"]) / method / "REPORT.json"
                     report = json.loads(path.read_text())
                     pair_role = task.get("draft_role", "draft_auxiliary_distilled")
+                    pair_role = {"auxiliary_head": "draft_auxiliary_distilled", "member_head": "draft_member_sft"}.get(pair_role, pair_role)
                     # Extend the ordinary schema without touching old evaluators.
                     privacy = {**artifact["privacy"]["pairs"][pair_role],
                                "target_epsilon_cap": artifact["privacy"]["stages"]["target"]["privacy"]["epsilon"],

@@ -10,9 +10,9 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
-RESULTS_ROOT=${RESULTS_ROOT:-artifacts/runs/training/controlled_sft_v2/model_pairs}
-if [[ "$RESULTS_ROOT" == "artifacts/runs/training/controlled_sft_v2/model_pairs" ]]; then
-  SPLIT_ROOT=${SPLIT_ROOT:-artifacts/data/splits/controlled_sft_v2}
+RESULTS_ROOT=${RESULTS_ROOT:-artifacts/training/controlled_sft_v2/runs/model_pairs}
+if [[ "$RESULTS_ROOT" == "artifacts/training/controlled_sft_v2/runs/model_pairs" ]]; then
+  SPLIT_ROOT=${SPLIT_ROOT:-artifacts/training/controlled_sft_v2/splits}
 else
   SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 fi
@@ -149,7 +149,7 @@ import sys
 import torch
 from huggingface_hub import snapshot_download
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from experiments.sd_membership_sft.head_matrix_preflight import prepare_shared_splits
+from experiments.sd_membership_sft.finetune.head_matrix_preflight import prepare_shared_splits
 
 split_root = Path(sys.argv[1])
 gpu_indices = [int(value) for value in sys.argv[2].split()]
@@ -267,7 +267,7 @@ run_condition() {
     resume=(--resume)
   fi
   command=(
-    "$PYTHON" -u -m experiments.sd_membership_sft.drafts.plain
+    "$PYTHON" -u -m experiments.shared.drafts.plain
     --gpu 0
     --target-model "$target_model" --draft-model "$draft_model"
     --target-revision "$target_revision" --draft-revision "$draft_revision"

@@ -15,15 +15,15 @@ from scipy.special import logsumexp, expit
 import torch
 from torch import nn
 from torch.nn import functional as F
-from experiments.sd_membership_sft.methods.conditional_accept_only import (ConditionalCountTCN, Observations, observable_inputs, make_batch, count_nll, replay_observations, directional_scores)
-from experiments.sd_membership_sft.core.audit_partitions import legacy_partitions as record_partitions
-from experiments.sd_membership_sft.core.replay_cache import (load_replay_data)
-from experiments.sd_membership_sft.core.audit_metrics import (membership_metrics)
-from experiments.sd_membership_sft.core.audit_runtime import (_record_uniforms)
-from experiments.sd_membership_sft.core.audit_metrics import (conformal_tail_pvalues)
-from experiments.sd_membership_sft.core.audit_runtime import (ROOT, _paths, _write_json)
+from experiments.shared.methods.conditional_accept_only import ConditionalCountTCN, Observations, observable_inputs, make_batch, count_nll, replay_observations, directional_scores
+from experiments.shared.core.audit_partitions import legacy_partitions as record_partitions
+from experiments.shared.core.replay_cache import load_replay_data
+from experiments.shared.core.audit_metrics import membership_metrics
+from experiments.shared.core.audit_runtime import _record_uniforms
+from experiments.shared.core.audit_metrics import conformal_tail_pvalues
+from experiments.shared.core.audit_runtime import ROOT, _paths, _write_json
 
-from experiments.sd_membership_sft.methods.difficulty_accept_only import (RESULTS, OUTPUT, TILTS, restored_baseline, token_evidence, aggregate, record_nll, feature_root, load_feature_observations, expanded_calibration, group_pvalues, calibration_analysis, finish)
+from experiments.shared.methods.difficulty_accept_only import RESULTS, OUTPUT, TILTS, restored_baseline, token_evidence, aggregate, record_nll, feature_root, load_feature_observations, expanded_calibration, group_pvalues, calibration_analysis, finish
 
 
 

@@ -11,9 +11,9 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
 PYTHON=${PYTHON:-.venv/bin/python}
-RESULTS_ROOT=${RESULTS_ROOT:-artifacts/runs/training/controlled_sft_v2}
-if [[ "$RESULTS_ROOT" == "artifacts/runs/training/controlled_sft_v2" ]]; then
-  SPLIT_ROOT=${SPLIT_ROOT:-artifacts/data/splits/controlled_sft_v2}
+RESULTS_ROOT=${RESULTS_ROOT:-artifacts/training/controlled_sft_v2/runs}
+if [[ "$RESULTS_ROOT" == "artifacts/training/controlled_sft_v2/runs" ]]; then
+  SPLIT_ROOT=${SPLIT_ROOT:-artifacts/training/controlled_sft_v2/splits}
 else
   SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 fi
@@ -89,7 +89,7 @@ fi
 
 run_preflight() {
   local -a command=(
-    "$PYTHON" -u -m experiments.sd_membership_sft.unified_matrix_preflight
+    "$PYTHON" -u -m experiments.sd_membership_sft.finetune.unified_matrix_preflight
     --split-root "$SPLIT_ROOT"
     --model-revisions-env "$MODEL_REVISIONS_ENV"
     --gpus "${GPUS[@]}"

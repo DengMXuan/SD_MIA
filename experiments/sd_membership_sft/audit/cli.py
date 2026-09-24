@@ -1,36 +1,14 @@
 """Fixed-candidate audit coordinator; preserved legacy task identities are migrated explicitly."""
+from experiments.shared.audit.config import audit_settings
 import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
 
+from experiments.paths import audit_reports, audit_executions
 from experiments.sd_membership_sft.audit import qwen_audit_matrix as matrix
 
 
-def check_gpus(gpus):
-    if not gpus or len(set(gpus)) != len(gpus) or any(g < 0 for g in gpus):
-        raise ValueError("choose distinct nonnegative physical GPUs")
-    limit = int(os.environ.get("SD_AUDIT_GPU_MAX_USED_MIB", "1024"))
-    if limit < 0:
-        raise ValueError("SD_AUDIT_GPU_MAX_USED_MIB must be nonnegative")
-    inventory = subprocess.check_output(
-        ["nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits"],
-        text=True,
-    )
-    used = {}
-    for line in inventory.splitlines():
-        if line.strip():
-            index, memory = line.split(",")
-            used[int(index)] = int(memory.strip())
-    for gpu in gpus:
-        if gpu not in used:
-            raise RuntimeError(f"GPU {gpu} is absent")
-        if used[gpu] > limit:
-            raise RuntimeError(
-                f"GPU {gpu} uses {used[gpu]} MiB, above the background allowance of {limit} MiB "
-                "(SD_AUDIT_GPU_MAX_USED_MIB)"
-            )
+from experiments.shared.audit.devices import check_gpus
 
 
 def fixed_tasks(*args):
@@ -40,18 +18,10 @@ def fixed_tasks(*args):
 
 def summarize_fixed(tasks, output_root):
     # Preserve existing whole-matrix summaries and all per-method artifacts.
-    destination = output_root / "fixed_only_summary"
-    original_methods = matrix.ALL_METHODS
-    matrix.ALL_METHODS = (*matrix.MAIN_METHODS["fixed"], *matrix.METHODS)
-    try:
-        result = matrix.summarize(tasks, destination)
-    finally:
-        matrix.ALL_METHODS = original_methods
-    selected = {task["id"] for task in tasks}
-    attempts = [json.loads(path.read_text()) for path in
-                (output_root / "executions").glob("*/STATUS.json")]
-    result["attempted_worker_wall_seconds_sum"] = sum(
-        row.get("worker_wall_seconds", 0.) for row in attempts if row.get("task") in selected)
+    destination = audit_reports(output_root)
+    result = matrix.summarize(tasks, destination,
+                              methods=(*matrix.MAIN_METHODS["fixed"], *matrix.METHODS),
+                              execution_root=audit_executions(output_root))
     result["scope"] = "fixed_candidate_and_baselines_only; natural SD artifacts excluded and preserved"
     matrix._write_json(destination / "SUMMARY.json", result)
     return result
@@ -79,11 +49,9 @@ def main():
     for values in (args.benchmarks, args.epochs, args.seeds, args.starts):
         if len(set(values)) != len(values):
             parser.error("duplicate matrix entries are not allowed")
-    from experiments.sd_membership_sft.protocols.sd_protocol import resolve_starts
+    from experiments.shared.protocols.sd_protocol import resolve_starts
     resolve_starts(2048, args.starts)
-    settings = dict(starts=args.starts, rounds_per_start=args.rounds_per_start, audit_seed=args.audit_seed,
-                    detector_epochs=args.detector_epochs, baseline=matrix.BASELINE_DEFAULTS,
-                    baseline_execution="shared_robustness_reference_v1")
+    settings = audit_settings(audit_seed=args.audit_seed, detector_epochs=args.detector_epochs, starts=args.starts, rounds_per_start=args.rounds_per_start)
     tasks = fixed_tasks(args.model_root.resolve(), args.output_root.resolve(), args.benchmarks,
                         args.epochs, args.seeds, settings)
     if args.command in ("dry-run", "status"):
@@ -91,7 +59,7 @@ def main():
         print(json.dumps(dict(scope="fixed_candidate_and_baselines_only",
                               audit_configurations=conditions * len(matrix.ROLES), worker_tasks=len(tasks),
                               expected_method_rows=conditions * len(matrix.ROLES) * (len(matrix.METHODS) + 1),
-                              summary_directory=str(args.output_root.resolve() / "fixed_only_summary"),
+                              summary_directory=str(audit_reports(args.output_root)),
                               settings=settings, states={task["id"]: matrix.inspect_task(task) for task in tasks}), indent=2))
         return
     # Both initial preflight and between-task dispatch use the relaxed check.

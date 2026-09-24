@@ -19,9 +19,9 @@ from typing import Any
 
 import numpy as np
 
-from experiments.sd_membership_sft.analysis.directional_mia import (record_features)
-from experiments.sd_membership_sft.archive.m1_fit import (CALIBRATION_RATES, FIT_VERSION, M1Data, _jsonable, evaluate_score_vector, fixed_probability_baseline_scores, fit_detector, make_partitions, probability_b2_values)
-from experiments.sd_membership_sft.analysis.m1_features import (aggregate_matrix)
+from experiments.sd_membership_sft.analysis.directional_mia import record_features
+from experiments.sd_membership_sft.archive.m1_fit import CALIBRATION_RATES, FIT_VERSION, M1Data, _jsonable, evaluate_score_vector, fixed_probability_baseline_scores, fit_detector, make_partitions, probability_b2_values
+from experiments.shared.methods.features import aggregate_matrix
 
 
 from experiments.paths import ROOT
@@ -153,7 +153,7 @@ def run_probability_baseline(
     method_scores["B2/logistic"] = detector.scores(b2_values, 20260909)
     bootstrap = None
     if bootstrap_repeats > 0:
-        from experiments.sd_membership_sft.archive.m1_fit import (make_bootstrap_indices)
+        from experiments.sd_membership_sft.archive.m1_fit import make_bootstrap_indices
 
         bootstrap = make_bootstrap_indices(
             int(np.sum(labels[partitions["test"]] == 1)),

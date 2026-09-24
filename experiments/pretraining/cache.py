@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .data import TOKEN_CONTRACT, sha256
+from experiments.pretraining.data import TOKEN_CONTRACT, sha256
 
 ROLE = 'draft_pretrained'
 
@@ -58,7 +58,7 @@ def validate_cache_provenance(feature_dir, probability_dir, feature, probability
 
 
 def freeze_partitions(labels, record_ids, output, seed=20260824):
-    from ..sd_membership_sft.m1_fit import Partitions, partition_manifest, make_partitions
+    from experiments.sd_membership_sft.archive.m1_fit import Partitions, partition_manifest, make_partitions
     rng = np.random.default_rng(seed)
     indices = {name: [] for name in ('nuisance_location', 'nuisance_scale', 'detector_fit', 'validation', 'calibration', 'test')}
     for label in (1, 0):

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .run import _render_report
+from experiments.baseline.reporting import render_report
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,7 +77,7 @@ def main() -> None:
         }
     )
     scores = {"samia": samia.astype(np.float64).tolist()}
-    _render_report(args.output_dir, protocol, scores, labels)
+    render_report(args.output_dir, protocol, scores, labels)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         args.output_dir / "baseline_scores.npz",

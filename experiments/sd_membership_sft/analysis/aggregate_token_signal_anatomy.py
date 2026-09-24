@@ -17,12 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from experiments.sd_membership_sft.analysis.token_signal_anatomy import (
-    ROOT,
-    build_roles,
-    fast_partial_auc,
-    matching_global_baseline,
-)
+from experiments.sd_membership_sft.analysis.token_signal_anatomy import ROOT, build_roles, fast_partial_auc, matching_global_baseline
 
 
 SHORT_BENCHMARKS = ("wikitection", "newstection")

@@ -29,25 +29,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from experiments.sd_membership_sft.datasets.data import SFTRecord, collate_sft, make_sft_example, prompt_prefix_ids
-from experiments.sd_membership_sft.finetune.generalization import load_draft_model, load_run_config
-from experiments.sd_membership_sft.analysis.m1_features import (
-    ACTIVATION_FEATURE_NAMES,
-    ACTIVATION_STAT_NAMES,
-    M1_FEATURE_NAMES,
-    Q_FEATURE_NAMES,
-    SELECTED_BLOCKS,
-    activation_statistics,
-    q_features_from_logits,
-)
+from experiments.shared.data.data import SFTRecord, collate_sft, make_sft_example, prompt_prefix_ids
+from experiments.shared.training.generalization import load_draft_model, load_run_config
+from experiments.shared.methods.features import ACTIVATION_FEATURE_NAMES, ACTIVATION_STAT_NAMES, M1_FEATURE_NAMES, Q_FEATURE_NAMES, SELECTED_BLOCKS, activation_statistics, q_features_from_logits
 from experiments.sd_membership_sft.analysis.pq_gap_mia import LOGSUMEXP_SEQUENCE_CHUNK, selected_token_logprobs
-from experiments.sd_membership_sft.core.scoring_common import (
-    prepare_scoring_records,
-    resolve_checkpoint_path,
-    resolve_run_dir,
-    role_provenance,
-)
-from experiments.sd_membership_sft.finetune.training import set_seed
+from experiments.shared.core.scoring_common import prepare_scoring_records, resolve_checkpoint_path, resolve_run_dir, role_provenance
+from experiments.shared.training.training import set_seed
 
 
 from experiments.paths import ROOT

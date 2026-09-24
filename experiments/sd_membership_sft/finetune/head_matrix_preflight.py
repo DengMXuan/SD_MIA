@@ -12,14 +12,9 @@ from typing import Any
 
 from transformers import AutoConfig, AutoTokenizer
 
-from experiments.sd_membership_sft.core.data_contract import DEFAULT_DATA_CONTRACT
-from experiments.sd_membership_sft.drafts.common import PAIR_MODELS, ROOT, cached_snapshot, tokenizer_source_for
-from experiments.sd_membership_sft.datasets.splits import (
-    CONTROLLED_SPLIT_SCHEMA_VERSION,
-    build_controlled_split_from_shared_manifest,
-    pool_path,
-    prepare_shared_split_manifest,
-)
+from experiments.shared.core.data_contract import DEFAULT_DATA_CONTRACT
+from experiments.shared.drafts.common import PAIR_MODELS, ROOT, cached_snapshot, tokenizer_source_for
+from experiments.shared.data.splits import CONTROLLED_SPLIT_SCHEMA_VERSION, build_controlled_split_from_shared_manifest, pool_path, prepare_shared_split_manifest
 
 
 BENCHMARKS = ("wikitection", "newstection", "arxivtection")
@@ -32,7 +27,7 @@ def parse_args() -> argparse.Namespace:
         "--split-root",
         type=Path,
         default=Path(
-            "artifacts/data/splits/controlled_sft_v2"
+            "artifacts/training/controlled_sft_v2/splits"
         ),
     )
     parser.add_argument("--gpus", nargs="+", type=int, default=[3, 4, 5, 6])

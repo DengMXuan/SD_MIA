@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from experiments.cross_model_audit.model_registry import identify_pair
+from experiments.shared.models.registry import identify_pair
 
 
 def _trainer(reference_run):
@@ -10,10 +10,12 @@ def _trainer(reference_run):
     if "privacy" in artifact or (reference_run / "DP_REQUEST.json").exists():
         raise ValueError("use the ordinary reference recipe; DP models start from pinned public bases")
     spec = identify_pair(artifact)
-    if spec.adapter == "plain":
-        from . import train
+    if spec.adapter not in ("plain", "eagle3", "mtp"):
+        raise ValueError(f"DP training is not implemented for draft family: {spec.adapter}")
+    if not spec.is_head:
+        from experiments.dp_defense import train
         return train
-    from . import head_train
+    from experiments.dp_defense import head_train
     return head_train
 
 
@@ -39,5 +41,5 @@ ordinary reference checkpoint. Completed stages are reused after verification.
         raise ValueError("GPU must be a nonnegative logical device index")
     reference_run, output = Path(reference_run).resolve(), Path(output_dir).resolve()
     _trainer(reference_run).run(reference_run, output, epsilon, max_grad_norm, gpu)
-    from .artifacts import verify_run
+    from experiments.dp_defense.artifacts import verify_run
     return verify_run(output)

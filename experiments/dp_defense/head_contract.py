@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments.sd_membership_sft.core.deployment_archive import sha256_file
-from experiments.sd_membership_sft.drafts.common import PAIR_MODELS, CHECKPOINT_MARKER
+from experiments.shared.core.deployment_archive import sha256_file
+from experiments.shared.drafts.common import PAIR_MODELS, CHECKPOINT_MARKER
 
 HEAD_ROLES = {"draft_auxiliary_distilled": ("aux_head", "auxiliary_head", "aux"),
               "draft_member_sft": ("member_head", "member_head", "member")}

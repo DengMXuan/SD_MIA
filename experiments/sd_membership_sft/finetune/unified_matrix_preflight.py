@@ -9,13 +9,8 @@ from typing import Any
 
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-from experiments.sd_membership_sft.drafts.common import ROOT, cached_snapshot
-from experiments.sd_membership_sft.finetune.head_matrix_preflight import (
-    _has_weights,
-    prepare_shared_splits,
-    validate_cached_models,
-    validate_gpus,
-)
+from experiments.shared.drafts.common import ROOT, cached_snapshot
+from experiments.sd_membership_sft.finetune.head_matrix_preflight import _has_weights, prepare_shared_splits, validate_cached_models, validate_gpus
 
 
 PLAIN_PAIR_MODELS = {
@@ -40,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         "--split-root",
         type=Path,
         default=Path(
-            "artifacts/data/splits/controlled_sft_v2"
+            "artifacts/training/controlled_sft_v2/splits"
         ),
     )
     parser.add_argument(

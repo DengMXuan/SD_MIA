@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, SuppressTokensLogitsProcessor
 
-from ..sd_membership_sft.data import SFTRecord, _hash_ids
+from experiments.shared.data.data import SFTRecord, _hash_ids
 
 TARGET = {'repo_id': 'EleutherAI/pythia-6.9b', 'revision': '21bfa02e806e253fe453702c29c81d9f83617255'}
 DRAFT = {'repo_id': 'EleutherAI/pythia-1.4b', 'revision': '9cc5c8c8148a4e0115d9e29c6b4f21124cfe748a'}

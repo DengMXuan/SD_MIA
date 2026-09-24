@@ -1,8 +1,8 @@
 # 独立跨模型验证入口
 
-本目录为后续跨模型验证提供可选入口。**现有 `sd_membership_sft/run_qwen_audit_matrix.sh`、共享模块、baseline 实现及当前 Qwen 结果均未修改。** 本目录不在旧 Qwen 的 `runtime_files()` 指纹范围内，因此新增这里的代码不会使当前结果或断点失效。新进程也不替换、修改旧模块的全局函数。
+本目录维护跨模型条件选择、CLI 和 worker 入口。模型注册、草稿路由、调度和报告实现统一位于 `experiments/shared/`，与 Qwen 入口复用。结构和扩展方法见 [代码结构指南](../../docs/code_structure.md)。历史结果保留原始指纹，重构不重新签署旧报告；源码改变后应使用新批次。
 
-只运行固定候选主方法和 11 个 baseline，不调度自然 SD，不触发语言模型训练或 DP 训练。检测器仍仅用非成员数据拟合。算法复用现有的 TCN 拟合、正向稀疏评分、分区、指标、baseline 打分和 SD 协议实现；独立维护模型注册、草稿头路由和批量调度。
+只运行固定候选主方法和 11 个 baseline，不调度自然 SD，不触发语言模型训练或 DP 训练。检测器仍仅用非成员数据拟合。算法复用共享的 TCN 拟合、正向稀疏评分、分区、指标、baseline 打分和 SD 协议实现。
 
 ## 支持的模型
 
@@ -49,28 +49,29 @@ bash experiments/cross_model_audit/run.sh run \
 
 默认三个数据集、epoch 1/3、seed 1919/1949/1978。每类模型有 18 个目标条件、36 个草稿配置、54 个 worker 任务、234 个独立方法结果；baseline 在两个草稿分支展示时复用，形成 432 行汇总。更换 GPU 列表不改变实验签名。
 
-`--model-root` 只用于单类模型的训练目录覆盖，多类模型使用注册表中的各自目录。模型仍从 `artifacts/runs/training/controlled_sft_v2/{model_pairs,speculator_matrix}/` 的训练记录和模型链接读取。
+`--model-root` 只用于单类模型的训练目录覆盖，多类模型使用注册表中的各自目录。模型仍从 `artifacts/training/controlled_sft_v2/runs/{model_pairs,speculator_matrix}/` 的训练记录和模型链接读取。
 
 **不要用新入口接续当前 Qwen 审计。** 当前实验继续使用原命令。新入口显式选择 `qwen3` 时会创建独立评估结果，不读取或覆盖原 Qwen 结果；输出参数如果指向原 Qwen 审计目录或其父/子目录、兼容链接，会被拒绝。
 
 ## 保存与恢复
 
 ```text
-artifacts/runs/audits/cross_model_fixed_v1/
+artifacts/audits/cross_model_fixed_v1/tasks/
   <model_pair>/<dataset>/epochN/seedN/
     baseline/<method>/{REPORT.json,scores.npz}
     <draft_role>/fixed/<method>/{REPORT.json,scores.npz}
-  executions/<attempt>/{TASK.json,STATUS.json,worker.log}
-  fixed_only_summary/{RESULTS.csv,RESULTS.md,SEED_SUMMARY.csv,SUMMARY.json}
+artifacts/audits/cross_model_fixed_v1/executions/<attempt>/{TASK.json,STATUS.json,worker.log}
+artifacts/audits/cross_model_fixed_v1/reports/
+  {RESULTS.csv,RESULTS.md,SEED_SUMMARY.csv,SUMMARY.json}
 
-artifacts/cache/audits/cross_model_fixed_v1/
+artifacts/audits/cross_model_fixed_v1/intermediate/
   <model_pair>/<dataset>/epochN/seedN/<draft_role>/fixed/
     trajectories/  observations.npz  observations.npz.json  detector.pt  FIT.json
 ```
 
 输出按模型隔离；跨 seed 汇总也按模型分组，不把不同模型当作额外 seed。包含 AUC、pAUC@10%FPR、ROC TPR@1%/10%FPR、独立校准下实际 FPR/TPR，以及时间、吞吐、显存和查询/Token 数。效率口径继承现有矩阵，baseline 展示复用不会重复计入物理成本。
 
-重复相同命令会校验并跳过完整方法；主方法复用逐条轨迹、完整观测和已拟合检测器。baseline 未保存的单个方法需要重跑。新结果的来源指纹同时包含本目录和所调用的共享算法，不绕过来源校验。自定义输出根目录的缓存保存在任务自身的 `cache/`。
+重复相同命令会校验并跳过完整方法；主方法复用逐条轨迹、完整观测和已拟合检测器。baseline 未保存的单个方法需要重跑。新结果的来源指纹同时包含本目录和所调用的共享算法，不绕过来源校验。自定义输出根目录的缓存保存在任务自身的 `intermediate/`。
 
 ```bash
 bash experiments/cross_model_audit/run.sh summarize --model-pairs gemma4
@@ -85,5 +86,5 @@ EAGLE/MTP 主方法在首次采集前，用检测器拟合集合中的一条辅�
 已验证五类模型全部 270 个任务的只读预检、双 head 路由、模型/权重来源校验、独立输出保护、跨模型汇总及缓存/检测器恢复；使用 CPU 合成观测测试方法完整评分路径。未启动新模型的正式 GPU 审计，实际推理兼容性和显存峰值需在未来首个真实配置运行时确认。
 
 ```bash
-.venv/bin/python -m pytest -q experiments/cross_model_audit/tests
+.venv/bin/python -m pytest -q tests/cross_model tests/architecture
 ```

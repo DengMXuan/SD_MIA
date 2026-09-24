@@ -6,7 +6,7 @@
 set -uo pipefail
 cd /home/mxd/lib/SD_MIA
 
-RESULTS=${RESULTS:-artifacts/runs/training/four_role_v1}
+RESULTS=${RESULTS:-artifacts/training/four_role_v1/runs}
 COMMON=(
   --trainer full --optimizer adamw8bit
   --target-lr 2e-5 --draft-lr 2e-5
@@ -26,7 +26,7 @@ run_bench() {
       continue
     fi
     echo "[run ] bench=$BENCH epoch=$E gpu=$GPU"
-    .venv/bin/python -m experiments.sd_membership_sft.drafts.plain \
+    .venv/bin/python -m experiments.shared.drafts.plain \
       --gpu "$GPU" --benchmark "$BENCH" --target-epochs "$E" \
       --output-dir "$OUT" "${COMMON[@]}" \
       > "/tmp/retrain_${BENCH}_e${E}.log" 2>&1

@@ -1,1 +1,5 @@
-"""Reproducible dataset-construction and fine-tuning experiment modules."""
+"""Experiment entry points with explicit legacy module compatibility."""
+from ._compat import install
+
+install()
+del install

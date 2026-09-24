@@ -12,15 +12,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .cache import ROLE, freeze_partitions, validate_probability_cache
-from .data import load_evaluation, load_model, sha256, TOKEN_CONTRACT
-from ..baseline.runtime import RunProgress
-from ..sd_membership_sft.m1_extract import (
-    _build_position_metadata, _validate_checkpoint, extract_qh_features, selected_blocks_for_model,
-)
-from ..sd_membership_sft.m1_features import Q_FEATURE_NAMES, ACTIVATION_STAT_NAMES
-from ..sd_membership_sft.pq_gap_mia import record_logprobabilities
-from ..sd_membership_sft.training import set_seed
+from experiments.pretraining.cache import ROLE, freeze_partitions, validate_probability_cache
+from experiments.pretraining.data import load_evaluation, load_model, sha256, TOKEN_CONTRACT
+from experiments.baseline.runtime import RunProgress
+from experiments.sd_membership_sft.analysis.m1_extract import _build_position_metadata, _validate_checkpoint, extract_qh_features, selected_blocks_for_model
+from experiments.shared.methods.features import Q_FEATURE_NAMES, ACTIVATION_STAT_NAMES
+from experiments.shared.models.token_scores import record_logprobabilities
+from experiments.shared.training.training import set_seed
 
 
 def extract(manifest_path, output_dir, *, device, stage='all', batch_size=1,

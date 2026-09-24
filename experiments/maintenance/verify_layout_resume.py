@@ -13,11 +13,11 @@ from types import SimpleNamespace
 
 import torch
 from experiments.paths import ROOT, QWEN_AUDIT, QWEN_MODELS
-from experiments.sd_membership_sft.audit.matrix_artifacts import sources_for, digest
-from experiments.sd_membership_sft.protocols import collect_protocol_observations as collector
-from experiments.sd_membership_sft.protocols.protocol_models import prepare_records
-from experiments.sd_membership_sft.protocols.sd_protocol import RuntimeCost
-from experiments.sd_membership_sft.core.deployment_archive import sha256_file
+from experiments.shared.audit.artifacts import sources_for, digest
+from experiments.shared.protocols import collect_protocol_observations as collector
+from experiments.shared.models.loading import prepare_records
+from experiments.shared.protocols.sd_protocol import RuntimeCost
+from experiments.shared.core.deployment_archive import sha256_file
 
 
 def main():

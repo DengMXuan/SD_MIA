@@ -1,6 +1,6 @@
 # 主方法与差分隐私实验调用接口
 
-这些函数供未来实验脚本调用，不负责调度矩阵。普通微调检查点与 DP 检查点使用同一个固定候选主方法：B=2、非成员 TCN、正向稀疏评分；检测器训练/验证/校准/测试规模仍为 320/80/200/4000。
+这些函数位于 `experiments.shared.audit.evaluation`，供实验脚本调用，不负责调度矩阵。DP 调用显式注入训练校验器；旧 `experiments.cross_model_audit.api` 仍作为自动注入该校验器的兼容入口。新增模型与草稿类型见 [代码结构与扩展指南](code_structure.md)。普通微调检查点与 DP 检查点使用同一个固定候选主方法：B=2、非成员 TCN、正向稀疏评分；检测器训练/验证/校准/测试规模仍为 320/80/200/4000。
 
 ## 支持范围
 
@@ -20,13 +20,13 @@
 
 ```python
 from pathlib import Path
-from experiments.cross_model_audit.api import inspect_run, evaluate_main
-from experiments.cross_model_audit.model_registry import MODEL_PAIRS
+from experiments.shared.audit.evaluation import inspect_run, evaluate_main
+from experiments.shared.models.registry import MODEL_PAIRS
 
 reference = MODEL_PAIRS["qwen3_8b_eagle3"].run_root / "wikitection/epoch1/seed1919"
 info = inspect_run(reference)  # 只读检查两种草稿；不加载模型做推理
 role = info["draft_roles"][0]
-outputs = Path("artifacts/runs/audits/main_api_example")
+outputs = Path("artifacts/audits/main_api_example/tasks")
 ordinary_output = outputs / info["model_pair"] / "ordinary" / role
 
 # 以下调用实际进行推理与检测器训练；不会训练语言模型或启动 baseline。
@@ -46,15 +46,19 @@ DP 需要可选依赖：`uv sync --locked --extra dp`。
 ```python
 from experiments.dp_defense.api import plan_private_training, train_private
 from experiments.dp_defense.compare import compare_reports
+from experiments.dp_defense.artifacts import evaluation_verification
 
-private_run = Path("artifacts/runs/training/dp_api_example") / info["model_pair"] / "epsilon4"
+private_run = Path("artifacts/training/dp_api_example/runs") / info["model_pair"] / "epsilon4"
 request = plan_private_training(reference, private_run, epsilon=4, gpu=0)
 # 只读规划：核对配方、来源与会计；不加载模型权重、不创建输出目录。
 
 # 未来显式调用才会训练。可复用校验通过的完整阶段。
 passport = train_private(reference, private_run, epsilon=4, gpu=0)
 private_output = outputs / info["model_pair"] / "epsilon4" / role
-private = evaluate_main(private_run, private_output, draft_role=role, device="cuda:0")
+private = evaluate_main(
+    private_run, private_output, draft_role=role, device="cuda:0",
+    verification=evaluation_verification(),
+)
 
 method = "main_fixed_sparse_positive"
 comparison = compare_reports(
@@ -75,4 +79,4 @@ DP 训练复用普通实验的冻结数据划分和配方，**从固定公开基
 
 已对五类现有 WikiTection/epoch1/seed1919 检查点执行只读检查与 DP 规划，并用 CPU 测试验证会计、头训练机制、各模型/角色的主方法评分、隐私报告和恢复。评分集成测试使用合成观测及真实 TCN 拟合，不等于真实大模型推理测试。
 
-尚未运行完整 GPU DP 训练或新增跨模型审计；显存需求、完整模型推理兼容性及防御效果需未来实测。本次未增加批量脚本，也未启动 GPU 实验。
+尚未运行完整 GPU DP 训练或新增跨模型审计；显存需求、完整模型推理兼容性及防御效果需未来实测。批量规划使用 `python -m experiments.dp_defense.sweep dry-run --model-pairs ...`，支持现有五种模型组合；本次未启动 GPU 实验。

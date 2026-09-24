@@ -3,13 +3,13 @@ import json
 
 import numpy as np
 
-from experiments.sd_membership_sft.audit.matrix_costs import timed
-from experiments.sd_membership_sft.audit.matrix_main import select_documents, sparse_scores
-from experiments.sd_membership_sft.audit.matrix_metrics import metrics, METRIC_CONVENTIONS
-from experiments.sd_membership_sft.methods.protocol_accept_only import predict
-from .detector import FEATURE_COLUMNS, fitting_identity
-from .partitions import partition_indices
-from .storage import atomic_json, atomic_npz, checked_contract, code_fingerprint, file_sha, workspace
+from experiments.shared.audit.costs import timed
+from experiments.shared.audit.main import select_documents, sparse_scores
+from experiments.shared.audit.metrics import metrics, METRIC_CONVENTIONS
+from experiments.shared.methods.protocol_accept_only import predict
+from experiments.resource_curves.detector import FEATURE_COLUMNS, fitting_identity
+from experiments.resource_curves.partitions import partition_indices
+from experiments.resource_curves.storage import atomic_json, atomic_npz, checked_contract, code_fingerprint, file_sha, workspace
 
 
 def collection_cost(observations, parts):

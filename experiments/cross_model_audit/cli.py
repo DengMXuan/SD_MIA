@@ -1,11 +1,12 @@
 """Opt-in cross-model validation with separate tasks, cache and summaries."""
+from experiments.shared.audit.config import audit_settings
 import argparse
 import json
 from pathlib import Path
 
-from experiments.paths import QWEN_AUDIT
+from experiments.paths import QWEN_AUDIT, audit_reports, audit_executions
 from experiments.cross_model_audit import engine
-from experiments.cross_model_audit.model_registry import MODEL_PAIRS
+from experiments.shared.models.registry import MODEL_PAIRS
 from experiments.cross_model_audit.storage import OUTPUT_ROOT
 
 
@@ -45,28 +46,24 @@ def main():
     for values in (args.model_pairs, args.benchmarks, args.epochs, args.seeds):
         if len(values) != len(set(values)):
             parser.error('duplicate matrix entries are not allowed')
-    settings = dict(starts=['suffix64'], rounds_per_start=32, audit_seed=args.audit_seed,
-                    detector_epochs=args.detector_epochs, baseline=engine.BASELINE_DEFAULTS)
+    settings = audit_settings(audit_seed=args.audit_seed, detector_epochs=args.detector_epochs)
     try:
         tasks = selected_tasks(args.model_pairs, args.model_root, args.output_root, args.benchmarks,
                                args.epochs, args.seeds, settings)
     except ValueError as error:
         parser.error(str(error))
-    summary_root = args.output_root.resolve() / 'fixed_only_summary'
+    summary_root = audit_reports(args.output_root)
     if args.command in ('dry-run', 'status'):
-        conditions = sum(task['kind'] == 'baseline' for task in tasks)
+        main_tasks = [task for task in tasks if task['kind'] == 'main']
+        baseline_count = len(engine.METHODS)
         print(json.dumps(dict(model_pairs=args.model_pairs, worker_tasks=len(tasks),
-                              audit_configurations=conditions * 2, expected_method_rows=conditions * 24,
+                              audit_configurations=len(main_tasks),
+                              expected_method_rows=sum(len(task['methods']) + baseline_count for task in main_tasks),
                               summary_directory=str(summary_root),
                               states={task['id']: engine.inspect_task(task) for task in tasks}), indent=2))
         return
     completed = engine.run_tasks(tasks, args.output_root.resolve(), args.gpus) if args.command == 'run' else True
-    result = engine.summarize(tasks, summary_root)
-    selected = {task['id'] for task in tasks}
-    attempts = [json.loads(path.read_text()) for path in (args.output_root / 'executions').glob('*/STATUS.json')]
-    result['attempted_worker_wall_seconds_sum'] = sum(row.get('worker_wall_seconds', 0.) for row in attempts
-                                                     if row.get('task') in selected)
-    engine._write_json(summary_root / 'SUMMARY.json', result)
+    result = engine.summarize(tasks, summary_root, execution_root=audit_executions(args.output_root))
     print(json.dumps({key: result[key] for key in ('complete', 'expected_rows', 'completed_rows', 'errors')}))
     if not completed or not result['complete']:
         raise SystemExit(2)

@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from experiments.sd_membership_sft.core.audit_metrics import (conformal_tail_pvalues, order_statistic_threshold)
+from experiments.shared.core.audit_metrics import conformal_tail_pvalues, order_statistic_threshold
 
 from experiments.paths import ROOT
 DEFAULT_WINDOWS = (4, 8, 16, 32, 64)

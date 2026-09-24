@@ -1,36 +1,29 @@
 """Plan, run, inspect and summarize the 36-configuration Qwen audit matrix."""
 from __future__ import annotations
 
+from experiments.shared.audit.config import audit_settings
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import csv
-from datetime import datetime, timezone
 import fcntl
 import json
-import os
 from pathlib import Path
-import queue
 import subprocess
-import sys
-import threading
-import time
-import uuid
 
-import numpy as np
 from safetensors import SafetensorError
 
+from experiments.shared.audit import scheduler, reporting
+from experiments.shared.audit.scheduler import wait_worker
 from experiments.baseline import METHODS
-from experiments.sd_membership_sft.core.audit_runtime import ROOT, _write_json
-from experiments.sd_membership_sft.core.deployment_archive import sha256_file
-from experiments.sd_membership_sft.audit.matrix_artifacts import digest, read_result, sources_for
-from experiments.sd_membership_sft.audit.matrix_baselines import BASELINE_DEFAULTS
-from experiments.sd_membership_sft.audit.matrix_main import MAIN_METHODS
+from experiments.shared.core.audit_runtime import ROOT, _write_json
+from experiments.shared.core.deployment_archive import sha256_file
+from experiments.shared.audit.artifacts import read_result, sources_for
+from experiments.shared.audit.baselines import BASELINE_DEFAULTS
+from experiments.shared.audit.main import MAIN_METHODS
 
 ROLES = ("draft_auxiliary_distilled", "draft_member_sft")
 ALL_METHODS = (*MAIN_METHODS["fixed"], *MAIN_METHODS["natural"], *METHODS)
-from experiments.paths import QWEN_MODELS as DEFAULT_MODEL_ROOT, QWEN_AUDIT as LEGACY_OUTPUT_ROOT
+from experiments.paths import QWEN_MODELS as DEFAULT_MODEL_ROOT, QWEN_AUDIT as LEGACY_OUTPUT_ROOT, QWEN_CURRENT_AUDIT, audit_executions, audit_reports
 
-DEFAULT_OUTPUT_ROOT = LEGACY_OUTPUT_ROOT.parent / "qwen_shared_reference_v1"
+DEFAULT_OUTPUT_ROOT = QWEN_CURRENT_AUDIT
 
 
 def make_tasks(model_root, output_root, benchmarks, epochs, seeds, settings):
@@ -109,30 +102,9 @@ def ready(task):
 
 
 def inspect_task(task, *, check_sources=True):
-    worker_lock = Path(task["output"]) / ".worker.lock"
-    if worker_lock.exists():
-        with worker_lock.open("r") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return {"state": "running", "completed_methods": [], "reason": "worker holds task lock"}
-    completed, errors = [], []
-    for method in task["methods"]:
-        folder = Path(task["output"]) / method
-        if not (folder / "REPORT.json").exists():
-            continue
-        try:
-            read_result(folder, digest({"task": task, "method": method}), check_sources=check_sources)
-            completed.append(method)
-        except (OSError, ValueError, KeyError) as error:
-            errors.append(f"{method}: {error}")
-    if errors:
-        return {"state": "stale", "completed_methods": completed, "reason": "; ".join(errors)}
-    if len(completed) == len(task["methods"]):
-        return {"state": "complete", "completed_methods": completed, "reason": "checked result hashes and sources"}
-    valid, reason = ready(task)
-    return {"state": "ready" if valid else ("pending" if reason.startswith("pending") else "invalid"),
-            "completed_methods": completed, "reason": reason}
+    return scheduler.inspect_task(task, ready=ready, read_result=read_result,
+                                  check_sources=check_sources)
+
 
 
 def check_gpus(gpus):
@@ -149,196 +121,28 @@ def check_gpus(gpus):
             raise RuntimeError(f"GPU {gpu} is absent or has an active compute process")
 
 
-def wait_worker(process, stop, heartbeat):
-    """Stop the child before releasing its GPU lock, including on interruption."""
-    last_update = time.monotonic()
-    try:
-        while not stop.is_set():
-            try:
-                return process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                if time.monotonic() - last_update >= 30:
-                    heartbeat()
-                    last_update = time.monotonic()
-        return None
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+
 
 
 def run_tasks(tasks, output_root, gpus):
-    output_root.mkdir(parents=True, exist_ok=True)
-    with (output_root / ".matrix.lock").open("a") as matrix_lock:
-        fcntl.flock(matrix_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        states = {task["id"]: inspect_task(task) for task in tasks}
-        _write_json(output_root / "STATUS.json", states)
-        runnable = [task for task in tasks if states[task["id"]]["state"] == "ready"]
-        if not runnable:
-            return all(row["state"] == "complete" for row in states.values())
-        check_gpus(gpus)
-        locks = []
-        try:
-            for gpu in gpus:
-                lock = Path(f"/tmp/sd_mia_audit_gpu_{os.getuid()}_{gpu}.lock").open("a")
-                locks.append(lock)
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            jobs = queue.Queue()
-            for task in runnable:
-                jobs.put(task)
-            control = output_root / "executions"
-            control.mkdir(exist_ok=True)
-            stop = threading.Event()
-            def worker(gpu):
-                while not stop.is_set():
-                    try:
-                        task = jobs.get_nowait()
-                    except queue.Empty:
-                        return
-                    check_gpus([gpu])
-                    if stop.is_set():
-                        return
-                    attempt = control / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:12])
-                    attempt.mkdir()
-                    _write_json(attempt / "TASK.json", task)
-                    env = {**os.environ, "CUDA_VISIBLE_DEVICES": str(gpu), "HF_HUB_OFFLINE": "1",
-                           "TRANSFORMERS_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
-                           "OMP_NUM_THREADS": "2", "PYTHONHASHSEED": str(task["settings"]["audit_seed"])}
-                    started = time.perf_counter()
-                    _write_json(attempt / "STATUS.json", {"state": "running", "task": task["id"], "gpu": gpu})
-                    print(json.dumps({"started": task["id"], "gpu": gpu, "log": str(attempt / "worker.log")}), flush=True)
-                    with (attempt / "worker.log").open("w") as log:
-                        process = subprocess.Popen(
-                            [sys.executable, "-u", "-m", "experiments.sd_membership_sft.audit.qwen_audit_matrix",
-                             "worker", "--task-file", str(attempt / "TASK.json")],
-                            cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-                        code = wait_worker(process, stop, lambda: print(json.dumps(
-                            {"running": task["id"], "gpu": gpu,
-                             "elapsed_seconds": round(time.perf_counter() - started)}), flush=True))
-                    state = {"state": "interrupted" if code is None else ("complete" if code == 0 else "failed"), "task": task["id"], "gpu": gpu,
-                             "exit_code": code, "worker_wall_seconds": time.perf_counter() - started}
-                    _write_json(attempt / "STATUS.json", state)
-                    print(json.dumps(state), flush=True)
-                    jobs.task_done()
-            with ThreadPoolExecutor(max_workers=len(gpus)) as executor:
-                futures = [executor.submit(worker, gpu) for gpu in gpus]
-                try:
-                    for future in as_completed(futures):
-                        future.result()
-                except BaseException:
-                    stop.set()
-                    raise
-        finally:
-            for lock in locks:
-                lock.close()
-        states = {task["id"]: inspect_task(task) for task in tasks}
-        _write_json(output_root / "STATUS.json", states)
-        return all(row["state"] == "complete" for row in states.values())
+    return scheduler.run_tasks(tasks, output_root, gpus, inspect_task=inspect_task,
+                               check_gpus=check_gpus, worker_module='experiments.sd_membership_sft.audit.qwen_audit_matrix', wait=wait_worker)
 
 
-def summarize(tasks, output_root):
-    results, errors = {}, []
-    for task in tasks:
-        for method in task["methods"]:
-            folder = Path(task["output"]) / method
-            if not (folder / "REPORT.json").exists():
-                continue
-            try:
-                results[(task["id"], method)] = read_result(folder, digest({"task": task, "method": method}))
-            except (OSError, ValueError, KeyError) as error:
-                errors.append({"task": task["id"], "method": method, "error": str(error)})
-    rows, groups, physical_groups = [], {}, {}
-    baseline_tasks = {tuple(task["condition"].values()): task for task in tasks if task["kind"] == "baseline"}
-    for key, baseline in baseline_tasks.items():
-        condition = baseline["condition"]
-        matching = [task for task in tasks if task["condition"] == condition]
-        # Every method/branch must have the same ordered calibration and test IDs.
-        id_hashes = {r["record_ids_sha256"] for task in matching for method in task["methods"]
-                     if (r := results.get((task["id"], method))) is not None}
-        if len(id_hashes) > 1:
-            raise ValueError(f"methods scored different records in {condition}")
-        for role in ROLES:
-            for method in ALL_METHODS:
-                task = baseline if method in METHODS else next(t for t in matching if t.get("draft_role") == role and method in t["methods"])
-                report = results.get((task["id"], method))
-                row = {**condition, "draft_role": role, "method": method,
-                       "status": "complete" if report else "missing", "source_task": task["id"],
-                       "reused_target_only": method in METHODS}
-                if report:
-                    row.update(report["metrics"])
-                    row.update(report["cost"])
-                    row["access_channel"] = report["access_channel"]
-                    row["report"] = str(Path(task["output"]) / method / "REPORT.json")
-                    group = report["cost"]["execution_group"]
-                    seconds = report["cost"].get("execution_group_seconds")
-                    if seconds is None:
-                        seconds = report["cost"]["total_seconds"]
-                    physical_groups[group] = max(physical_groups.get(group, 0.), seconds)
-                rows.append(row)
-                group_key = (condition["benchmark"], condition["epoch"], role, method)
-                groups.setdefault(group_key, []).append(row)
-    aggregates = []
-    for (benchmark, epoch, role, method), values in groups.items():
-        completed = [row for row in values if row["status"] == "complete"]
-        entry = dict(benchmark=benchmark, epoch=epoch, draft_role=role, method=method,
-                     expected_seeds=len(values), completed_seeds=len(completed))
-        fields = set.intersection(*(set(r) for r in completed)) if completed else set()
-        for field in sorted(fields - {"epoch", "condition_seed", "reused_target_only"}):
-            if all(isinstance(r[field], (int, float)) and not isinstance(r[field], bool) for r in completed):
-                numbers = [r[field] for r in completed]
-                entry[field + "_mean"] = float(np.mean(numbers))
-                entry[field + "_std"] = float(np.std(numbers, ddof=1)) if len(numbers) > 1 else None
-        aggregates.append(entry)
-    output_root.mkdir(parents=True, exist_ok=True)
-    for name, table in (("RESULTS", rows), ("SEED_SUMMARY", aggregates)):
-        fields = list(dict.fromkeys(key for row in table for key in row))
-        temporary = output_root / f".{name}.tmp.csv"
-        with temporary.open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(table)
-        temporary.replace(output_root / f"{name}.csv")
-    completed_count = sum(r["status"] == "complete" for r in rows)
-    attempts = []
-    for path in sorted((output_root / "executions").glob("*/STATUS.json")):
-        attempts.append(json.loads(path.read_text()))
-    shared_costs = any(row.get("cost_basis") == "physical_incremental" for row in rows)
-    note = "baseline display duplication is not independent evidence; worker time includes loading/retries and is not matrix elapsed wall time"
-    if shared_costs:
-        note += "; shared-reference rows expose physical incremental fields and leave standalone method cost columns empty"
-    payload = dict(complete=completed_count == len(rows) and not errors, expected_rows=len(rows),
-                   completed_rows=completed_count, errors=errors, rows=rows, seed_summary=aggregates,
-                   unique_successful_execution_groups=len(physical_groups),
-                   unique_successful_measured_method_seconds=sum(physical_groups.values()),
-                   attempted_worker_wall_seconds_sum=sum(r.get("worker_wall_seconds", 0.) for r in attempts),
-                   note=note)
-    _write_json(output_root / "SUMMARY.json", payload)
-    lines = ["# Qwen audit matrix", "", f"Completed rows: {completed_count}/{len(rows)}. Complete: {payload['complete']}.", "",
-             "ROC and independently calibrated TPR are separate. pAUC below is area/0.10; raw area is retained in CSV/JSON.", "",
-             "Shared-reference rows without standalone cost show — in ms/record; their measured incremental costs use physical_incremental_* fields." if shared_costs else "", "",
-             "| Dataset | Epoch | Seed | Draft | Method | AUC | pAUC10 norm | ROC TPR10 | ROC TPR1 | Cal TPR1 | Cal FPR1 | ms/record | Status |",
-             "|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---|"]
-    for row in rows:
-        numbers = [f"{row[key]:.4f}" if row.get(key) is not None else "—" for key in
-                   ("auc", "pauc_10_normalized", "roc_tpr_at_10pct_fpr", "roc_tpr_at_1pct_fpr",
-                    "calibrated_tpr_at_1pct", "calibrated_actual_fpr_at_1pct", "amortized_ms_per_record")]
-        lines.append("| " + " | ".join([row["benchmark"], str(row["epoch"]), str(row["condition_seed"]),
-                                          row["draft_role"], row["method"], *numbers, row["status"]]) + " |")
-    temporary = output_root / ".RESULTS.tmp.md"
-    temporary.write_text("\n".join(lines) + "\n")
-    temporary.replace(output_root / "RESULTS.md")
-    return payload
+
+def summarize(tasks, output_root, *, execution_root=None, methods=None):
+    return reporting.summarize(tasks, output_root, methods=ALL_METHODS if methods is None else methods,
+                               baseline_methods=METHODS, describe=lambda task: ({}, ROLES),
+                               title="Qwen audit matrix", read_result=read_result,
+                               execution_root=execution_root)
+
 
 
 def execute_worker(task):
     import torch
-    from experiments.sd_membership_sft.protocols.protocol_models import prepare_records
-    from experiments.sd_membership_sft.audit.matrix_baselines import run_baselines
-    from experiments.sd_membership_sft.audit.matrix_main import run_main
+    from experiments.shared.models.loading import prepare_records
+    from experiments.shared.audit.baselines import run_baselines
+    from experiments.shared.audit.main import run_main
 
     torch.set_num_threads(2)
     if not torch.cuda.is_available():
@@ -383,11 +187,9 @@ def main():
     for values in (args.benchmarks, args.epochs, args.seeds, args.starts):
         if len(set(values)) != len(values):
             parser.error("duplicate matrix entries are not allowed")
-    from experiments.sd_membership_sft.protocols.sd_protocol import resolve_starts
+    from experiments.shared.protocols.sd_protocol import resolve_starts
     resolve_starts(2048, args.starts)
-    settings = dict(starts=args.starts, rounds_per_start=args.rounds_per_start, audit_seed=args.audit_seed,
-                    detector_epochs=args.detector_epochs, baseline=BASELINE_DEFAULTS,
-                    baseline_execution="shared_robustness_reference_v1")
+    settings = audit_settings(audit_seed=args.audit_seed, detector_epochs=args.detector_epochs, starts=args.starts, rounds_per_start=args.rounds_per_start)
     tasks = make_tasks(args.model_root.resolve(), args.output_root.resolve(), args.benchmarks, args.epochs, args.seeds, settings)
     if args.command in ("dry-run", "status"):
         states = {task["id"]: inspect_task(task) for task in tasks}
@@ -395,13 +197,13 @@ def main():
                           "expected_method_rows": len(tasks) // 5 * 2 * len(ALL_METHODS),
                           "settings": settings, "states": states}, indent=2))
     elif args.command == "summarize":
-        result = summarize(tasks, args.output_root)
+        result = summarize(tasks, audit_reports(args.output_root), execution_root=audit_executions(args.output_root))
         print(json.dumps({key: result[key] for key in ("complete", "expected_rows", "completed_rows", "errors")}))
         if not result["complete"]:
             raise SystemExit(2)
     else:
         completed = run_tasks(tasks, args.output_root, args.gpus)
-        result = summarize(tasks, args.output_root)
+        result = summarize(tasks, audit_reports(args.output_root), execution_root=audit_executions(args.output_root))
         if not completed or not result["complete"]:
             raise SystemExit(2)
 

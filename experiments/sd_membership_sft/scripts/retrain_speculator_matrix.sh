@@ -10,9 +10,9 @@ REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd)
 cd "$REPO_ROOT" || exit 2
 
 PYTHON=${PYTHON:-.venv/bin/python}
-RESULTS_ROOT=${RESULTS_ROOT:-artifacts/runs/training/controlled_sft_v2/speculator_matrix}
-if [[ "$RESULTS_ROOT" == "artifacts/runs/training/controlled_sft_v2/speculator_matrix" ]]; then
-  SPLIT_ROOT=${SPLIT_ROOT:-artifacts/data/splits/controlled_sft_v2}
+RESULTS_ROOT=${RESULTS_ROOT:-artifacts/training/controlled_sft_v2/runs/speculator_matrix}
+if [[ "$RESULTS_ROOT" == "artifacts/training/controlled_sft_v2/runs/speculator_matrix" ]]; then
+  SPLIT_ROOT=${SPLIT_ROOT:-artifacts/training/controlled_sft_v2/splits}
 else
   SPLIT_ROOT=${SPLIT_ROOT:-$RESULTS_ROOT/shared_splits}
 fi
@@ -116,9 +116,9 @@ build_stage_command() {
   local pair=$1 benchmark=$2 epoch=$3 seed=$4 output_dir=$5 stage=$6
   local batch_size=2 grad_accum=8
   local split_manifest="$SPLIT_ROOT/$benchmark/seed${seed}.json"
-  local module=experiments.sd_membership_sft.drafts.eagle3
+  local module=experiments.shared.drafts.eagle3
   if [ "$pair" = qwen35_9b_mtp ]; then
-    module=experiments.sd_membership_sft.drafts.mtp
+    module=experiments.shared.drafts.mtp
   fi
   STAGE_COMMAND=(
     "$PYTHON" -u -m "$module"
@@ -279,7 +279,7 @@ write_matrix_manifest() {
 
 run_preflight() {
   local -a command=(
-    "$PYTHON" -u -m experiments.sd_membership_sft.head_matrix_preflight
+    "$PYTHON" -u -m experiments.sd_membership_sft.finetune.head_matrix_preflight
     --split-root "$SPLIT_ROOT" --gpus "${GPUS[@]}"
   )
   if [ "${MATRIX_SKIP_GPU_CHECK:-0}" = 1 ]; then

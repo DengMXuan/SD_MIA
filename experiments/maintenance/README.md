@@ -1,5 +1,20 @@
 # 实验目录维护
 
+## 2026-09-25 全生命周期整理
+
+当前路径规则见 [产物目录合同](../../docs/artifact_layout.md)。维护入口为：
+
+```bash
+.venv/bin/python -m experiments.maintenance.migrate_lifecycle_layout plan
+.venv/bin/python -m experiments.maintenance.migrate_lifecycle_layout apply
+.venv/bin/python -m experiments.maintenance.migrate_lifecycle_layout verify
+```
+
+执行迁移时停止实验写入；已有 worker/coordinator 锁被占用时拒绝执行。迁移使用同盘 rename，保留旧入口链接并修正内部相对链接；目标冲突或跨盘会失败。中断后重复 apply 使用原始清单恢复。没有权重复制、数据清理或来源哈希改写。
+
+清单和核验结果位于 `artifacts/maintenance/migrations/20260925_lifecycle/`。旧审计来源和请求仍绑定旧代码/路径，保持历史快照，不会自动变为新代码可续跑的结果。下方记录 2026-09-22 的独立历史迁移。
+
+
 2026-09-22 迁移仅重构 SD SFT 实验及本地存储。baseline、pretraining、DP 的算法实现不变。日常使用见 [SD 实验入口](../sd_membership_sft/README.md)。维护脚本不参与正常运行，也不会自动执行。
 
 ## 本次迁移的证据链

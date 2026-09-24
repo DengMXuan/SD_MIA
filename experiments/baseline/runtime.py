@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .costs import write_cost_report
+from experiments.baseline.costs import write_cost_report
 
 
 class RunProgress:

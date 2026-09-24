@@ -9,10 +9,11 @@ import tempfile
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[2]
-RUN_ROOT = ROOT / "artifacts/runs/audits/resource_curves_v1"
-CACHE_ROOT = ROOT / "artifacts/cache/audits/resource_curves_v1"
-DATA_ROOT = ROOT / "artifacts/data/splits/resource_curves_v1"
+from experiments.paths import ROOT, AUDITS
+
+RUN_ROOT = AUDITS / "resource_curves_v1/tasks"
+CACHE_ROOT = AUDITS / "resource_curves_v1/intermediate"
+DATA_ROOT = AUDITS / "resource_curves_v1/splits"
 
 
 def digest(value):
@@ -28,7 +29,7 @@ def file_sha(path):
 
 
 def code_fingerprint():
-    from experiments.sd_membership_sft.audit.matrix_artifacts import runtime_files
+    from experiments.shared.audit.artifacts import runtime_files
 
     files = runtime_files() + sorted(p for p in Path(__file__).parent.rglob("*.py")
                                      if "tests" not in p.parts)

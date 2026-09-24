@@ -5,11 +5,9 @@ import json
 from pathlib import Path
 import random
 
-from experiments.sd_membership_sft.datasets.data import SFTRecord, _hash_ids
-from experiments.sd_membership_sft.datasets.splits import (
-    SFT_PROMPT, _document_identity, _selection_gram_hashes,
-)
-from .storage import checked_contract, digest, file_sha, workspace
+from experiments.shared.data.data import SFTRecord, _hash_ids
+from experiments.shared.data.splits import SFT_PROMPT, _document_identity, _selection_gram_hashes
+from experiments.resource_curves.storage import checked_contract, digest, file_sha, workspace
 
 
 def _read_pool(benchmark, path):

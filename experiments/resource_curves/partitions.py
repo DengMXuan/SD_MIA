@@ -2,9 +2,9 @@
 import numpy as np
 from types import SimpleNamespace
 
-from experiments.sd_membership_sft.core.audit_runtime import SPLIT_SEED
-from .config import AuxiliaryBudget
-from .storage import checked_contract, digest, workspace
+from experiments.shared.core.audit_runtime import SPLIT_SEED
+from experiments.resource_curves.config import AuxiliaryBudget
+from experiments.resource_curves.storage import checked_contract, digest, workspace
 
 ROLES = ("train", "validation", "calibration", "test")
 

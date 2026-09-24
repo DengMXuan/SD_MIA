@@ -12,13 +12,21 @@ scored as a second model and is not used as a reference. In pretraining mode,
 the manifest's pretrained target is intentionally the model being evaluated;
 the Pythia draft is still not loaded by this baseline runner.
 
+## Code navigation
+
+`run.py` preserves the CLI entry and delegates to `cli.py`. Library callers use
+`engine.score_methods`; `scorer.py` owns target forwards and generation,
+`data.py` loads records/tokenizers, `types.py` defines record/stat structures,
+and `reporting.py` renders results. Costs and progress tracking remain in
+`costs.py` and `runtime.py`. Tests live in `tests/baseline/` at the repository root.
+
 ## Run one condition
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run --no-sync python -m experiments.baseline.run \
-  --run-dir experiments/results/sft_runs/newstection_qwen3_8b_epoch1 \
+  --run-dir artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3/newstection/epoch1/seed1919 \
   --gpu 0 --methods all \
-  --output-dir experiments/results/baseline/newstection_qwen3_8b_epoch1
+  --output-dir artifacts/audits/baseline_v1/tasks/newstection_qwen3_8b_epoch1
 ```
 
 `CUDA_VISIBLE_DEVICES=1` is only an example: it maps physical GPU 1 to logical
@@ -33,7 +41,7 @@ checkpoint.
 For controlled SFT, the complete matrix is:
 
 ```text
-experiments/results/baseline/
+artifacts/audits/baseline_v1/tasks/
 ├── wikitection_qwen3_8b_epoch1/
 ├── wikitection_qwen3_8b_epoch3/
 ├── newstection_qwen3_8b_epoch1/
@@ -123,8 +131,8 @@ Recover completed methods after a later failure, without loading a model:
 
 ```bash
 ./.venv/bin/python -m experiments.baseline.export_completed \
-  --execution-dir experiments/results/baseline/YOUR_RUN/executions/EXECUTION_ID \
-  --output-dir experiments/results/baseline/YOUR_RUN/recovered
+  --execution-dir artifacts/audits/baseline_v1/tasks/YOUR_RUN/executions/EXECUTION_ID \
+  --output-dir artifacts/audits/baseline_v1/tasks/YOUR_RUN/recovered
 ```
 
 Use a fresh recovery directory. To capture library warnings and all stderr too,
@@ -135,9 +143,9 @@ measurement to use for comparisons.
 While a run is active, inspect the newest execution directory:
 
 ```bash
-RUN=experiments/results/baseline/newstection_qwen3_8b_epoch1
+RUN=artifacts/audits/baseline_v1/tasks/newstection_qwen3_8b_epoch1
 cat "$RUN"/executions/*/status.json
-tail -f experiments/results/baseline/logs/newstection_qwen3_8b_epoch1.log
+tail -f artifacts/audits/baseline_v1/tasks/logs/newstection_qwen3_8b_epoch1.log
 ```
 
 The status file is operational only: a long model call can exceed the
@@ -204,9 +212,9 @@ historical parallel layout `<benchmark>_epoch{1,3}_parallel/`, with complete
 
 ```bash
 ./.venv/bin/python -m experiments.baseline.aggregate_report \
-  --results-root experiments/results/baseline \
-  --report experiments/results/baseline/QWEN3_BASELINE_RESULTS.md \
-  --json experiments/results/baseline/qwen3_baseline_report.json
+  --results-root artifacts/audits/baseline_v1/tasks \
+  --report artifacts/audits/baseline_v1/tasks/QWEN3_BASELINE_RESULTS.md \
+  --json artifacts/audits/baseline_v1/tasks/qwen3_baseline_report.json
 ```
 
 The ordinary single-process layout above intentionally omits the `_parallel`
@@ -230,7 +238,7 @@ bash experiments/baseline/collect_wiki2023.sh
 
 It uses a cached Qwen3-8B-Base tokenizer, the existing text and token gates,
 a separate 2023 pool and the original WikiTection epoch1 nonmember split.
-The final `experiments/data/audits/wiki_temporal_qwen3_8b/audit.jsonl` contains
+The final `artifacts/data/audits/wiki_temporal_qwen3_8b/audit.jsonl` contains
 2000 historical positive proxies + 2000 preserved negative records. Creation
 and main-page revision times must be in 2023. The manifest anchors provenance,
 counts and the cross-split overlap check. Historical rendering may expand current
@@ -238,7 +246,7 @@ templates; dates do not prove inclusion in Qwen training.
 
 The default request rate is 8/minute with concurrency <=3, honoring global
 Retry-After cooldowns. This takes hours. Successful API responses survive in
-`experiments/data/pools/wiki2023/api_cache/`; re-running reuses them. The wrapper
+`artifacts/data/pools/wiki2023/api_cache/`; re-running reuses them. The wrapper
 writes `build.log`, `collector.pid`, and a final `exit_code` in that directory.
 Exit code 0 means collection and audit preparation both finished successfully.
 For a real publicly usable contact, pass `--contact 'YOUR_CONTACT'` and a chosen

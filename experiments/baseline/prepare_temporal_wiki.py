@@ -11,11 +11,11 @@ import json
 import tempfile
 from pathlib import Path
 
-from ..sd_membership_sft.data import _hash_ids
-from ..sd_membership_sft.generalization import load_run_config
-from ..sd_membership_sft.pools import NearDuplicateIndex, _write_pool
-from ..sd_membership_sft.splits import build_split, _cross_split_ngram_audit, pool_path
-from .run import _resolve, _target_tokenizer, load_audit_records
+from experiments.shared.data.data import _hash_ids
+from experiments.shared.training.generalization import load_run_config
+from experiments.shared.data.pools import NearDuplicateIndex, _write_pool
+from experiments.shared.data.splits import build_split, _cross_split_ngram_audit, pool_path
+from experiments.baseline.data import _resolve, _target_tokenizer, load_audit_records
 
 
 def read_pool(path):

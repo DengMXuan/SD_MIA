@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-from experiments.sd_membership_sft.audit_runtime import _write_json
-from experiments.sd_membership_sft.matrix_artifacts import read_result
+from experiments.shared.core.audit_runtime import _write_json
+from experiments.shared.audit.artifacts import read_result
 
 FIELDS = ("auc", "pauc_10_normalized", "roc_tpr_at_1pct_fpr", "roc_tpr_at_10pct_fpr",
           "calibrated_tpr_at_1pct", "calibrated_actual_fpr_at_1pct",

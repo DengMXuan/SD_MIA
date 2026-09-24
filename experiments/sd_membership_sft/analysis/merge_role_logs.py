@@ -9,8 +9,8 @@ from typing import Any
 
 import numpy as np
 
-from experiments.sd_membership_sft.finetune.generalization import load_run_config
-from experiments.sd_membership_sft.core.scoring_common import resolve_checkpoint_path
+from experiments.shared.training.generalization import load_run_config
+from experiments.shared.core.scoring_common import resolve_checkpoint_path
 
 from experiments.paths import ROOT
 ROLES = ("target", "draft_auxiliary_distilled", "draft_member_sft")

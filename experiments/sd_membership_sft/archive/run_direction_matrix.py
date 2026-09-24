@@ -14,7 +14,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from experiments.sd_membership_sft.core.audit_runtime import (ROOT)
+from experiments.shared.core.audit_runtime import ROOT
 
 
 SEEDS = (20260914, 20260915, 20260916)
@@ -42,10 +42,10 @@ def main():
             for budget in ((2, 8) if args.phase == "paired" else (2,)):
                 if args.phase == "active":
                     output = root / f"directions_validation/active/{condition}/seed{seed}"
-                    command = [sys.executable, "-m", "experiments.sd_membership_sft.active_protocol_design",
+                    command = [sys.executable, "-m", "experiments.sd_membership_sft.archive.active_protocol_design",
                                "--benchmark", benchmark, "--epoch", str(epoch), "--seed", str(seed)]
                 else:
-                    command = [sys.executable, "-m", "experiments.sd_membership_sft.conditional_accept_only",
+                    command = [sys.executable, "-m", "experiments.shared.methods.conditional_accept_only",
                                "--seed", str(seed), "--budget", str(budget), "--threads", "2"]
                     if args.phase == "paired":
                         output = root / f"directions_validation/paired/{condition}/b{budget}_seed{seed}"
