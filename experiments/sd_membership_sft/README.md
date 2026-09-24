@@ -69,6 +69,20 @@ bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh summarize
 
 写入 `artifacts/runs/audits/qwen_fixed_v1/fixed_only_summary/`，包括 `SUMMARY.json` 和 CSV 报表；矩阵尚未完成时返回码为 2，部分结果仍会写出。原始全矩阵汇总保留作为历史快照，以当前 `fixed_only_summary/` 为准。
 
+### 可选：复用 WS/RS/BT 的原始生成
+
+`--reuse-robustness-reference` 让同一条件的 WS、RS、BT 复用一次相同种子、相同输入的贪心原始续写，后续方法仍独立生成扰动/改写后的续写。SaMIA 的 10 路采样不复用，方法定义及其耗时不变。此模式要求独立的 `--output-root`，不能写入上面的在跑审计目录；它也会把这一模式写进任务配置和每个方法的报告。示例：
+
+```bash
+SD_AUDIT_PYTHON=/path/to/existing/.venv/bin/python \
+  bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh status \
+  --model-root /path/to/existing/artifacts/runs/training/controlled_sft_v2/model_pairs/qwen3 \
+  --output-root artifacts/runs/audits/qwen_shared_reference_v1 \
+  --reuse-robustness-reference
+```
+
+该模式记录的是**实际增量耗时**：第一个运行的 WS/RS/BT 包含原始续写生成，后续两个方法的耗时不包含它。因此其逐方法成本不能直接和上面的独立运行成本比较；分数应保持一致，但正式使用前仍需在 GPU 上核对一次。默认不启用此模式。
+
 ## 训练与验证
 
 ```bash

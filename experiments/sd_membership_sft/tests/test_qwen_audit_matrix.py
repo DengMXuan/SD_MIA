@@ -172,6 +172,59 @@ def test_baseline_adapter_uses_only_400_fit_records_and_200_independent_calibrat
     assert called == ["petal", "loss"]  # checked completed methods are not re-scored
 
 
+def test_optimized_baseline_adapter_reuses_reference_with_explicit_cost_mode(tmp_path, monkeypatch):
+    import experiments.sd_membership_sft.matrix_baselines as runner
+
+    task = tasks_at(tmp_path)[0]
+    task["methods"] = ["ws", "rs", "bt"]
+    task["settings"]["reuse_robustness_reference"] = True
+    prepared = prepared_records()
+    monkeypatch.setattr(runner, "load_finetuned_model", lambda *args, **kwargs: torch.nn.Linear(1, 1))
+    monkeypatch.setattr(runner, "TargetScorer", FakeScorer)
+    observed = []
+
+    def score(args, progress, scorer, records, auxiliary, tokenizer, methods, *, reference_cache):
+        reused = "texts" in reference_cache
+        observed.append((methods[0], reused))
+        reference_cache.setdefault("texts", ["reference"] * len(records))
+        return {methods[0]: np.linspace(0., 1., len(records))}
+
+    monkeypatch.setattr(runner, "_score_methods", score)
+    runner.run_baselines(task, "cpu", SimpleNamespace(target_model="toy"), prepared,
+                         {"files": [], "checkpoints": []})
+    assert observed == [("ws", False), ("rs", True), ("bt", True)]
+    for method, reused in observed:
+        report = read_result(Path(task["output"]) / method)
+        assert report["baseline_execution_mode"] == "shared_robustness_reference"
+        assert report["cost"]["reference_reused"] is reused
+        assert "incremental cost" in report["cost_conventions"]["reuse"]
+
+
+def test_shared_reference_cli_requires_separate_output_root(monkeypatch):
+    import sys
+    from experiments.sd_membership_sft.audit.qwen_audit_matrix import main
+    from experiments.sd_membership_sft.audit.cli import main as current_main
+
+    for entry in (main, current_main):
+        monkeypatch.setattr(sys, "argv", ["qwen_audit_matrix", "status", "--reuse-robustness-reference"])
+        with pytest.raises(SystemExit) as error:
+            entry()
+        assert error.value.code == 2
+
+
+def test_shared_reference_cli_records_mode_in_task_settings(tmp_path, monkeypatch, capsys):
+    import sys
+    from experiments.sd_membership_sft.audit import cli
+
+    settings_seen = []
+    monkeypatch.setattr(cli, "fixed_tasks", lambda *args: settings_seen.append(args[-1]) or [])
+    monkeypatch.setattr(sys, "argv", ["audit", "status", "--output-root", str(tmp_path),
+                                  "--reuse-robustness-reference"])
+    cli.main()
+    capsys.readouterr()
+    assert settings_seen[0]["reuse_robustness_reference"] is True
+
+
 @pytest.mark.parametrize("protocol", ["fixed", "natural"])
 def test_main_matrix_uses_both_draft_roles_and_resumes_frozen_detector(tmp_path, protocol):
     from experiments.sd_membership_sft.matrix_main import run_main

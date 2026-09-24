@@ -631,7 +631,8 @@ def _normalise_methods(value: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(requested))
 
 
-def _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, methods):
+def _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, methods,
+                   *, reference_cache: dict | None = None):
     needs_aux = bool({"recall", "icp_mia", "petal"} & set(methods))
     if needs_aux and not auxiliary:
         raise RuntimeError("the requested target-only methods need non-member auxiliary records")
@@ -765,21 +766,28 @@ def _score_methods(args, progress, scorer, all_records, auxiliary, tokenizer, me
                         )
                     )
 
-        baseline_texts: list[str] = [""] * len(all_records)
         if {"ws", "rs", "bt"} & generation_methods:
-            for start, batch_inputs in batches(generation_inputs, "shared robustness reference generation"):
-                end = start + len(batch_inputs)
-                generated = scorer.generate_batch(
-                    batch_inputs,
-                    max(max_news[start:end]),
-                    args.seed + 10_000 + start,
-                    sample=False,
-                )
-                for offset, rows in enumerate(generated):
-                    baseline_texts[start + offset] = tokenizer.decode(
-                        trim(rows[0], max_news[start + offset]),
-                        skip_special_tokens=True,
+            if reference_cache is not None and "texts" in reference_cache:
+                baseline_texts = reference_cache["texts"]
+                if len(baseline_texts) != len(all_records):
+                    raise ValueError("robustness reference cache has the wrong record count")
+            else:
+                baseline_texts = [""] * len(all_records)
+                for start, batch_inputs in batches(generation_inputs, "shared robustness reference generation"):
+                    end = start + len(batch_inputs)
+                    generated = scorer.generate_batch(
+                        batch_inputs,
+                        max(max_news[start:end]),
+                        args.seed + 10_000 + start,
+                        sample=False,
                     )
+                    for offset, rows in enumerate(generated):
+                        baseline_texts[start + offset] = tokenizer.decode(
+                            trim(rows[0], max_news[start + offset]),
+                            skip_special_tokens=True,
+                        )
+                if reference_cache is not None:
+                    reference_cache["texts"] = baseline_texts
 
         for kind in ("ws", "rs"):
             if kind not in generation_methods:

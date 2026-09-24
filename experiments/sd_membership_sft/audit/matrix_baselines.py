@@ -87,6 +87,8 @@ def run_baselines(task, device, cfg, prepared, sources):
     remaining = [name for name in methods if not already_complete(output / name, digest({"task": task, "method": name}), sources)]
     if not remaining:
         return
+    reuse_reference = bool(settings.get("reuse_robustness_reference", False))
+    reference_cache = {} if reuse_reference else None
     model = load_finetuned_model(Path(task["run_dir"]), cfg.target_model, torch.device(device),
                                  attn_implementation="sdpa")
     model.requires_grad_(False)
@@ -110,9 +112,11 @@ def run_baselines(task, device, cfg, prepared, sources):
                 forward_calls[meter.phase] += 1
             handle = model.register_forward_pre_hook(count_forward)
             scorer.cost_meter = meter
+            reused_reference = reference_cache is not None and method in ("ws", "rs", "bt") and "texts" in reference_cache
             with timed(device) as elapsed:
+                score_kwargs = {"reference_cache": reference_cache} if reference_cache is not None and method in ("ws", "rs", "bt") else {}
                 values = np.asarray(_score_methods(args, progress, scorer, records, auxiliary,
-                                                   prepared.tokenizer, (method,))[method], dtype=float)
+                                                   prepared.tokenizer, (method,), **score_kwargs)[method], dtype=float)
             phases = dict(progress.seconds)
             # Preparation includes tokenization, reference construction and
             # per-method overhead outside record/batch iteration boundaries.
@@ -133,13 +137,19 @@ def run_baselines(task, device, cfg, prepared, sources):
                             generated_tokens=totals["output_tokens"])
             cost = summarize_cost(phases, len(test), counters, peak_memory(device),
                                   execution_group=task["id"] + "/" + method)
+            if reuse_reference:
+                cost["reference_reused"] = reused_reference
+            cost_conventions = dict(COST_CONVENTIONS)
+            if reuse_reference:
+                cost_conventions["reuse"] = ("physical incremental cost: the first pending WS/RS/BT method generates "
+                                             "the shared greedy reference; later methods reuse it and exclude that work")
             report = {
                 "method": method, "request_key": digest({"task": task, "method": method}),
                 "sources": sources, "condition": task["condition"], "settings": settings,
                 "metrics": metrics(values, labels, cal, test, seed=args.seed),
                 "metric_conventions": METRIC_CONVENTIONS, "cost": cost,
                 "phase_work": raw, "phase_target_forward_calls": dict(forward_calls),
-                "cost_conventions": COST_CONVENTIONS, "access_channel": access_channel(method),
+                "cost_conventions": cost_conventions, "access_channel": access_channel(method),
                 "reference_records_available": len(auxiliary),
                 "reference_records_used": min(args.recall_shots, len(auxiliary)) if method == "recall" else len(auxiliary),
                 "reference_ids": [r.record_id for r in (auxiliary[:args.recall_shots] if method == "recall" else auxiliary)],
@@ -149,6 +159,8 @@ def run_baselines(task, device, cfg, prepared, sources):
                 "hardware": {"device": str(device), "name": torch.cuda.get_device_name(device) if torch.device(device).type == "cuda" else "cpu",
                              "dtype": str(next(model.parameters()).dtype), "attention": "sdpa", "torch": torch.__version__},
             }
+            if reuse_reference:
+                report["baseline_execution_mode"] = "shared_robustness_reference"
             save_result(output / method, record_ids=ids, labels=labels, scores=values,
                         calibration=cal, test=test, report=report)
         except Exception as error:
