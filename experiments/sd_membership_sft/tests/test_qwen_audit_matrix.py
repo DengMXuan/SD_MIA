@@ -187,17 +187,49 @@ def test_optimized_baseline_adapter_reuses_reference_with_explicit_cost_mode(tmp
         reused = "texts" in reference_cache
         observed.append((methods[0], reused))
         reference_cache.setdefault("texts", ["reference"] * len(records))
+        # WS pays for reference + perturbation, RS only its perturbation,
+        # and BT pays for its rewrite + scoring generations.
+        prompts = [[1]] * len(records)
+        outputs = [[[2]]] * len(records)
+        for _ in range((0 if reused else 1) + (2 if methods[0] == "bt" else 1)):
+            scorer.cost_meter.generation(prompts, outputs, set())
         return {methods[0]: np.linspace(0., 1., len(records))}
 
     monkeypatch.setattr(runner, "_score_methods", score)
     runner.run_baselines(task, "cpu", SimpleNamespace(target_model="toy"), prepared,
                          {"files": [], "checkpoints": []})
     assert observed == [("ws", False), ("rs", True), ("bt", True)]
+    expected_sequences = {"ws": 2 * 4200, "rs": 4200, "bt": 2 * 4200}
     for method, reused in observed:
         report = read_result(Path(task["output"]) / method)
         assert report["baseline_execution_mode"] == "shared_robustness_reference"
         assert report["cost"]["reference_reused"] is reused
         assert "incremental cost" in report["cost_conventions"]["reuse"]
+        if reused:
+            assert "amortized_ms_per_record" not in report["cost"]
+            assert "total_seconds" not in report["cost"]
+            assert "physical_incremental_amortized_ms_per_record" in report["cost"]
+            assert report["cost"]["execution_group_seconds"] == report["cost"]["physical_incremental_total_seconds"]
+            assert report["cost"]["physical_incremental_target_sequences"] == expected_sequences[method]
+            assert report["cost"]["physical_incremental_generated_tokens"] == expected_sequences[method]
+            assert "physical_incremental_phase_work" in report
+        else:
+            assert report["cost"]["cost_basis"] == "standalone_measured"
+            assert "amortized_ms_per_record" in report["cost"]
+            assert report["cost"]["target_sequences"] == expected_sequences[method]
+            assert report["cost"]["generated_tokens"] == expected_sequences[method]
+
+    from experiments.sd_membership_sft.audit import qwen_audit_matrix as matrix
+    monkeypatch.setattr(matrix, "ALL_METHODS", ("ws", "rs", "bt"))
+    summary = matrix.summarize([task], tmp_path / "summary")
+    assert summary["complete"]
+    physical = sum(read_result(Path(task["output"]) / method)["cost"].get(
+        "execution_group_seconds", read_result(Path(task["output"]) / method)["cost"].get("total_seconds"))
+        for method in ("ws", "rs", "bt"))
+    assert summary["unique_successful_measured_method_seconds"] == pytest.approx(physical)
+    rs_row = next(row for row in summary["rows"] if row["method"] == "rs")
+    assert "amortized_ms_per_record" not in rs_row
+    assert "physical_incremental_amortized_ms_per_record" in rs_row
 
 
 def test_shared_reference_cli_requires_separate_output_root(monkeypatch):

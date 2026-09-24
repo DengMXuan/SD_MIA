@@ -135,20 +135,35 @@ def run_baselines(task, device, cfg, prepared, sources):
                             target_forward_calls=sum(forward_calls.values()), draft_sequences=0,
                             target_input_tokens=totals["input_tokens"], draft_input_tokens=0,
                             generated_tokens=totals["output_tokens"])
-            cost = summarize_cost(phases, len(test), counters, peak_memory(device),
-                                  execution_group=task["id"] + "/" + method)
+            measured_cost = summarize_cost(phases, len(test), counters, peak_memory(device),
+                                           execution_group=task["id"] + "/" + method)
+            cost = measured_cost
             if reuse_reference:
-                cost["reference_reused"] = reused_reference
+                if reused_reference:
+                    # These are measured costs of work actually done in this method's
+                    # execution, excluding the reused reference generation.
+                    cost = {"execution_group": measured_cost["execution_group"],
+                            "execution_group_seconds": measured_cost["total_seconds"],
+                            "reference_reused": True, "cost_basis": "physical_incremental"}
+                    cost.update({"physical_incremental_" + key: value for key, value in measured_cost.items()
+                                 if key != "execution_group"})
+                else:
+                    cost["reference_reused"] = False
+                    cost["cost_basis"] = "standalone_measured"
             cost_conventions = dict(COST_CONVENTIONS)
             if reuse_reference:
                 cost_conventions["reuse"] = ("physical incremental cost: the first pending WS/RS/BT method generates "
-                                             "the shared greedy reference; later methods reuse it and exclude that work")
+                                             "the shared greedy reference and retains standalone measured cost; later "
+                                             "methods reuse it and report only explicitly prefixed incremental fields")
+                if reused_reference:
+                    cost_conventions["scope"] = ("physical_incremental_* covers this method's measured work only, "
+                                                 "excluding shared reference generation; rates remain amortized over "
+                                                 "test documents and are not standalone method rates")
             report = {
                 "method": method, "request_key": digest({"task": task, "method": method}),
                 "sources": sources, "condition": task["condition"], "settings": settings,
                 "metrics": metrics(values, labels, cal, test, seed=args.seed),
                 "metric_conventions": METRIC_CONVENTIONS, "cost": cost,
-                "phase_work": raw, "phase_target_forward_calls": dict(forward_calls),
                 "cost_conventions": cost_conventions, "access_channel": access_channel(method),
                 "reference_records_available": len(auxiliary),
                 "reference_records_used": min(args.recall_shots, len(auxiliary)) if method == "recall" else len(auxiliary),
@@ -159,6 +174,12 @@ def run_baselines(task, device, cfg, prepared, sources):
                 "hardware": {"device": str(device), "name": torch.cuda.get_device_name(device) if torch.device(device).type == "cuda" else "cpu",
                              "dtype": str(next(model.parameters()).dtype), "attention": "sdpa", "torch": torch.__version__},
             }
+            if reused_reference:
+                report["physical_incremental_phase_work"] = raw
+                report["physical_incremental_phase_target_forward_calls"] = dict(forward_calls)
+            else:
+                report["phase_work"] = raw
+                report["phase_target_forward_calls"] = dict(forward_calls)
             if reuse_reference:
                 report["baseline_execution_mode"] = "shared_robustness_reference"
             save_result(output / method, record_ids=ids, labels=labels, scores=values,

@@ -272,7 +272,9 @@ def summarize(tasks, output_root):
                     row["access_channel"] = report["access_channel"]
                     row["report"] = str(Path(task["output"]) / method / "REPORT.json")
                     group = report["cost"]["execution_group"]
-                    seconds = report["cost"].get("execution_group_seconds", report["cost"]["total_seconds"])
+                    seconds = report["cost"].get("execution_group_seconds")
+                    if seconds is None:
+                        seconds = report["cost"]["total_seconds"]
                     physical_groups[group] = max(physical_groups.get(group, 0.), seconds)
                 rows.append(row)
                 group_key = (condition["benchmark"], condition["epoch"], role, method)
@@ -302,15 +304,20 @@ def summarize(tasks, output_root):
     attempts = []
     for path in sorted((output_root / "executions").glob("*/STATUS.json")):
         attempts.append(json.loads(path.read_text()))
+    shared_costs = any(row.get("cost_basis") == "physical_incremental" for row in rows)
+    note = "baseline display duplication is not independent evidence; worker time includes loading/retries and is not matrix elapsed wall time"
+    if shared_costs:
+        note += "; shared-reference rows expose physical incremental fields and leave standalone method cost columns empty"
     payload = dict(complete=completed_count == len(rows) and not errors, expected_rows=len(rows),
                    completed_rows=completed_count, errors=errors, rows=rows, seed_summary=aggregates,
                    unique_successful_execution_groups=len(physical_groups),
                    unique_successful_measured_method_seconds=sum(physical_groups.values()),
                    attempted_worker_wall_seconds_sum=sum(r.get("worker_wall_seconds", 0.) for r in attempts),
-                   note="baseline display duplication is not independent evidence; worker time includes loading/retries and is not matrix elapsed wall time")
+                   note=note)
     _write_json(output_root / "SUMMARY.json", payload)
     lines = ["# Qwen audit matrix", "", f"Completed rows: {completed_count}/{len(rows)}. Complete: {payload['complete']}.", "",
              "ROC and independently calibrated TPR are separate. pAUC below is area/0.10; raw area is retained in CSV/JSON.", "",
+             "Shared-reference rows without standalone cost show — in ms/record; their measured incremental costs use physical_incremental_* fields." if shared_costs else "", "",
              "| Dataset | Epoch | Seed | Draft | Method | AUC | pAUC10 norm | ROC TPR10 | ROC TPR1 | Cal TPR1 | Cal FPR1 | ms/record | Status |",
              "|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---|"]
     for row in rows:
