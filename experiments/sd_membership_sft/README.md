@@ -37,13 +37,12 @@ artifacts/
   data/
     pools/                     # 冻结数据池
     splits/controlled_sft_v2/   # 共享数据划分与审核证明
-  archive/                     # 历史实验和已停用流程的产物
   migrations/20260922_layout/  # 迁移文件指纹、清单与核验结果
 ```
 
-`experiments/results/` 与 `experiments/data` 下的旧入口是兼容链接，不是另一份数据。训练护照内的历史路径不改写，以保留训练时的原始记录及 SHA256；它们通过这些链接继续有效。不要删除这些链接。
+`experiments/results/sft_runs/` 与 `experiments/data` 下保留的当前实验入口是兼容链接，不是另一份数据。训练护照内的路径不改写，以保留训练时的原始记录及 SHA256；它们通过这些链接继续有效。不要删除这些链接。
 
-自然 SD 的已有产物保留在对应审计条件的 `natural/` 子目录；当前入口不会继续调度它。自定义 `--output-root` 的审计缓存放在该任务自己的 `cache/`，避免多个独立实验共用缓存。
+已停用的自然 SD 产物和旧实验归档已清理；当前入口不会调度自然 SD。自定义 `--output-root` 的审计缓存放在该任务自己的 `cache/`，避免多个独立实验共用缓存。
 
 ## 运行当前审计
 
