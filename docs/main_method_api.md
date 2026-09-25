@@ -35,7 +35,7 @@ ordinary = evaluate_main(reference, ordinary_output, draft_role=role, device="cu
 
 `evaluate_main` 返回校验后的报告字典。方法报告在
 `<output_dir>/main_fixed_sparse_positive/REPORT.json`，并保存分数、观测和检测器。
-同参数、同来源重复调用会复用已完成阶段。每个模型、数据条件、草稿角色、隐私预算应使用独立目录；修改审计参数或源码后不得混用旧缓存。默认 `audit_seed=20260914`、`detector_epochs=30`，可显式传入。
+同参数、同来源重复调用会复用已完成阶段。每个模型、数据条件、草稿角色、隐私预算应使用独立目录；修改审计参数或源码后不得混用旧缓存。默认 `audit_seed=None` 表示继承对应训练/数据条件的 seed（1919/1949/1978），检测器、辅助集内部分配和 AUC bootstrap 共用该 seed；显式传入的 audit_seed 必须与条件一致。`detector_epochs` 默认 30。
 
 EAGLE/MTP 首次采集前检查前缀一致性、概率归一化和固定候选协议。检测器仍只接收草稿特征与接受反馈；草稿头自身依赖目标隐藏状态，报告会明确这一访问条件。该参考实现的成本不能直接解释为生产推测解码加速。
 

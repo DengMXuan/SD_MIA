@@ -35,12 +35,14 @@ def collection_cost(observations, parts):
     }
 
 
-def evaluate(observations, point, detector, output, *, two_sided=False, bootstrap=200, metric_seed=20260914):
+def evaluate(observations, point, detector, output, *, two_sided=False, bootstrap=200, metric_seed=None):
     """Save one future curve point. This API never schedules an experiment matrix."""
     if detector.metadata["contract"]["identity"] != fitting_identity(observations, point):
         raise ValueError("detector was fitted on a different training/validation allocation or budget")
     if type(bootstrap) is not int or bootstrap < 0:
         raise ValueError("bootstrap must be a nonnegative integer")
+    if metric_seed is None:
+        metric_seed = observations.contract["seed"]
     data = observations.count_data()
     parts = partition_indices(data, point)
     contract = {"schema": "resource_evaluation_v1", "observations": observations.signature,

@@ -39,7 +39,7 @@ def main():
     # Retained exactly for compatibility with pre-existing task signatures.
     parser.add_argument("--starts", nargs="+", default=["suffix64"], help="legacy request identity only; does not affect observations")
     parser.add_argument("--rounds-per-start", type=int, default=32, help="legacy request identity only; does not affect observations")
-    parser.add_argument("--audit-seed", type=int, default=20260914)
+    parser.add_argument("--audit-seed", type=int, default=None, help="must match the condition seed; defaults to it")
     parser.add_argument("--detector-epochs", type=int, default=30)
     args = parser.parse_args()
     if args.rounds_per_start < 1 or args.detector_epochs < 1:

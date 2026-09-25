@@ -30,12 +30,29 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def checkpoint_fingerprint(path: Path) -> str:
-    """Hash checkpoint paths and bytes so provenance survives relocation."""
+def is_runtime_bytecode(path: Path) -> bool:
+    """Only import-generated caches; standalone bytecode may be model code."""
+    path = Path(path)
+    return '__pycache__' in path.parts and path.suffix in ('.pyc', '.pyo')
+
+
+def checkpoint_files(path: Path) -> list[Path]:
+    """Model assets include remote source, weights, configs and tokenizer files.
+
+    Importing checkpoint-owned Python may create disposable bytecode alongside
+    it. Inventory and content hashing must use this same asset boundary.
+    """
     path = Path(path)
     if not path.is_dir():
         raise FileNotFoundError(path)
-    files = sorted(item for item in path.rglob("*") if item.is_file())
+    return sorted(item for item in path.rglob('*')
+                  if item.is_file() and not is_runtime_bytecode(item.relative_to(path)))
+
+
+def checkpoint_fingerprint(path: Path) -> str:
+    """Hash checkpoint asset paths and bytes so provenance survives relocation."""
+    path = Path(path)
+    files = checkpoint_files(path)
     if not files:
         raise RuntimeError(f"Checkpoint has no files: {path}")
     digest = hashlib.sha256()

@@ -107,7 +107,10 @@ class FrozenAdapter:
             captured = []
             handle = base.norm.register_forward_hook(lambda _m, _a, value: captured.append(value))
             try:
-                self.draft(input_ids=ids, hidden_states=hidden, use_cache=False, return_dict=True)
+                # The checkpoint's remote code only builds a causal mask when
+                # given a 2-D mask. None would attend to future hidden states.
+                self.draft(input_ids=ids, hidden_states=hidden, attention_mask=torch.ones_like(ids),
+                           use_cache=False, return_dict=True)
                 logits = base.lm_head(captured[-1])
             finally:
                 handle.remove()
@@ -133,6 +136,11 @@ class FrozenAdapter:
 
     @torch.inference_mode()
     def rows(self, tokens: list[int]):
+        from experiments.shared.models.precision import inference_attention
+        with inference_attention(self.target, self.draft):
+            return self._rows(tokens)
+
+    def _rows(self, tokens: list[int]):
         ids = torch.tensor([tokens], device=self.device)
         output = self._target(ids, hidden=self.kind != "plain")
         q = self._draft_logits(ids, output)[0]

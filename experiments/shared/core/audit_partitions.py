@@ -42,8 +42,13 @@ def deployment_partitions(
     record_ids: np.ndarray,
     record_roles: np.ndarray,
     contract: ControlledDataContract = DEFAULT_DATA_CONTRACT,
+    *,
+    seed: int = SPLIT_SEED,
 ) -> dict[str, np.ndarray]:
-    """Partition an explicit 600+2000+2000 four-role observation archive."""
+    """Partition four-role records; the default preserves historical callers.
+
+    Current audit entry points explicitly pass their condition seed.
+    """
     labels = np.asarray(labels, dtype=np.int64)
     record_ids = np.asarray(record_ids)
     roles = np.asarray(record_roles).astype(str)
@@ -67,7 +72,7 @@ def deployment_partitions(
     if np.any(labels[test_members] != 1):
         raise ValueError("member roles must have label 1")
 
-    shuffled = np.random.default_rng(SPLIT_SEED).permutation(auxiliary)
+    shuffled = np.random.default_rng(seed).permutation(auxiliary)
     train_end = contract.detector_train
     validation_end = train_end + contract.detector_validation
     train = np.sort(shuffled[:train_end])

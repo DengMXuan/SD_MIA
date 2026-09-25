@@ -82,7 +82,7 @@ prepared = prepare_study(base_prepared, extra, extension, study)
 observations = collect_observations(
     prepared, adapter, CACHE_ROOT / condition_key / "calibration_b2",
     sources={"frozen": sources, "extension_digest": digest(extension)},
-    multiplicity=2, seed=20260914,
+    multiplicity=2, seed=shared["seed"],
 )
 point = study["points"][0]
 detector = fit_detector(observations, point, CACHE_ROOT / condition_key / "detectors")

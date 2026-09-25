@@ -38,7 +38,7 @@ def main():
     parser.add_argument('--epochs', nargs='+', type=int, choices=(1, 3), default=[1, 3])
     parser.add_argument('--seeds', nargs='+', type=int, choices=(1919, 1949, 1978), default=[1919, 1949, 1978])
     parser.add_argument('--gpus', nargs='+', type=int, default=[0])
-    parser.add_argument('--audit-seed', type=int, default=20260914)
+    parser.add_argument('--audit-seed', type=int, default=None, help="must match the condition seed; defaults to it")
     parser.add_argument('--detector-epochs', type=int, default=30)
     args = parser.parse_args()
     if args.detector_epochs < 1:

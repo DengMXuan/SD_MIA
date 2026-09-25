@@ -14,6 +14,11 @@ artifacts/
 │   │   └── checkpoints, heads, adapters  # 指向本批次 models 的兼容链接
 │   └── models/<track>/<pair>/<dataset>/epochN/seedN/
 │       └── checkpoints, heads, adapters  # 大模型权重/草稿头/适配器实体
+├── evaluations/<batch>/
+│   ├── tasks/<pair>/<dataset>/epochN/seedN/<evaluation>/ # 请求、抽样、分数、报告
+│   ├── intermediate/<pair>/<dataset>/epochN/seedN/<evaluation>/ # 逐批/逐条恢复
+│   ├── executions/<attempt>/             # 评估 worker 日志及状态
+│   └── reports/                          # 条件指标与跨 seed 汇总
 ├── audits/<batch>/
 │   ├── tasks/<condition>/<role>/<protocol>/
 │   │   ├── <method>/REPORT.json, scores.npz # 最终方法报告及逐条分数
@@ -43,13 +48,16 @@ artifacts/
 | 统一训练矩阵 | `scripts/retrain_unified_matrix.sh` | `artifacts/training/controlled_sft_v2/runs/` |
 | 训练权重 | 各训练入口自动安排 | `artifacts/training/controlled_sft_v2/models/` |
 | 共享划分 | 统一训练 preflight | `artifacts/training/controlled_sft_v2/splits/` |
-| 当前 Qwen 审计 | `audit.cli` | `artifacts/audits/qwen_shared_reference_v1/tasks/` |
-| 历史 Qwen 审计 | 读取既有产物 | `artifacts/audits/qwen_fixed_v1/` |
-| 跨模型审计 | `cross_model_audit.cli` | `artifacts/audits/cross_model_fixed_v1/tasks/` |
+| 模型资产评估 | `model_quality.cli` | `artifacts/evaluations/model_quality_v2/` |
+| 当前 Qwen 审计 | `audit.cli` | `artifacts/audits/qwen_condition_seed_v1/tasks/` |
+| Qwen epoch 1 KD 主方法重跑 | `audit.qwen_kd_epoch1` | `artifacts/audits/qwen_kd_epoch1_condition_seed_v1/tasks/` |
+| 跨模型审计 | `cross_model_audit.cli` | `artifacts/audits/cross_model_condition_seed_v1/tasks/` |
 | DP 训练/审计 | `dp_defense.sweep` | `artifacts/training/dp_defense_v1/runs/`、`artifacts/audits/dp_defense_v1/tasks/` |
 | 资源曲线 | `resource_curves.storage` | `artifacts/audits/resource_curves_v1/{tasks,intermediate,splits}/` |
 
 Qwen 与跨模型 CLI 的 `--output-root` 指定任务目录，汇总自动写入同批次 `reports/`，调度日志写入 `executions/`。不要把 `--output-root` 指向整棵 `artifacts/` 或某批次的父目录。
+
+错误审计 seed 的历史 `qwen_fixed_v1` 批次及其兼容链接已删除；该路径仍为保留名称，不作为新实验输出目录。
 
 自定义目录遵循相同的产物名称，但保持独立：审计写入 `<output>/intermediate/`、`<output>/reports/`、`<output>/executions/`；自定义训练仍把权重保存在运行目录内。底层 baseline、pretraining 和单方法 API 接受显式输出路径，其局部文件合同保持不变；推荐路径见各自 README。
 
@@ -69,7 +77,9 @@ Qwen 与跨模型 CLI 的 `--output-root` 指定任务目录，汇总自动写�
 .venv/bin/python -m experiments.maintenance.migrate_lifecycle_layout verify
 ```
 
-执行 `apply` 时必须停止实验写入；脚本还会检查已有 worker/coordinator 文件锁。它只做同盘 rename，不复制 2 TB 级权重，不删除实验文件，不改写已有 JSON、指标、分数和来源哈希。跨盘移动或目标冲突会失败。先保存清单，再移动；中断后可重复 `apply`，复用原核验清单。
+执行 `apply` 时必须停止实验写入；脚本还会检查已有 worker/coordinator 文件锁。它只做同盘 rename，不复制 2 TB 级权重，不删除实验文件，不改写已有 JSON、指标、分数和来源哈希。跨盘移动或目标冲突会失败。先保存清单，再移动；中断后重复 apply 原本复用原核验清单。
+
+上述 `verify` 是 2026-09-25 迁移时的完整历史快照检查。旧 `qwen_fixed_v1` 批次删除后，原清单中的文件不再存在，重新运行该检查会失败；当前实验请使用对应入口的 `dry-run`/`status`。
 
 旧 `artifacts/runs/`、`artifacts/models/`、`artifacts/cache/`、`artifacts/data/splits/`、`artifacts/figures/` 中的已迁移入口保留为链接；更早的 `experiments/results/` 链接继续可用。内部相对链接会随目录迁移修正。它们只供旧护照和脚本读取，新实验使用上面的正式目录。
 

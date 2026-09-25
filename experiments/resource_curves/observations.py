@@ -134,7 +134,7 @@ def load_observations(folder, *, expected_contract=None):
     return result
 
 
-def collect_observations(prepared, adapter, output, *, sources, multiplicity=2, seed=20260914):
+def collect_observations(prepared, adapter, output, *, sources, seed, multiplicity=2):
     """Measured collection with per-document recovery, in a separate workspace.
 
     ``prepared`` uses the existing records/tokenizer/record_ids/record_roles/

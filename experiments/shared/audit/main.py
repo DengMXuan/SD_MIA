@@ -95,7 +95,8 @@ def run_main(task, device, cfg, prepared, sources):
         return
     request = digest(task)
     archive = output / "observations.npz"
-    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles)
+    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles,
+                                  seed=settings["audit_seed"])
     if archive.exists() and archive.with_suffix(".npz.json").exists():
         data, envelope = load_archive(archive, check_sources=False)
         if (envelope["contract"].get("matrix_request_key") != request

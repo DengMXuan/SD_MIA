@@ -56,15 +56,15 @@ bash experiments/cross_model_audit/run.sh run \
 ## 保存与恢复
 
 ```text
-artifacts/audits/cross_model_fixed_v1/tasks/
+artifacts/audits/cross_model_condition_seed_v1/tasks/
   <model_pair>/<dataset>/epochN/seedN/
     baseline/<method>/{REPORT.json,scores.npz}
     <draft_role>/fixed/<method>/{REPORT.json,scores.npz}
-artifacts/audits/cross_model_fixed_v1/executions/<attempt>/{TASK.json,STATUS.json,worker.log}
-artifacts/audits/cross_model_fixed_v1/reports/
+artifacts/audits/cross_model_condition_seed_v1/executions/<attempt>/{TASK.json,STATUS.json,worker.log}
+artifacts/audits/cross_model_condition_seed_v1/reports/
   {RESULTS.csv,RESULTS.md,SEED_SUMMARY.csv,SUMMARY.json}
 
-artifacts/audits/cross_model_fixed_v1/intermediate/
+artifacts/audits/cross_model_condition_seed_v1/intermediate/
   <model_pair>/<dataset>/epochN/seedN/<draft_role>/fixed/
     trajectories/  observations.npz  observations.npz.json  detector.pt  FIT.json
 ```

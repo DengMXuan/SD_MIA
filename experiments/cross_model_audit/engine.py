@@ -1,6 +1,8 @@
 """Isolated fixed-probe scheduler; existing Qwen coordinator is never modified."""
 from __future__ import annotations
 
+from experiments.shared.audit.config import condition_settings
+
 import argparse
 import fcntl
 import json
@@ -28,7 +30,7 @@ def make_tasks(model_root, output_root, benchmarks, epochs, seeds, settings, mod
             for seed in seeds:
                 condition = dict(benchmark=benchmark, epoch=epoch, condition_seed=seed)
                 key = f"{benchmark}/epoch{epoch}/seed{seed}"
-                base = dict(run_dir=str((model_root / key).resolve()), condition=condition, settings=settings)
+                base = dict(run_dir=str((model_root / key).resolve()), condition=condition, settings=condition_settings(settings, seed))
                 condition["model_pair"] = model_pair
                 base["model_pair"] = model_pair
                 key = model_pair + "/" + key

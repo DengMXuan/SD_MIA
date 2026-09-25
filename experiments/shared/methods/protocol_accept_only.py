@@ -103,12 +103,18 @@ def score_metrics(scores, labels, parts, *, seed):
     return result
 
 
-def evaluate(path: Path, output: Path, *, seed=20260914, epochs=30, device="cpu"):
+def evaluate(path: Path, output: Path, *, seed=None, epochs=30, device="cpu"):
     data, envelope = load_archive(path)
     contract = envelope["contract"]
     if contract["data_contract"] != "four_role_600":
         raise ValueError("runtime smoke archives cannot establish membership results")
-    parts = deployment_partitions(data["labels"], data["record_ids"], data["record_roles"])
+    if type(contract.get("seed")) is not int or contract["seed"] < 0:
+        raise ValueError("observation archive requires an explicit nonnegative seed")
+    if seed is None:
+        seed = contract["seed"]
+    elif seed != contract["seed"]:
+        raise ValueError("detector/metric seed must match the observation condition seed")
+    parts = deployment_partitions(data["labels"], data["record_ids"], data["record_roles"], seed=seed)
     assert_partition_contract(data["labels"], data["record_ids"], parts)
     source = {"archive_sha256": envelope["archive_sha256"], "sidecar_sha256": envelope["sidecar_sha256"],
               "seed": seed, "epochs": epochs, "device": device,
@@ -159,7 +165,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--observations", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--seed", type=int, default=20260914)
+    parser.add_argument("--seed", type=int, default=None, help="defaults to the observation condition seed")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()

@@ -45,7 +45,8 @@ def run_main(task, device, cfg, prepared, sources):
         return
     request = digest(task)
     archive = output / "observations.npz"
-    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles)
+    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles,
+                                  seed=settings["audit_seed"])
     if archive.exists() and archive.with_suffix(".npz.json").exists():
         data, envelope = load_archive(archive, check_sources=False)
         if (envelope["contract"].get("matrix_request_key") != request
@@ -61,7 +62,7 @@ def run_main(task, device, cfg, prepared, sources):
         validation = None
         if spec.is_head:
             from experiments.shared.models.validation import validate_adapter
-            validation = validate_adapter(adapter, prompt, response)
+            validation = validate_adapter(adapter, prompt, response, seed=settings["audit_seed"])
         # One untimed warmup on a training auxiliary, never the test/calibration set.
         fixed_trace(adapter, prompt, response, seed=settings["audit_seed"])
         contract = dict(

@@ -127,11 +127,34 @@ _Avoid_: directory-exists completion, whole-matrix fail-fast
 
 **Condition seed**:
 The root seed that jointly identifies the controlled member/nonmember/auxiliary
-assignment and every stochastic training stage for one experiment condition.
-For a fixed benchmark and seed, all target–head pairs share the same raw
-document assignment, and every data and training stage directly reuses the
-same numeric seed without stage-specific offsets.
+assignment and the training and evaluation randomness for one experiment
+condition; the condition seeds are 1919, 1949, and 1978. Under the revised
+evaluation policy, main-method randomness, detector auxiliary partitioning,
+AUC bootstrap, and generation-quality evaluation reuse the corresponding
+condition seed without stage-specific offsets; historical reports retain
+their recorded seeds.
 _Avoid_: training-only seed, data-only seed
+
+**Target generation-quality evaluation**:
+A document-continuation evaluation of the target model using BLEU-4,
+ROUGE-1, and ROUGE-L, comparing member with nonmember performance and the
+fine-tuned target with its base model on the same records.
+_Avoid_: general-purpose capability evaluation, draft quality evaluation
+
+**Generation-quality evaluation sample**:
+A selection of 500 member and 500 nonmember records from a condition's frozen
+assignment, retained regardless of document length. Selection does not remove
+records from the separate membership audit's 2000 member, 2000 nonmember, and
+600 detector auxiliary records.
+_Avoid_: additional disjoint holdout, reduced membership-audit split
+
+**Teacher-forced draft acceptance**:
+The expected probability that a token sampled from the KD draft is accepted
+by its target at an original document prefix, equal to the overlap of their
+next-token distributions. Evaluation averages response positions within each
+document and then weights documents equally; it does not measure a generated
+trajectory or decoding speedup.
+_Avoid_: original-token verification rate, measured generation speedup
 
 **Shared raw split**:
 The common member, nonmember, and auxiliary document-ID assignment reused by
@@ -144,6 +167,23 @@ with its matching all-tokenizer audit attestation.
 _Avoid_: tokenizer-specific split
 
 ## Edge–cloud speculative decoding
+
+**Protocol causality check**:
+A check that changing future tokens while preserving the observed prefix and
+sequence length does not change the prediction at the audited position.
+_Avoid_: numerical prefix agreement, proof of causality for all inputs
+
+**Prefix numerical drift**:
+The difference between predictions for the same observed prefix computed
+within a longer sequence and as a truncated sequence at the chosen inference
+precision; a difference alone does not establish future-token leakage.
+_Avoid_: future-token leakage, position misalignment
+
+**Archived evaluation batch**:
+A preserved historical evaluation whose requests, partial computations and
+reports remain available for inspection but are excluded from the current
+experiment and cannot supply its resumed computations.
+_Avoid_: resumable batch, current evaluation results
 
 **Acceptance-query multiplicity**:
 The number of fresh accept/reject judgments requested at each supported

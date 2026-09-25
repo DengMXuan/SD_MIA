@@ -12,7 +12,7 @@ def inspect_run(run_dir):
 
 
 def evaluate_main(run_dir, output_dir, *, draft_role, device="cuda:0",
-                  audit_seed=20260914, detector_epochs=30):
+                  audit_seed=None, detector_epochs=30):
     return evaluation.evaluate_main(run_dir, output_dir, draft_role=draft_role, device=device,
                                     audit_seed=audit_seed, detector_epochs=detector_epochs,
                                     verification=_verification())

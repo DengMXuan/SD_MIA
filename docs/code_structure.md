@@ -10,6 +10,7 @@ experiments/
   shared/
     core/                    # 数据合同、指标、分区、缓存与通用运行支持
     data/                    # 数据池、冻结划分、tokenizer 验证
+    evaluation/              # 目标泛化性、KD 接受率、冻结数据与断点恢复
     models/                  # 模型身份、草稿家族、加载与就绪检查
     training/                # 普通受控 SFT 配置、训练和记录重建
     drafts/                  # plain / EAGLE-3 / MTP 训练与底层实现
@@ -73,3 +74,5 @@ DP sweep 支持 `--model-pairs`。矩阵目录包含 `<model_pair>/epsilon<预�
 ```
 
 架构测试约束依赖方向、内部正式导入、测试位置、兼容模块身份、扩展接入和来源覆盖；DP 集成测试覆盖现有五种组合的角色、预算附加与矩阵路径唯一性。CPU 和替身模型测试不代替真实 GPU 训练、推理及效率测量。
+
+模型资产质量评估入口为 `experiments/model_quality/cli.py`；协议、矩阵范围和运行命令见 [模型资产评估方案](model_asset_evaluation.md)。

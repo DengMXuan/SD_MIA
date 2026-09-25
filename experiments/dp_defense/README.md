@@ -55,7 +55,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   --run-dir "$DP_RUN" --output-dir "$DP_AUDIT" --include-baselines
 
 # 与使用当前代码和同一审计设置生成的非 DP 参考批次对齐。
-# 历史 qwen_fixed_v1 不能作为当前共享生成配置的可比参考。
+# 已删除的历史 qwen_fixed_v1 不能作为当前共享生成配置的可比参考。
 .venv/bin/python -m experiments.dp_defense.compare \
   --dp-root artifacts/audits/dp_defense_v1/tasks \
   --reference-root artifacts/audits/dp_reference_v1/tasks \

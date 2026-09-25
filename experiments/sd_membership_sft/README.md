@@ -41,7 +41,22 @@ artifacts/
 
 自定义 `--output-root` 的审计中间产物放在任务的 `intermediate/`，汇总在根目录的 `reports/`，日志在 `executions/`。
 
-## 运行当前审计
+## Qwen3 epoch 1 KD 主方法重跑
+
+只运行 3 数据集 × 3 seed（1919/1949/1978）的 9 项主方法实验，使用已有 epoch 1
+目标与 KD 草稿，并将采集、TCN、辅助集内部划分、AUC bootstrap 的 seed 与训练
+条件一一对应：
+
+```bash
+bash experiments/sd_membership_sft/scripts/run_qwen_kd_epoch1.sh dry-run
+bash experiments/sd_membership_sft/scripts/run_qwen_kd_epoch1.sh run --gpus 0 1 2 3
+```
+
+此入口不运行 baseline 或 member 草稿。输出写入独立的
+`artifacts/audits/qwen_kd_epoch1_condition_seed_v1/`；完整参数、恢复与汇总说明见
+[专用实验说明](docs/QWEN_KD_EPOCH1_RERUN.md)。
+
+## 运行完整审计矩阵
 
 从仓库根目录执行。先检查，再选择 GPU 开始：
 
@@ -50,7 +65,7 @@ bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh status
 bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh run --gpus 0 1 2
 ```
 
-单卡用 `--gpus 0`；改 GPU 列表不改变实验配置。默认模型根目录为 `artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3`，审计结果根目录为 `artifacts/audits/qwen_shared_reference_v1/tasks`。旧 `qwen_fixed_v1` 为历史快照，当前入口禁止写入。
+单卡用 `--gpus 0`；改 GPU 列表不改变实验配置。默认模型根目录为 `artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3`，审计结果根目录为 `artifacts/audits/qwen_condition_seed_v1/tasks`。错误审计 seed 的旧 `qwen_fixed_v1` 批次已删除，该路径仍被保留为禁止写入的新实验路径。
 
 - 完整方法报告通过配置、来源、分数及检测器校验后跳过。
 - 主方法未采完的轨迹逐条校验后复用，从缺失部分继续。
@@ -64,17 +79,17 @@ bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh run --gpus 0
 bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh summarize
 ```
 
-写入 `artifacts/audits/qwen_shared_reference_v1/reports/`，包括 `SUMMARY.json` 和 CSV 报表；矩阵尚未完成时返回码为 2，部分结果仍会写出。旧 `qwen_fixed_v1` 结果保留为历史快照。
+写入 `artifacts/audits/qwen_condition_seed_v1/reports/`，包括 `SUMMARY.json` 和 CSV 报表；矩阵尚未完成时返回码为 2，部分结果仍会写出。
 
 ### WS/RS/BT 共享原始生成
 
-WS、RS、BT 在同一次条件审计中复用一次相同种子、相同输入的贪心原始续写，后续方法仍独立生成扰动/改写后的续写。SaMIA 的 10 路采样不复用。新审计默认写入 `artifacts/audits/qwen_shared_reference_v1/tasks/`；原 `qwen_fixed_v1/` 结果保留为历史快照，不能用新代码继续写入。示例：
+WS、RS、BT 在同一次条件审计中复用一次相同种子、相同输入的贪心原始续写，后续方法仍独立生成扰动/改写后的续写。SaMIA 的 10 路采样不复用。新审计默认写入 `artifacts/audits/qwen_condition_seed_v1/tasks/`；已删除的 `qwen_fixed_v1/` 路径不得用于新实验。示例：
 
 ```bash
 SD_AUDIT_PYTHON=/path/to/existing/.venv/bin/python \
   bash experiments/sd_membership_sft/scripts/run_qwen_audit_matrix.sh status \
   --model-root /path/to/existing/artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3 \
-  --output-root artifacts/audits/qwen_shared_reference_v1/tasks
+  --output-root artifacts/audits/qwen_condition_seed_v1/tasks
 ```
 
 成本口径分开：第一个运行的 WS/RS/BT 包含原始续写生成，保留完整独立方法成本；后续方法只记录 `physical_incremental_*` 物理增量字段，独立成本字段留空。汇总的实际计算时间使用 `execution_group_seconds`，不把共享原始生成重复计入。后续方法的增量耗时不可与独立方法耗时直接比较；正式使用前仍需在 GPU 上核对分数。

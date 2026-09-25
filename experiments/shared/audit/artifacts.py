@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from experiments.shared.core.audit_runtime import ROOT, _write_json
-from experiments.shared.core.deployment_archive import checkpoint_fingerprint, sha256_file
+from experiments.shared.core.deployment_archive import checkpoint_files, checkpoint_fingerprint, sha256_file
 from experiments.shared.protocols.protocol_archive import atomic_npz
 
 
@@ -18,7 +18,7 @@ def digest(value):
 
 def checkpoint_inventory(path):
     return [[str(p.relative_to(path)), p.stat().st_size, p.stat().st_mtime_ns]
-            for p in sorted(Path(path).rglob("*")) if p.is_file()]
+            for p in checkpoint_files(path)]
 
 
 def runtime_files():

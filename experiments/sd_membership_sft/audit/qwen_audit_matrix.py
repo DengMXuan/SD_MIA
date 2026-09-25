@@ -1,7 +1,7 @@
 """Plan, run, inspect and summarize the 36-configuration Qwen audit matrix."""
 from __future__ import annotations
 
-from experiments.shared.audit.config import audit_settings
+from experiments.shared.audit.config import audit_settings, condition_settings
 import argparse
 import fcntl
 import json
@@ -33,7 +33,7 @@ def make_tasks(model_root, output_root, benchmarks, epochs, seeds, settings):
             for seed in seeds:
                 condition = dict(benchmark=benchmark, epoch=epoch, condition_seed=seed)
                 key = f"{benchmark}/epoch{epoch}/seed{seed}"
-                base = dict(run_dir=str((model_root / key).resolve()), condition=condition, settings=settings)
+                base = dict(run_dir=str((model_root / key).resolve()), condition=condition, settings=condition_settings(settings, seed))
                 tasks.append({**base, "id": key + "/baseline", "kind": "baseline", "methods": list(METHODS),
                               "output": str((output_root / key / "baseline").resolve())})
                 for role in ROLES:
@@ -173,7 +173,7 @@ def main():
     parser.add_argument("--gpus", nargs="+", type=int, default=[0])
     parser.add_argument("--starts", nargs="+", default=["suffix64"], help="legacy request identity only")
     parser.add_argument("--rounds-per-start", type=int, default=32, help="legacy request identity only")
-    parser.add_argument("--audit-seed", type=int, default=20260914)
+    parser.add_argument("--audit-seed", type=int, default=None, help="must match the condition seed; defaults to it")
     parser.add_argument("--detector-epochs", type=int, default=30)
     parser.add_argument("--task-file", type=Path)
     args = parser.parse_args()

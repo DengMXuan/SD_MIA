@@ -1,25 +1,7 @@
-"""Generalization check for a fine-tuned run.
+"""Target-only continuation quality on a condition's immutable shared split.
 
-Replays the run's data split (same pool, tokenizer, sizes, and seed as
-training) and measures generation quality on document continuations:
-
-1. No-overfitting protocol: the fine-tuned target model generates
-   continuations for member and nonmember documents under the fixed
-   instruction prompt; BLEU-4 / ROUGE-1 / ROUGE-L are compared between the
-   two classes. Member-vs-nonmember differences below 0.03 count as stable
-   generation quality without overfitting; this module computes that
-   comparison with bootstrap CIs and a soft gate.
-2. Base-vs-fine-tuned comparison: the same samples are scored with the
-   pre-fine-tuning base target, so quality degradation caused by fine-tuning
-   is visible directly (reported with CIs and relative drop; no hard gate).
-
-Optionally the same evaluation is repeated for the draft variants
-(``--include-drafts``), which matters for speculative-decoding acceptance.
-
-Outputs ``generalization.json`` and ``GENERALIZATION.md`` in the run
-directory. Generation uses greedy decoding: context = first
-``--context-tokens`` tokens of the document, reference = the true following
-``--gen-tokens`` tokens.
+The matrix entry point is experiments.model_quality.cli. This module retains
+its single-run CLI and reusable generation/scoring helpers.
 """
 
 from __future__ import annotations
@@ -34,8 +16,9 @@ import sacrebleu
 import torch
 from rouge_score import rouge_scorer
 from experiments.shared.data.data import SFTRecord
-from experiments.shared.data.splits import build_split, pool_path
-from experiments.shared.training.training import load_causal_lm, load_tokenizer, set_seed
+from experiments.shared.data.splits import pool_path
+from experiments.shared.training.training import load_causal_lm
+from experiments.shared.models.precision import inference_attention
 
 
 from experiments.paths import ROOT
@@ -49,11 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--samples", type=int, default=500)
     parser.add_argument("--context-tokens", type=int, default=256)
     parser.add_argument("--gen-tokens", type=int, default=128)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--bootstrap-repeats", type=int, default=500)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--bootstrap-repeats", type=int, default=1000)
     parser.add_argument("--gap-threshold", type=float, default=0.03)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--include-drafts", action="store_true", default=False)
+    parser.add_argument("--output-dir", type=Path, help="separate evaluation output directory")
     return parser.parse_args()
 
 
@@ -138,20 +121,30 @@ def build_eval_samples(
     gen_tokens: int,
     seed: int,
 ) -> list[dict[str, Any]]:
+    if samples < 1 or samples > len(records) or context_tokens < 1 or gen_tokens < 1:
+        raise ValueError("positive budgets and enough distinct records required")
     rng = np.random.default_rng(seed)
     indices = rng.permutation(len(records))[:samples]
     samples_out: list[dict[str, Any]] = []
     for index in indices:
         record = records[int(index)]
-        context_ids = list(record.response_ids[:context_tokens])
-        reference_ids = list(
-            record.response_ids[context_tokens : context_tokens + gen_tokens]
-        )
-        if len(reference_ids) < gen_tokens or len(context_ids) < context_tokens:
-            continue
+        length = len(record.response_ids)
+        if length < 2:
+            raise ValueError(f"record {record.record_id} cannot be split into context and reference")
+        context_length = context_tokens
+        reference_length = gen_tokens
+        if length < context_tokens + gen_tokens:
+            context_length = max(1, length * context_tokens // (context_tokens + gen_tokens))
+            reference_length = length - context_length
+        context_ids = list(record.response_ids[:context_length])
+        reference_ids = list(record.response_ids[context_length:context_length + reference_length])
         samples_out.append(
             {
                 "record_id": record.record_id,
+                "context_tokens": context_length,
+                "reference_tokens": reference_length,
+                "response_hash": record.response_hash,
+                "reference_ids": reference_ids,
                 "prompt_ids": list(record.prompt_ids or ()) + context_ids,
                 "reference": tokenizer.decode(
                     reference_ids, skip_special_tokens=True
@@ -170,37 +163,35 @@ def generate_continuations(
     gen_tokens: int,
     batch_size: int,
 ) -> list[str]:
+    if batch_size < 1:
+        raise ValueError("batch size must be positive")
+    # Bucket by the per-record budget: short references never receive 128 tokens.
+    groups: dict[int, list[int]] = {}
+    for index, sample in enumerate(samples):
+        groups.setdefault(sample.get("reference_tokens", gen_tokens), []).append(index)
     previous_side = tokenizer.padding_side
     tokenizer.padding_side = "left"
-    hypotheses: list[str] = []
+    hypotheses = [""] * len(samples)
     try:
-        for start in range(0, len(samples), batch_size):
-            batch = samples[start : start + batch_size]
-            lengths = [len(sample["prompt_ids"]) for sample in batch]
-            width = max(lengths)
-            input_ids = torch.full(
-                (len(batch), width), int(tokenizer.pad_token_id), dtype=torch.long
-            )
-            attention_mask = torch.zeros((len(batch), width), dtype=torch.long)
-            for row, sample in enumerate(batch):
-                offset = width - len(sample["prompt_ids"])
-                input_ids[row, offset:] = torch.tensor(sample["prompt_ids"])
-                attention_mask[row, offset:] = 1
-            output = model.generate(
-                input_ids=input_ids.to(device),
-                attention_mask=attention_mask.to(device),
-                max_new_tokens=gen_tokens,
-                do_sample=False,
-                num_beams=1,
-                pad_token_id=int(tokenizer.pad_token_id),
-            )
-            generated = output[:, width:]
-            for row in range(len(batch)):
-                hypotheses.append(
-                    tokenizer.decode(
-                        generated[row], skip_special_tokens=True
-                    ).strip()
-                )
+        for budget, indices in groups.items():
+            for start in range(0, len(indices), batch_size):
+                selected = indices[start:start + batch_size]
+                batch = [samples[i] for i in selected]
+                width = max(len(sample["prompt_ids"]) for sample in batch)
+                input_ids = torch.full((len(batch), width), int(tokenizer.pad_token_id), dtype=torch.long)
+                attention_mask = torch.zeros_like(input_ids)
+                for row, sample in enumerate(batch):
+                    offset = width - len(sample["prompt_ids"])
+                    input_ids[row, offset:] = torch.tensor(sample["prompt_ids"])
+                    attention_mask[row, offset:] = 1
+                with inference_attention(model):
+                    output = model.generate(
+                        input_ids=input_ids.to(device), attention_mask=attention_mask.to(device),
+                        max_new_tokens=budget, min_new_tokens=0, do_sample=False, num_beams=1,
+                        pad_token_id=int(tokenizer.pad_token_id),
+                    )
+                for row, index in enumerate(selected):
+                    hypotheses[index] = tokenizer.decode(output[row, width:], skip_special_tokens=True).strip()
     finally:
         tokenizer.padding_side = previous_side
     return hypotheses
@@ -229,6 +220,8 @@ class GenerationQualityScorer:
 def score_samples(
     hypotheses: list[str], samples: list[dict[str, Any]]
 ) -> dict[str, np.ndarray]:
+    if len(hypotheses) != len(samples):
+        raise ValueError("predictions and references must align")
     scorer = GenerationQualityScorer()
     values: dict[str, list[float]] = {name: [] for name in scorer.METRICS}
     for hypothesis, sample in zip(hypotheses, samples):
@@ -246,16 +239,22 @@ def paired_bootstrap_delta(
     right: np.ndarray,
     repeats: int,
     seed: int,
+    *,
+    paired: bool = True,
 ) -> dict[str, float]:
     """CI for mean(left) - mean(right).
 
-    Equal-length inputs are resampled with shared indices (paired); unequal
-    lengths (e.g. member vs nonmember after per-class length filtering)
-    are resampled independently.
+    Pairing is a property of record identity, never inferred from array length.
     """
+    left, right = np.asarray(left), np.asarray(right)
+    if (left.ndim != 1 or right.ndim != 1 or not len(left) or not len(right)
+            or not np.isfinite(left).all() or not np.isfinite(right).all() or repeats < 1):
+        raise ValueError("finite nonempty score vectors and positive bootstrap repeats required")
+    if paired and len(left) != len(right):
+        raise ValueError("paired bootstrap requires aligned records")
     rng = np.random.default_rng(seed)
     deltas = np.empty(repeats, dtype=np.float64)
-    if len(left) == len(right):
+    if paired:
         count = len(left)
         for repeat in range(repeats):
             index = rng.integers(0, count, size=count)
@@ -310,6 +309,7 @@ def summarize_model_scores(
             tuned["nonmember"][metric],
             bootstrap_repeats,
             seed,
+            paired=False,
         )
         passed = abs(gap["delta"]) < gap_threshold
         gate_pass = gate_pass and passed
@@ -328,7 +328,7 @@ def summarize_model_scores(
                 base[class_name][metric],
                 tuned[class_name][metric],
                 bootstrap_repeats,
-                seed + 1,
+                seed,
             )
             base_mean = float(base[class_name][metric].mean())
             tuned_mean = float(tuned[class_name][metric].mean())
@@ -363,13 +363,13 @@ def render_markdown(
         f"- Protocol: {protocol['samples_per_class']} member + "
         f"{protocol['samples_per_class']} nonmember samples; context "
         f"{protocol['context_tokens']} tokens, greedy generation "
-        f"{protocol['gen_tokens']} tokens; benchmark "
+        f"up to {protocol['gen_tokens']} tokens (short records use proportional context/reference lengths); benchmark "
         f"{protocol['benchmark']}",
         "",
         "## Fine-tuned model: member vs nonmember generation quality",
         "",
-        "Member/nonmember differences < 0.03 count as no-overfitting "
-        "evidence; the gate here is soft (advisory).",
+        f"Absolute mean gaps < {protocol['gap_threshold']} pass an advisory threshold; "
+        "this does not establish absence of overfitting or general-purpose capability.",
         "",
         "| Metric | Member | Nonmember | Gap (95% CI) | Gate |",
         "|---|---:|---:|---:|---|",
@@ -411,140 +411,19 @@ def render_markdown(
 
 
 def main() -> None:
+    from experiments.shared.evaluation.quality import evaluate_quality, make_task
+
     args = parse_args()
-    run_dir = args.run_dir if args.run_dir.is_absolute() else ROOT / args.run_dir
-    cfg = load_run_config(run_dir)
-    if cfg.benchmark == "legacy":
-        raise RuntimeError(
-            "The generalization check requires a pool-benchmark run, not legacy PDF data"
-        )
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available; run with the approved host GPU access")
-
-    seed = args.seed if args.seed is not None else cfg.data_seed + 7
-    device = torch.device(f"cuda:{args.gpu}")
-    torch.cuda.set_device(device)
-    set_seed(seed)
-
-    tokenizer = load_tokenizer(cfg.draft_model, revision=cfg.draft_revision)
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    pool = (
-        args.pool_path
-        if args.pool_path is not None
-        else (cfg.pool_path if cfg.pool_path is not None else pool_path(cfg.benchmark))
-    )
-    if not pool.is_absolute():
-        pool = ROOT / pool
-    members, nonmembers, _auxiliary, split_metadata = build_split(
-        cfg.benchmark,
-        pool,
-        tokenizer,
-        cfg.n_per_class,
-        cfg.n_aux,
-        cfg.data_seed,
-    )
-    member_samples = build_eval_samples(
-        members, tokenizer, args.samples, args.context_tokens, args.gen_tokens, seed
-    )
-    nonmember_samples = build_eval_samples(
-        nonmembers, tokenizer, args.samples, args.context_tokens, args.gen_tokens, seed
-    )
-
-    tuned_target = load_finetuned_model(run_dir, cfg.target_model, device)
-    base_target = load_causal_lm(
-        cfg.target_model, device, revision=cfg.target_revision
-    )
-    base_target.config.use_cache = True
-
-    tuned_scores = evaluate_model(
-        tuned_target,
-        member_samples,
-        nonmember_samples,
-        tokenizer,
-        device,
-        args.gen_tokens,
-        args.batch_size,
-    )
-    base_scores = evaluate_model(
-        base_target,
-        member_samples,
-        nonmember_samples,
-        tokenizer,
-        device,
-        args.gen_tokens,
-        args.batch_size,
-    )
-    summary = summarize_model_scores(
-        tuned_scores,
-        base_scores,
-        GenerationQualityScorer.METRICS,
-        args.bootstrap_repeats,
-        seed,
-        args.gap_threshold,
-    )
-
-    drafts: dict[str, Any] = {}
-    if args.include_drafts:
-        for name, model_id in (
-            ("base_draft", cfg.draft_model),
-            ("draft_auxiliary_distilled", cfg.draft_model),
-            ("draft_member_sft", cfg.draft_model),
-        ):
-            if name == "base_draft":
-                model = load_causal_lm(
-                    model_id,
-                    device,
-                    revision=cfg.draft_revision,
-                )
-            else:
-                model = load_draft_model(run_dir, model_id, name, device)
-            model.config.use_cache = True
-            draft_scores = evaluate_model(
-                model,
-                member_samples,
-                nonmember_samples,
-                tokenizer,
-                device,
-                args.gen_tokens,
-                args.batch_size,
-            )
-            drafts[name] = {
-                class_name: {
-                    metric: float(draft_scores[class_name][metric].mean())
-                    for metric in GenerationQualityScorer.METRICS
-                }
-                for class_name in ("member", "nonmember")
-            }
-
-    protocol = {
-        "benchmark": cfg.benchmark,
-        "pool_path": str(pool),
-        "pool_sha256": split_metadata["pool_sha256"],
-        "split_seed": cfg.data_seed,
-        "samples_per_class": len(member_samples),
-        "context_tokens": args.context_tokens,
-        "gen_tokens": args.gen_tokens,
-        "decoding": "greedy",
-        "gap_threshold": args.gap_threshold,
-        "bootstrap_repeats": args.bootstrap_repeats,
-        "include_drafts": args.include_drafts,
-    }
-    artifact = {
-        "run_dir": str(run_dir),
-        "protocol": protocol,
-        "target_summary": summary,
-        "drafts": drafts,
-    }
-    (run_dir / "generalization.json").write_text(
-        json.dumps(artifact, indent=2), encoding="utf-8"
-    )
-    (run_dir / "GENERALIZATION.md").write_text(
-        render_markdown(run_dir, cfg.target_model, summary, protocol),
-        encoding="utf-8",
-    )
-    print(json.dumps({"overfitting_gate": summary["overfitting_gate"]}, indent=2))
+    task = make_task(args.run_dir, "generalization", output=args.output_dir,
+                     samples=args.samples, context_tokens=args.context_tokens,
+                     gen_tokens=args.gen_tokens, batch_size=args.batch_size,
+                     bootstrap_repeats=args.bootstrap_repeats, gap_threshold=args.gap_threshold)
+    if args.pool_path is not None:
+        raise ValueError("evaluation uses the training passport's frozen pool; omit --pool-path")
+    if args.seed is not None and args.seed != task["condition"]["condition_seed"]:
+        raise ValueError("evaluation seed must equal the condition seed")
+    report = evaluate_quality(task, device=f"cuda:{args.gpu}")
+    print(json.dumps({"output": task["output"], "summary": report["summary"]}))
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Refit the existing B=2 difficulty TCN separately for each DP draft condition."""
 from __future__ import annotations
 
-from experiments.shared.audit.config import audit_settings
+from experiments.shared.audit.config import audit_settings, condition_settings
 import argparse
 from contextlib import ExitStack
 import fcntl
@@ -18,13 +18,13 @@ from experiments.shared.audit.baselines import BASELINE_DEFAULTS, METHODS
 from experiments.dp_defense.artifacts import dp_runtime_files, verify_run
 
 
-def make_tasks(run_dir, output, artifact, *, seed=20260914, epochs=30, baselines=False):
+def make_tasks(run_dir, output, artifact, *, seed=None, epochs=30, baselines=False):
     if epochs <= 0:
         raise ValueError("detector epochs must be positive")
     cfg = artifact["config"]
     spec = identify_pair(artifact)
     condition = dict(benchmark=cfg["benchmark"], epoch=cfg["target_epochs"], condition_seed=cfg["seed"], model_pair=spec.name)
-    settings = audit_settings(audit_seed=seed, detector_epochs=epochs)
+    settings = condition_settings(audit_settings(audit_seed=seed, detector_epochs=epochs), cfg["seed"])
     common = dict(run_dir=str(run_dir.resolve()), condition=condition, settings=settings, model_pair=spec.name,
                   dp_request_key=artifact["privacy"]["request_key"])
     tasks = []
@@ -69,7 +69,7 @@ def summarize(tasks, output, artifact):
     return result
 
 
-def run_audit(run_dir, output, *, device="cuda:0", seed=20260914, epochs=30, baselines=False, execute=True):
+def run_audit(run_dir, output, *, device="cuda:0", seed=None, epochs=30, baselines=False, execute=True):
     run_dir, output = run_dir.resolve(), output.resolve()
     if output == run_dir or output in run_dir.parents or run_dir in output.parents:
         raise ValueError("audit output must be separate from training artifacts")
@@ -122,7 +122,7 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--audit-seed", type=int, default=20260914)
+    parser.add_argument("--audit-seed", type=int, default=None, help="must match the condition seed; defaults to it")
     parser.add_argument("--detector-epochs", type=int, default=30)
     parser.add_argument("--include-baselines", action="store_true")
     args = parser.parse_args()

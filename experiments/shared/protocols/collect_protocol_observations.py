@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--adapter", choices=("plain", "eagle3", "mtp"), default="plain")
     parser.add_argument("--draft-role", choices=DRAFT_ROLES, default=DRAFT_ROLES[0])
     parser.add_argument("--protocol", choices=("fixed",), default="fixed")
-    parser.add_argument("--seed", type=int, default=20260914)
+    parser.add_argument("--seed", type=int, default=None, help="must match the training/data condition seed")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--smoke-text-file", type=Path, help="optional text for a runtime-only smoke test")
@@ -125,12 +125,17 @@ def main():
     if args.command == "collect" and args.smoke_text_file is not None:
         parser.error("smoke text is only permitted for the smoke command")
     run_dir = args.run_dir.resolve()
+    from experiments.shared.training.generalization import load_run_config
+    cfg = load_run_config(run_dir)
+    if cfg.seed != cfg.data_seed or args.seed not in (None, cfg.seed):
+        raise ValueError("collection seed must match the training/data condition seed")
+    args.seed = cfg.seed
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with (args.output_dir / ".collection.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.command == "collect":
-            _, prepared = prepare_records(run_dir, args.adapter)
-            deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles)
+            _, prepared = prepare_records(run_dir, args.adapter, args.draft_role)
+            deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles, seed=args.seed)
         else:
             from experiments.shared.training.generalization import load_run_config
             target_path, _ = checkpoint_paths(run_dir, args.adapter, args.draft_role)

@@ -80,7 +80,7 @@ def test_invalid_multiplicity(bad):
 
 
 def shared_split():
-    return {"splits": {
+    return {"seed": 1919, "splits": {
         "audit_auxiliary": [{"record_id": f"a{i}"} for i in range(600)],
         "member": [{"record_id": f"m{i}"} for i in range(2)],
         "nonmember": [{"record_id": f"n{i}"} for i in range(2)],
@@ -98,7 +98,7 @@ def test_default_partitions_match_old_and_requested_curves_are_nested():
     ids = np.asarray([f"a{i}" for i in range(600)] + ["m0", "m1", "n0", "n1"])
     roles = np.asarray(["audit_auxiliary"] * 600 + ["member"] * 2 + ["nonmember"] * 2)
     old = deployment_partitions((roles == "member").astype(int), ids, roles,
-                                ControlledDataContract(members=2, nonmembers=2))
+                                ControlledDataContract(members=2, nonmembers=2), seed=shared["seed"])
     for role in ("train", "validation", "calibration", "test"):
         assert base[role] == ids[old[role]].tolist()
     studies = [build_study(shared, extension(shared), budgets, name=name)
@@ -274,16 +274,16 @@ def test_collection_recovers_completed_records_and_checks_contract(tmp_path):
                 raise RuntimeError("simulated interruption")
             return super().rows(tokens)
     with pytest.raises(RuntimeError, match="interruption"):
-        collect_observations(prepared, Interrupted(), tmp_path / "obs", sources={"synthetic": True}, multiplicity=4)
+        collect_observations(prepared, Interrupted(), tmp_path / "obs", sources={"synthetic": True}, seed=1919, multiplicity=4)
     adapter = ToyAdapter()
-    obs = collect_observations(prepared, adapter, tmp_path / "obs", sources={"synthetic": True}, multiplicity=4)
+    obs = collect_observations(prepared, adapter, tmp_path / "obs", sources={"synthetic": True}, seed=1919, multiplicity=4)
     assert adapter.cost.target_forward_calls == 2  # First completed record was reused.
     loaded = load_observations(tmp_path / "obs")
     assert obs.signature == loaded.signature
-    collect_observations(prepared, adapter, tmp_path / "obs", sources={"synthetic": True}, multiplicity=4)
+    collect_observations(prepared, adapter, tmp_path / "obs", sources={"synthetic": True}, seed=1919, multiplicity=4)
     assert adapter.cost.target_forward_calls == 2
     with pytest.raises(ValueError, match="resume parameters"):
-        collect_observations(prepared, adapter, tmp_path / "obs", sources={"synthetic": True}, multiplicity=8)
+        collect_observations(prepared, adapter, tmp_path / "obs", sources={"synthetic": True}, seed=1919, multiplicity=8)
     with (tmp_path / "obs/observations.npz").open("ab") as stream:
         stream.write(b"corrupt")
     with pytest.raises(ValueError, match="checksum"):

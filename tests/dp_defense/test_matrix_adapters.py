@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from experiments.dp_defense import audit, sweep
-from experiments.shared.audit.config import audit_settings
+from experiments.shared.audit.config import audit_settings, condition_settings
 from experiments.shared.models.registry import MODEL_PAIRS
 
 
@@ -71,7 +71,7 @@ def test_dp_execution_selects_each_registered_draft_and_attaches_its_budget(tmp_
     assert [row['privacy']['epsilon'] for row in main] == [4., 8.]
     assert all(row['privacy']['scope'] == 'target_only' for row in result['rows'] if row['draft_role'] == 'target_only')
     tasks = audit.make_tasks(run, tmp_path / 'audit', artifact)
-    assert all(task['settings'] == audit_settings() for task in tasks)
+    assert all(task['settings'] == condition_settings(audit_settings(), 1919) for task in tasks)
 
 
 def test_dp_sweep_covers_models_without_output_collisions(tmp_path):

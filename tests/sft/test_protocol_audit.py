@@ -320,9 +320,12 @@ def test_evaluation_pipeline_calibrates_documents_and_saves_detector(tmp_path, m
     # Small controlled fixture; production evaluate still requires 600+2000+2000.
     parts = {"train": np.array([0, 1, 2]), "validation": np.array([3, 4]),
              "reference": np.arange(5), "calibration": np.array([5, 6, 7]), "test": np.array([8, 9])}
-    monkeypatch.setattr(scoring, "deployment_partitions", lambda *args: parts)
+    def partitions(*args, seed):
+        assert seed == 1919
+        return parts
+    monkeypatch.setattr(scoring, "deployment_partitions", partitions)
     contract.update(protocol="fixed", adapter="plain", head_real_model_validation="not_applicable",
-                    execution="full_context_reconstruction")
+                    execution="full_context_reconstruction", seed=1919)
     data["counts"][::2] = 2
     archive = tmp_path / "observations.npz"
     save_archive(archive, data, contract, [{}] * len(data["lengths"]))
@@ -335,6 +338,7 @@ def test_evaluation_pipeline_calibrates_documents_and_saves_detector(tmp_path, m
         assert scores["combined__sparse_positive"].shape == (10,)
     saved = torch.load(tmp_path / "evaluation/detector.pt", weights_only=True)
     assert saved["architecture"] == "difficulty_tcn_count_b2"
+    assert saved["seed"] == report["source"]["seed"] == 1919
 
 
 def test_smoke_archive_cannot_be_used_as_membership_evaluation(tmp_path):
@@ -389,3 +393,24 @@ def test_direction_cost_summary_keeps_active_costs_without_serial_inputs(tmp_pat
     result = protocol_costs(tmp_path)
     assert result["joint_positive_stopping_macro"] == expected
     assert "serial_test_costs" not in result
+
+
+def test_eagle_remote_head_receives_mask_needed_for_causality():
+    class MaskDependentEagle(TinyEagle):
+        # Like the checkpoint's remote implementation, causal masking is only
+        # constructed when the caller supplies a 2-D attention mask.
+        def forward(self, input_ids, hidden_states, attention_mask=None, **kwargs):
+            if attention_mask is None:
+                context = hidden_states.mean(1, keepdim=True).expand_as(hidden_states)
+            else:
+                assert torch.equal(attention_mask, torch.ones_like(input_ids))
+                divisor = torch.arange(1, input_ids.shape[1] + 1).reshape(1, -1, 1)
+                context = hidden_states.cumsum(1) / divisor
+            self.norm(context)
+    torch.manual_seed(0)
+    adapter = FrozenAdapter(TinyTarget(), MaskDependentEagle(), 'eagle3', 'cpu')
+    _, full = adapter.rows([0, 1, 2, 3])
+    _, changed = adapter.rows([0, 1, 2, 0])
+    _, prefix = adapter.next([0, 1, 2])
+    torch.testing.assert_close(full[2], changed[2])
+    torch.testing.assert_close(full[2], prefix)

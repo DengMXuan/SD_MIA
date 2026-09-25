@@ -2,7 +2,6 @@
 import numpy as np
 from types import SimpleNamespace
 
-from experiments.shared.core.audit_runtime import SPLIT_SEED
 from experiments.resource_curves.config import AuxiliaryBudget
 from experiments.resource_curves.storage import checked_contract, digest, workspace
 
@@ -15,7 +14,7 @@ def base_partitions(shared):
     auxiliary = [row["record_id"] for row in splits["audit_auxiliary"]]
     if len(auxiliary) != 600:
         raise ValueError("expected the frozen 600-record audit auxiliary pool")
-    shuffled = np.random.default_rng(SPLIT_SEED).permutation(600)
+    shuffled = np.random.default_rng(shared["seed"]).permutation(600)
     return {
         "train": [auxiliary[i] for i in sorted(shuffled[:320])],
         "validation": [auxiliary[i] for i in sorted(shuffled[320:400])],

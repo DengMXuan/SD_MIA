@@ -64,15 +64,17 @@ def test_build_eval_samples_slices_context_and_reference() -> None:
     assert sample["reference"] == " ".join(f"word{value}" for value in range(1256, 1384))
 
 
-def test_build_eval_samples_skips_short_documents() -> None:
+def test_build_eval_samples_retains_short_documents() -> None:
     tokenizer = StubTokenizer()
     records = [_record(tokens=500, index=index) for index in range(4)]
     records.append(_record(tokens=300, index=99))  # 300 < 256 + 128
     samples = build_eval_samples(
-        records, tokenizer, samples=10, context_tokens=256, gen_tokens=128, seed=3
+        records, tokenizer, samples=5, context_tokens=256, gen_tokens=128, seed=3
     )
-    assert len(samples) == 4
-    assert all(sample["record_id"] != "sft:test:99" for sample in samples)
+    assert len(samples) == 5
+    short = next(s for s in samples if s["record_id"] == "sft:test:99")
+    assert short["context_tokens"] == 200
+    assert short["reference_tokens"] == 100
 
 
 def test_paired_bootstrap_delta_detects_shift() -> None:

@@ -13,7 +13,7 @@ from pathlib import Path
 from experiments.paths import ROOT, DATA, MODELS, TRAINING, QWEN_AUDIT, QWEN_CACHE
 from experiments.shared.core.audit_runtime import _write_json
 from experiments.shared.core.deployment_archive import sha256_file
-from experiments.shared.audit.config import audit_settings
+from experiments.shared.audit.config import audit_settings, condition_settings
 from experiments.shared.audit.provenance import digest, read_result, sources_for
 from experiments.shared.models.registry import identify_pair
 
@@ -42,7 +42,7 @@ def _read_run(run_dir, verification=None):
 def _task(run_dir, output, spec, artifact, role, seed, epochs):
     if role not in spec.roles:
         raise ValueError(f"choose a draft role from {spec.roles}")
-    if type(epochs) is not int or epochs < 1 or type(seed) is not int or seed < 0:
+    if type(epochs) is not int or epochs < 1:
         raise ValueError("positive detector epochs and nonnegative integer audit seed required")
     cfg = artifact["config"]
     task = dict(run_dir=str(run_dir), output=str(output), id=str(output),
@@ -50,7 +50,7 @@ def _task(run_dir, output, spec, artifact, role, seed, epochs):
                 methods=["main_fixed_sparse_positive"],
                 condition=dict(model_pair=spec.name, benchmark=cfg["benchmark"],
                                epoch=cfg["target_epochs"], condition_seed=cfg["seed"]),
-                settings=audit_settings(audit_seed=seed, detector_epochs=epochs))
+                settings=condition_settings(audit_settings(audit_seed=seed, detector_epochs=epochs), cfg["seed"]))
     if "privacy" in artifact:
         task["dp_request_key"] = artifact["privacy"]["request_key"]
     return task
@@ -65,7 +65,7 @@ Private runs additionally require verified stage checksums and privacy accountin
     run_dir = Path(run_dir).resolve()
     spec, artifact = _read_run(run_dir, verification)
     for role in spec.roles:
-        task = _task(run_dir, run_dir, spec, artifact, role, 20260914, 30)
+        task = _task(run_dir, run_dir, spec, artifact, role, None, 30)
         valid, reason = ready(task)
         if not valid:
             raise ValueError(reason)
@@ -85,7 +85,7 @@ def _validate_output(run_dir, output):
 
 
 def evaluate_main(run_dir, output_dir, *, draft_role, device="cuda:0",
-                  audit_seed=20260914, detector_epochs=30, verification=None):
+                  audit_seed=None, detector_epochs=30, verification=None):
     """Collect/reuse fixed B=2 observations and return a checked method report.
 
 Use a distinct output directory for each model condition, draft role and privacy

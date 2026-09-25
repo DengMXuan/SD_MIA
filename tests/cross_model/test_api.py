@@ -57,7 +57,7 @@ def test_evaluate_main_fits_resumes_and_accounts_all_pairs(tmp_path, monkeypatch
     monkeypatch.setattr(main_method, "load_adapter", lambda *a: SimpleNamespace(
         target=torch.nn.Linear(1, 1), device=torch.device("cpu"), kind=spec.adapter))
     monkeypatch.setattr(main_method, "fixed_trace", lambda *a, **k: None)
-    monkeypatch.setattr(head_validation, "validate_adapter", lambda *a: dict(status="passed"))
+    monkeypatch.setattr(head_validation, "validate_adapter", lambda *a, **kw: dict(status="passed"))
     collected = []
     def collect(records, adapter, output, contract):
         collected.append(output)
@@ -78,6 +78,7 @@ def test_evaluate_main_fits_resumes_and_accounts_all_pairs(tmp_path, monkeypatch
         report = api.evaluate_main(run, output, draft_role=role, device="cpu", verification=verification, detector_epochs=1)
         assert routes[-1] == (spec.adapter, role)
         assert report["training_member_count"] == 0
+        assert report["settings"]["audit_seed"] == report["condition"]["condition_seed"] == 1919
         assert report["metrics"]["n_calibration"] == 200
         assert report["model_pair"] == pair
         assert report["detector_features"] == "draft_features_and_acceptance_only"

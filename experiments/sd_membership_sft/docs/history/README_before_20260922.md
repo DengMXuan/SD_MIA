@@ -148,7 +148,7 @@ worker，已持久化的数据保留。方法失败不会丢弃其他独立任�
 默认路径：
 
 - 模型：`experiments/results/sft_runs/unified_matrix_audit600_v2/model_pairs/qwen3`
-- 结果：`experiments/results/sft_runs/qwen_audit_matrix_v1`
+- 结果（历史路径，错误审计 seed 批次已删除）：`experiments/results/sft_runs/qwen_audit_matrix_v1`
 
 可用 `--model-root` / `--output-root` 指定其他目录，或限定一个子集：
 

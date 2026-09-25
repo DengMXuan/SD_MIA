@@ -30,18 +30,24 @@ def summarize(tasks, output_root, *, methods, baseline_methods, describe, title,
             except (OSError, ValueError, KeyError) as error:
                 errors.append(dict(task=task['id'], method=method, error=str(error)))
     rows, groups, physical_groups = [], {}, {}
-    for baseline in (task for task in tasks if task['kind'] == 'baseline'):
-        condition = baseline['condition']
-        matching = [task for task in tasks if task['condition'] == condition]
+    conditions = {}
+    for task in tasks:
+        conditions.setdefault(json.dumps(task['condition'], sort_keys=True), []).append(task)
+    for matching in conditions.values():
+        baseline = next((task for task in matching if task['kind'] == 'baseline'), None)
+        representative = baseline or matching[0]
+        condition = representative['condition']
         id_hashes = {r['record_ids_sha256'] for task in matching for method in task['methods']
                      if (r := results.get((task['id'], method))) is not None}
         if len(id_hashes) > 1:
             raise ValueError(f'methods scored different records in {condition}')
-        metadata, roles = describe(baseline)
+        metadata, roles = describe(representative)
         for role in roles:
             for method in methods:
                 task = baseline if method in baseline_methods else next(
                     t for t in matching if t.get('draft_role') == role and method in t['methods'])
+                if task is None:
+                    raise ValueError(f'no baseline task for requested method {method}')
                 report = results.get((task['id'], method))
                 row = {**condition, **metadata, 'draft_role': role, 'method': method,
                        'status': 'complete' if report else 'missing', 'source_task': task['id'],
@@ -85,7 +91,9 @@ def summarize(tasks, output_root, *, methods, baseline_methods, describe, title,
                 Path(execution_root or audit_executions(output_root)).glob('*/STATUS.json')]
     completed_count = sum(r['status'] == 'complete' for r in rows)
     shared_costs = any(row.get('cost_basis') == 'physical_incremental' for row in rows)
-    note = 'baseline display duplication is not independent evidence; worker time includes loading/retries and is not matrix elapsed wall time'
+    note = 'worker time includes loading/retries and is not matrix elapsed wall time'
+    if baseline_methods:
+        note = 'baseline display duplication is not independent evidence; ' + note
     if shared_costs:
         note += '; shared-reference rows expose physical incremental fields and leave standalone method cost columns empty'
     payload = dict(complete=completed_count == len(rows) and not errors, expected_rows=len(rows),

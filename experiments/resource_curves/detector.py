@@ -91,10 +91,12 @@ def _fit(sub, parts, multiplicity, *, seed, device, epochs):
     return model, mean, scale, history, best_epoch
 
 
-def fit_detector(observations, point, cache_root, *, seed=20260914, device="cpu", epochs=30):
+def fit_detector(observations, point, cache_root, *, seed=None, device="cpu", epochs=30):
     """Cache by exact train/validation observations, not calibration allocation."""
     if type(epochs) is not int or epochs < 1:
         raise ValueError("positive detector epoch count required")
+    if seed is None:
+        seed = observations.contract["seed"]
     identity = fitting_identity(observations, point)
     contract = {"identity": identity, "seed": seed, "epochs": epochs, "device": str(device),
                 "runtime_sha256": code_fingerprint(), "torch": str(torch.__version__),

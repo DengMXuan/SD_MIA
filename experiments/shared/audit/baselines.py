@@ -72,7 +72,8 @@ def run_baselines(task, device, cfg, prepared, sources):
     methods = task["methods"]
     settings = task["settings"]
     args = SimpleNamespace(**settings["baseline"], seed=settings["audit_seed"])
-    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles)
+    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles,
+                                  seed=settings["audit_seed"])
     selected = np.r_[parts["calibration"], parts["test"]]
     cal = np.arange(len(parts["calibration"]))
     test = np.arange(len(cal), len(selected))

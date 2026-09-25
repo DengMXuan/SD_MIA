@@ -22,7 +22,7 @@ def limited_threads():
 
 
 def settings():
-    return dict(starts=["suffix64"], rounds_per_start=32, audit_seed=20260914,
+    return dict(starts=["suffix64"], rounds_per_start=32, audit_seed=None,
                 detector_epochs=1, baseline=dict(BASELINE_DEFAULTS))
 
 
@@ -139,7 +139,7 @@ def test_baseline_adapter_uses_only_400_fit_records_and_200_independent_calibrat
     task = tasks_at(tmp_path)[0]
     task["methods"] = ["petal", "loss"]
     prepared = prepared_records()
-    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles)
+    parts = deployment_partitions(prepared.labels, prepared.record_ids, prepared.record_roles, seed=1919)
     model = torch.nn.Linear(1, 1)
     monkeypatch.setattr(runner, "load_finetuned_model", lambda *args, **kwargs: model)
     monkeypatch.setattr(runner, "TargetScorer", FakeScorer)
