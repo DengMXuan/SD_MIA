@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+BASELINE7_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export PYTHONDONTWRITEBYTECODE=1 TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}" OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+exec "${SD_AUDIT_PYTHON:-/home/mxd/lib/SD_MIA/.venv/bin/python}" -B -u "$BASELINE7_DIR/run.py" "$@"

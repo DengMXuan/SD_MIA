@@ -20,7 +20,93 @@ Python 接口及 train/audit/sweep CLI 支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、
 
 ## 安装与入口
 
-只做 **epoch 1、KD 草稿** 时，使用既有矩阵入口的选择参数：
+本轮 **Qwen、epoch 1、KD、3 数据集 × 3 seed × ε=1/4/8** 有两个独立脚本：
+
+```bash
+cd /home/mxd/lib/SD_MIA
+# 不带参数也默认为 dry-run，只打印计划
+bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh dry-run
+bash experiments/dp_defense/scripts/run_qwen_epoch1_kd_main.sh dry-run
+
+# 先完成 27 条件的 DP 目标训练与 KD 蒸馏
+bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh run --gpu 0
+# 再使用上述匹配的 DP 模型完成 27 条件主方法审计
+bash experiments/dp_defense/scripts/run_qwen_epoch1_kd_main.sh run --gpu 0
+
+# 多 GPU：训练和审计仍分开运行
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh run --gpus 0 1 2 --workers 3
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/dp_defense/scripts/run_qwen_epoch1_kd_main.sh run --gpus 0 1 2 --workers 3
+```
+
+第一个脚本只调用 `sweep train`，第二个只调用 `sweep audit`，不会隐式启动另一阶段。
+两个脚本均固定 Qwen/epoch 1/KD，不运行基线方法。dry-run 复用通用规划器，输出的
+每个条件含 train/audit 两条计划命令，但不会执行；正式 run 严格只执行各自阶段。
+默认单卡顺序运行；`--gpu` 是可见设备的逻辑编号，`CUDA_VISIBLE_DEVICES=2` 时使用 `--gpu 0`。
+`--gpus 0 1 2 --workers 3` 可启用动态队列，每张卡最多一个 worker，空闲后领取下一个完整条件。
+`--gpu` 与 `--gpus` 互斥；worker 数默认等于所选卡数，也可指定更小值，仅使用列表前 N 张卡。
+`CUDA_VISIBLE_DEVICES=2,5` 时使用 `--gpus 0 1`；每个 worker 内部统一使用 `cuda:0`，
+因此换卡不会改变训练请求中的 `config.gpu`，公开 seed 也不受分配顺序影响。
+仅目标模型的 FP32 CPU 梯度累加器每 worker 就约需 32 GB 主机内存；并行数量还需按内存容量选择。
+可用 `--benchmarks wikitection --seeds 1919 --epsilons 4` 选择子集。
+`--model-root` 修改 DP 模型根目录时，训练和审计两个脚本必须传同一路径；
+`--audit-root` 修改审计结果根目录，`--reference-root` 修改参考训练根目录。
+参数须使用完整名称，不能覆盖固定的模型、epoch 或草稿分支。
+
+## DP 梯度累加加速
+
+默认 `--accumulator-device cpu` 以 FP32 在主机上累加逐文档裁剪后的梯度。
+8B 参数的累加器约占 32 GB（29.8 GiB）主机内存；每条文档都要从 GPU
+搬运整模型梯度，每个优化器步还要把累加值传回 GPU 加噪。因此高内存占用、
+GPU 计算间歇性空闲与这条路径相符，不能据此简单增大普通训练的 batch size。
+数据已在训练前转换为 examples，不存在每步远程加载数据的问题。
+
+新增 `--accumulator-device cuda`：FP32 累加器放在当前训练 GPU，逐文档累加时
+直接按参数执行混合精度加法，省去梯度的 GPU→CPU→GPU 搬运和分块加法调用。
+CPU 模式也去掉了显式 FP32 转换副本，跨设备传输保持梯度的原始 dtype。
+同设备加噪直接复用即将清零的累加缓冲区，噪声临时空间仍按块限制。
+这不会把累加器改为 BF16，也不会改变逐文档全局裁剪、Poisson 采样、固定分母、
+空批次加噪、独立秘密随机流、隐私会计或全参数训练；物理微批次仍为一条文档。
+
+CUDA 模式额外占用约 `4 × trainable_parameters` 字节显存，同时减少对应主机内存。
+模型参数、反向梯度、优化器状态和激活还需另留空间，长文本尤其如此。
+现有优化器使用 paged 8-bit AdamW，显存吃紧引起分页也可能抵消收益。
+默认保留 CPU 模式；CUDA 不足时不自动改变后端或恢复半完成的优化过程。
+累加设备写入 `DP_REQUEST.json.execution` 和阶段训练记录，切换设备须使用新输出目录。
+
+当前独立工作树可复用原目录的 Python 环境和冻结参考数据，结果默认写入本工作树：
+
+```bash
+cd /home/mxd/.codex/worktrees/dp-throughput/SD_MIA
+export SD_AUDIT_PYTHON=/home/mxd/lib/SD_MIA/.venv/bin/python
+bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh dry-run \
+  --reference-root /home/mxd/lib/SD_MIA/artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3 \
+  --benchmarks wikitection --seeds 1919 --epsilons 4 \
+  --accumulator-device cuda --gpu 0 \
+  --model-root artifacts/training/dp_cuda_accum_v1/runs
+```
+
+`dry-run` 只查看计划；待目标 GPU 空闲后，将其改成 `run` 才会训练。
+单条件 CLI `experiments.dp_defense.train` 和通用 `sweep` 接受同名参数；
+Python `plan_private_training` / `train_private` 使用 `accumulator_device="cuda"`。
+配置也覆盖 EAGLE-3/MTP 的 DP 目标及 member head，不改变普通辅助 KD 的训练路径。
+
+本轮只运行 CPU 回归检查，未启动 GPU 训练；去除了可重复观察到的转换副本，
+尚无完整 8B 模型的加速倍数或峰值显存实测。合成数据微基准见
+`python -m experiments.dp_defense.benchmark_accumulator --help`，GPU 模式应在空闲卡上手动运行。
+
+脚本默认使用仓库 `.venv/bin/python`、离线模式；重复原命令可复用已经完成且来源一致的阶段。
+训练直接读取各条件的匹配参考护照，核验 `seed == data_seed == shared.seed`，
+初始化、KD 和审计使用对应公开 seed；DP 采样/噪声保留独立未公开随机流。
+数据、模型和参数变化时使用新目录。运行命令及结果路径也见
+[当前实验指南](../../docs/ready_experiments.md)。
+
+每次启动有独立日志目录，`--log-root` 可覆盖；默认训练在
+`artifacts/training/dp_defense_v1/executions/train/<attempt>/`，审计在
+`artifacts/audits/dp_defense_v1/executions/audit/<attempt>/`。
+`JOBS.json` 保存条件命令，`STATUS.json` 保存状态/seed/GPU/日志位置，每条件一个 `.log`。
+普通失败记录后继续其他条件，最终返回非零；Ctrl-C/SIGTERM 清理全部活动 worker 及其子进程。
+
+通用矩阵入口仍支持直接传入选择参数：
 
 ```bash
 .venv/bin/python -m experiments.dp_defense.sweep dry-run \
@@ -103,7 +189,7 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 矩阵训练目录为 `runs/<model_pair>/epsilon<ε>/<benchmark>/epoch<N>/seed<N>`，审计使用相同相对路径放入 `tasks/`，避免跨模型覆盖。旧单模型目录仍可通过单条件命令显式指定；比较器兼容旧布局。`--reference-root` 仅用于单模型覆盖，默认从共享模型注册表读取各自参考根目录。
 
 显式将 `dry-run` 替换为 `train` 或 `audit` 才执行相应阶段。默认顺序执行于
-一个 GPU，不启动后台作业；Ctrl-C 停止当前子进程。可用 `--benchmarks`、
+一个 GPU；可用 `--gpus` / `--workers` 并行，Ctrl-C 停止所有活动子进程。可用 `--benchmarks`、
 `--epochs`、`--seeds`、`--epsilons` 限定子集。独立条件失败会被记录并继续
 处理其余条件，最终返回非零；训练矩阵不会隐式开始审计。
 

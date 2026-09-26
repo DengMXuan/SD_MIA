@@ -22,10 +22,11 @@ from experiments.shared.training.training import load_causal_lm, _autocast, set_
 from experiments.dp_defense.accounting import make_plan, pair_budgets
 from experiments.dp_defense.artifacts import ROLES, code_sources, owned_run, read_stage, save_stage, stage_key, verify_run
 from experiments.dp_defense.training import dp_sft_train
-from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy
+from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy, accumulator_settings
 
 
-def prepare_request(reference, output, epsilon, clip, gpu, draft_variants=None):
+def prepare_request(reference, output, epsilon, clip, gpu, draft_variants=None, accumulator_device="cpu"):
+    execution = accumulator_settings(accumulator_device)
     selected = variants(draft_variants)
     reference, output = reference.resolve(), output.resolve()
     if reference == output or reference in output.parents or output in reference.parents:
@@ -60,6 +61,7 @@ def prepare_request(reference, output, epsilon, clip, gpu, draft_variants=None):
         source_fingerprint = checkpoint_fingerprint(source_head)
     files = [reference / "results.json", details["manifest"], details["audit_path"]]
     request = dict(schema="sd_mia_dp_head_request_v1", head_pair=details["pair"], config=cfg.as_dict(),
+                   execution=execution,
                    draft_variants=list(selected), seed_policy=policy,
                    reference_run=str(reference), plans={k: p.as_dict() for k, p in plans.items()},
                    source_head=str(source_head) if source_head else None, source_head_sha256=source_fingerprint,
@@ -132,10 +134,10 @@ def load_initial_head(pair, source_head, target_checkpoint, device):
     return load_mtp_speculator(source_head, device, verifier_checkpoint=target_checkpoint)
 
 
-def run(reference, output, epsilon, clip, gpu, draft_variants=None):
+def run(reference, output, epsilon, clip, gpu, draft_variants=None, accumulator_device="cpu"):
     from experiments.shared.drafts.common import tokenizer_for, tokenizer_source_for
     from experiments.shared.data.splits import build_controlled_split_from_shared_manifest
-    cfg, details, plans, request = prepare_request(reference, output, epsilon, clip, gpu, draft_variants)
+    cfg, details, plans, request = prepare_request(reference, output, epsilon, clip, gpu, draft_variants, accumulator_device)
     selected = variants(request.get('draft_variants'))
     with owned_run(output, request) as output:
         if (output / "results.json").exists():
@@ -168,7 +170,7 @@ def run(reference, output, epsilon, clip, gpu, draft_variants=None):
                     model = load_causal_lm(cfg.target_model, device, revision=cfg.target_revision,
                                           local_files_only=True, attn_implementation="sdpa")
                     privacy = dp_sft_train(model, split.members, tokenizer, device, plans[role],
-                                          lr=cfg.target_lr, optimizer_name="adamw8bit",
+                                          lr=cfg.target_lr, optimizer_name="adamw8bit", accumulator_device=accumulator_device,
                                           progress=lambda step, total: print(json.dumps(dict(stage="target", step=step, steps=total)), flush=True))
                     marker = dict(stage="target", pair=pair, base_model=cfg.target_model, base_revision=cfg.target_revision,
                                   seed=cfg.seed, data_seed=cfg.data_seed, epochs=cfg.target_epochs, full_parameter_sft=True)
@@ -183,7 +185,7 @@ def run(reference, output, epsilon, clip, gpu, draft_variants=None):
                     member = role == "draft_member_sft"
                     if member:
                         privacy = dp_sft_train(model, split.members, tokenizer, device, plans[role], lr=2e-5,
-                            optimizer_name="adamw", allow_frozen_parameters=True,
+                            optimizer_name="adamw", allow_frozen_parameters=True, accumulator_device=accumulator_device,
                             document_loss=lambda model, batch: head_loss(kind, target, model, batch, device, member=True),
                             progress=lambda step, total: print(json.dumps(dict(stage="member_head", step=step, steps=total)), flush=True))
                     else:

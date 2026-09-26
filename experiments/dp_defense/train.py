@@ -14,10 +14,12 @@ from experiments.shared.training.generalization import load_run_config
 from experiments.shared.audit.artifacts import digest
 from experiments.dp_defense.accounting import make_plan, pair_budgets
 from experiments.dp_defense.artifacts import code_sources, owned_run, read_stage, save_stage, stage_key
-from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy
+from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy, accumulator_settings
 
 
-def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, gpu: int, draft_variants=None):
+def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, gpu: int, draft_variants=None,
+                    accumulator_device="cpu"):
+    execution = accumulator_settings(accumulator_device)
     selected = variants(draft_variants)
     reference, output = reference.resolve(), output.resolve()
     if reference == output or reference in output.parents or output in reference.parents:
@@ -39,6 +41,12 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
     if sha256_file(manifest) != artifact["data"]["shared_split_sha256"]:
         raise ValueError("reference split changed")
     policy = seed_policy(cfg.as_dict(), manifest)
+    # A reference may live in another worktree. Reuse its recorded pool instead
+    # of resolving a default against this checkout's (empty) artifact directory.
+    pool = artifact["data"].get("pool_path")
+    if pool is not None:
+        pool = Path(pool)
+        cfg = replace(cfg, pool_path=pool if pool.is_absolute() else ROOT / pool)
     cfg = replace(cfg, output_dir=output, gpu=gpu, run_auxiliary_draft='kd' in selected,
                   run_member_draft='member' in selected, save_adapters=True)
     plans = {
@@ -54,6 +62,7 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
     request = dict(
         schema="sd_mia_dp_request_v1", model_pair=spec.name,
         draft_variants=list(selected), seed_policy=policy,
+        execution=execution,
         reference_run=str(reference), config=cfg.as_dict(),
         plans={role: plan.as_dict() for role, plan in plans.items()},
         sources=code_sources() + [{"path": str(p), "sha256": sha256_file(p)} for p in source_files],
@@ -63,14 +72,15 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
     return cfg, artifact, manifest, plans, request
 
 
-def run(reference, output, epsilon, clip, gpu, draft_variants=None):
+def run(reference, output, epsilon, clip, gpu, draft_variants=None, accumulator_device="cpu"):
     import torch
     from experiments.shared.data.data import records_metadata
     from experiments.shared.drafts.plain import _load_condition_split
     from experiments.shared.training.training import load_causal_lm, load_tokenizer, distill_on_auxiliary, set_seed
     from experiments.dp_defense.training import dp_sft_train
 
-    cfg, reference_artifact, manifest, plans, request = prepare_request(reference, output, epsilon, clip, gpu, draft_variants)
+    cfg, reference_artifact, manifest, plans, request = prepare_request(
+        reference, output, epsilon, clip, gpu, draft_variants, accumulator_device)
     selected = variants(request.get('draft_variants'))
     with owned_run(output, request) as output:
         if (output / "results.json").exists():
@@ -128,7 +138,8 @@ def run(reference, output, epsilon, clip, gpu, draft_variants=None):
                         print(json.dumps({"stage": role, "optimizer_step": step, "steps": total}), flush=True)
                 privacy = dp_sft_train(model, members, tokenizer, device, plans[role],
                                        lr=cfg.target_lr if role == "target" else cfg.draft_lr,
-                                       optimizer_name=cfg.optimizer, progress=progress)
+                                       optimizer_name=cfg.optimizer, progress=progress,
+                                       accumulator_device=accumulator_device)
             stages[role] = save_stage(output, role, key, model, tokenizer, privacy)
             del model
             gc.collect()
@@ -159,6 +170,8 @@ def main():
     parser.add_argument("--epsilon", type=float, choices=(1., 4., 8.), required=True)
     parser.add_argument("--max-grad-norm", type=float, default=1.)
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--accumulator-device", choices=("cpu", "cuda"), default="cpu",
+                        help="FP32 gradient sums: cpu saves VRAM; cuda avoids per-document offload")
     parser.add_argument('--draft-variants', nargs='+', choices=('kd', 'member'), default=['kd', 'member'])
     args = parser.parse_args()
     if args.gpu < 0:
@@ -166,10 +179,12 @@ def main():
     from .api import _trainer
     trainer = _trainer(args.reference_run)
     if args.command == "run":
-        trainer.run(args.reference_run, args.output_dir, args.epsilon, args.max_grad_norm, args.gpu, args.draft_variants)
+        trainer.run(args.reference_run, args.output_dir, args.epsilon, args.max_grad_norm, args.gpu,
+                    args.draft_variants, args.accumulator_device)
         return
     *_, plans, request = trainer.prepare_request(args.reference_run, args.output_dir,
-                                             args.epsilon, args.max_grad_norm, args.gpu, args.draft_variants)
+                                             args.epsilon, args.max_grad_norm, args.gpu, args.draft_variants,
+                                             args.accumulator_device)
     if args.command == "dry-run":
         print(json.dumps({"request": request, "pairs": pair_budgets(plans['target'].as_dict(),
             plans['draft_member_sft'].as_dict() if 'draft_member_sft' in plans else None,

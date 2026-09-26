@@ -5,6 +5,12 @@ DRAFT_VARIANTS = ('kd', 'member')
 STAGE_FOR = dict(kd='draft_auxiliary_distilled', member='draft_member_sft')
 
 
+def accumulator_settings(device):
+    if device not in ('cpu', 'cuda'):
+        raise ValueError('accumulator device must be cpu or cuda')
+    return dict(accumulator_device=device, accumulator_dtype='float32')
+
+
 def variants(values=None):
     values = DRAFT_VARIANTS if values is None else (values,) if isinstance(values, str) else tuple(values)
     if not values or len(set(values)) != len(values) or any(v not in DRAFT_VARIANTS for v in values):

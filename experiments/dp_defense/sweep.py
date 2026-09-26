@@ -1,21 +1,22 @@
-"""Explicit sequential DP matrix launcher; dry-run never loads a model."""
+"""DP matrix with independent GPU workers; dry-run never loads a model."""
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import sys
 
-from experiments.paths import ROOT, TRAINING_ROOT, AUDITS
+from experiments.paths import ROOT, TRAINING_ROOT, AUDITS, audit_executions
+from experiments.shared.core import gpu_pool
 from experiments.shared.models.registry import MODEL_PAIRS
-from experiments.dp_defense.conditions import variants, stage_roles
+from experiments.dp_defense.conditions import variants, stage_roles, accumulator_settings
 
 
 def commands(args):
     result = []
     pairs = getattr(args, "model_pairs", ["qwen3"])
     selected = variants(getattr(args, 'draft_variants', None))
+    execution = accumulator_settings(getattr(args, 'accumulator_device', 'cpu'))
     if args.reference_root is not None and len(pairs) != 1:
         raise ValueError("--reference-root requires exactly one model pair")
     for pair in pairs:
@@ -35,16 +36,16 @@ def commands(args):
                                  "--device", f"cuda:{args.gpu}"]
                         if args.include_baselines:
                             audit.append("--include-baselines")
-                        train += ['--draft-variants', *selected]
+                        train += ['--accumulator-device', execution['accumulator_device'], '--draft-variants', *selected]
                         audit += ['--draft-variants', *selected]
-                        result.append(dict(model_pair=pair, condition=str(condition), epsilon=epsilon,
+                        result.append(dict(model_pair=pair, condition=str(condition), seed=seed, epsilon=epsilon,
                                            draft_variants=list(selected), stages=list(stage_roles(selected)),
                                            train=train, audit=audit))
     return result
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("command", choices=("dry-run", "train", "audit"))
     parser.add_argument("--model-pairs", nargs="+", choices=tuple(MODEL_PAIRS), default=["qwen3"])
     parser.add_argument("--reference-root", type=Path, help="training root override; single model pair only")
@@ -55,27 +56,35 @@ def main():
     parser.add_argument("--epochs", nargs="+", type=int, choices=(1, 3), default=[1, 3])
     parser.add_argument("--seeds", nargs="+", type=int, choices=(1919, 1949, 1978), default=[1919, 1949, 1978])
     parser.add_argument("--epsilons", nargs="+", type=float, choices=(1., 4., 8.), default=[1., 4., 8.])
-    parser.add_argument("--gpu", type=int, default=0)
+    gpu_pool.add_arguments(parser)
     parser.add_argument("--include-baselines", action="store_true")
+    parser.add_argument("--accumulator-device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument('--draft-variants', nargs='+', choices=('kd', 'member'), default=['kd', 'member'])
-    args = parser.parse_args()
-    if args.gpu < 0 or any(len(v) != len(set(v)) for v in (args.model_pairs, args.benchmarks, args.epochs, args.seeds, args.epsilons)):
+    args = parser.parse_args(argv)
+    if any(len(v) != len(set(v)) for v in (args.model_pairs, args.benchmarks, args.epochs, args.seeds, args.epsilons)):
         parser.error("choose a nonnegative GPU and unique matrix values")
     try:
+        scheduling = gpu_pool.configuration(args)
+        args.gpu = 0  # Stable worker-local device, independent of assigned GPU.
         tasks = commands(args)
     except ValueError as error:
         parser.error(str(error))
     if args.command == "dry-run":
         print(json.dumps({"conditions": len(tasks), "artifacts": sum(len(t['stages']) for t in tasks),
-                          "draft_audits": sum(len(t['draft_variants']) for t in tasks), "tasks": tasks}, indent=2))
+                          "draft_audits": sum(len(t['draft_variants']) for t in tasks),
+                          "scheduling": scheduling, "tasks": tasks}, indent=2))
         return
-    failures = []
-    for task in tasks:
-        # subprocess.run waits and propagates Ctrl-C; there are no detached workers.
-        code = subprocess.run(task[args.command], cwd=ROOT).returncode
-        if code:
-            failures.append({"model_pair": task["model_pair"], "condition": task["condition"],
-                             "epsilon": task["epsilon"], "exit_code": code})
+    jobs = [gpu_pool.Job(f"{t['model_pair']}/epsilon{t['epsilon']:g}/{t['condition']}",
+                         t[args.command], t['seed']) for t in tasks]
+    logs = (args.model_root.parent / 'executions/train' if args.command == 'train'
+            else audit_executions(args.audit_root) / 'audit')
+    try:
+        rows = gpu_pool.run_jobs(jobs, scheduling=scheduling, log_root=args.log_root or logs, cwd=ROOT)
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except ValueError as error:
+        parser.error(str(error))
+    failures = [row for row in rows if row['state'] != 'complete']
     print(json.dumps({"failures": failures}))
     if failures:
         raise SystemExit(2)

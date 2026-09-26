@@ -29,7 +29,8 @@ def test_plan_kd_only_validates_actual_split_seed_without_creating_outputs(tmp_p
                  target_revision=spec.target_revision, draft_revision=spec.draft_revision,
                  benchmark='wikitection', target_epochs=1, seed=seed, data_seed=seed)
     artifact = dict(config=cfg.as_dict(), material_passport=dict(status='COMPLETED'),
-                    data=dict(shared_split_manifest=str(manifest), shared_split_sha256=sha256_file(manifest)))
+                    data=dict(shared_split_manifest=str(manifest), shared_split_sha256=sha256_file(manifest),
+                              pool_path=str(reference / 'pool.jsonl')))
     passport = reference / 'results.json'
     passport.write_text(json.dumps(artifact))
     output = tmp_path / 'dp'
@@ -38,6 +39,16 @@ def test_plan_kd_only_validates_actual_split_seed_without_creating_outputs(tmp_p
     assert request['draft_variants'] == ['kd']
     assert set(request['plans']) == {'target'} and request['plans']['target']['steps'] == 125
     assert request['config']['run_auxiliary_draft'] and not request['config']['run_member_draft']
+    assert request['config']['pool_path'] == str(reference / 'pool.jsonl')
+    assert request['execution'] == dict(accumulator_device='cpu', accumulator_dtype='float32')
+    gpu_request = api.plan_private_training(reference, output, epsilon=4, draft_variants=['kd'],
+                                            accumulator_device='cuda')
+    assert not output.exists()
+    assert gpu_request['execution']['accumulator_device'] == 'cuda'
+    assert gpu_request['plans'] == request['plans']
+    assert gpu_request['seed_policy'] == request['seed_policy']
+    from experiments.dp_defense.artifacts import stage_key
+    assert stage_key(gpu_request, 'target') != stage_key(request, 'target')
     assert all(v == seed for k, v in request['seed_policy'].items() if k != 'private_randomness')
     assert 'unpublished' in request['seed_policy']['private_randomness']
     manifest.write_text(json.dumps(dict(benchmark='wikitection', seed=seed+1)))
@@ -55,6 +66,7 @@ def test_epoch1_kd_sweep_routes_every_seed_and_counts_only_selected_artifacts(tm
     for task in plan['tasks']:
         assert '/epoch1/' in task['condition'] and 'epoch3' not in task['condition']
         assert task['stages'] == ['target', 'draft_auxiliary_distilled']
+        assert task['train'][task['train'].index('--accumulator-device') + 1] == 'cpu'
         for command in ('train', 'audit'):
             assert task[command][-2:] == ['--draft-variants', 'kd']
         seed = int(task['condition'].rsplit('seed', 1)[1])
