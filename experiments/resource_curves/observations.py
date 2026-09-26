@@ -134,13 +134,8 @@ def load_observations(folder, *, expected_contract=None):
     return result
 
 
-def collect_observations(prepared, adapter, output, *, sources, seed, multiplicity=2):
-    """Measured collection with per-document recovery, in a separate workspace.
-
-    ``prepared`` uses the existing records/tokenizer/record_ids/record_roles/
-    labels interface; the caller supplies fresh model and data fingerprints.
-    Model loading and any caller warmup are excluded from collection timing.
-    """
+def collection_contract(prepared, *, adapter_kind, device, sources, seed, multiplicity):
+    """Compute the same request for collection and model-free archive recovery."""
     check_multiplicity(multiplicity)
     if not sources:
         raise ValueError("frozen model and data provenance is required")
@@ -154,14 +149,27 @@ def collect_observations(prepared, adapter, output, *, sources, seed, multiplici
         raise ValueError("invalid prepared role/label contract")
     inputs = [(protocol_prompt_ids(record, prepared.tokenizer), list(record.response_ids))
               for record in prepared.records]
-    contract = {"schema": "resource_collection_v1", "protocol": "fixed", "adapter": adapter.kind,
+    contract = {"schema": "resource_collection_v1", "protocol": "fixed", "adapter": adapter_kind,
                 "multiplicity": multiplicity, "seed": seed, "sources": sources,
                 "runtime_sha256": code_fingerprint(), "record_ids": ids,
                 "record_roles": roles.tolist(), "sampling": "nested_pair_streams_v1",
                 "input_hashes": [[_hash_ids(p), _hash_ids(r)] for p, r in inputs],
-                "hardware": {"device": str(adapter.device), "torch": str(torch.__version__),
-                             "name": torch.cuda.get_device_name(adapter.device)
-                             if torch.device(adapter.device).type == "cuda" else "cpu"}}
+                "hardware": {"device": str(device), "torch": str(torch.__version__),
+                             "name": torch.cuda.get_device_name(device)
+                             if torch.device(device).type == "cuda" else "cpu"}}
+    return inputs, contract
+
+
+def collect_observations(prepared, adapter, output, *, sources, seed, multiplicity=2):
+    """Measured collection with per-document recovery, in a separate workspace.
+
+    ``prepared`` uses the existing records/tokenizer/record_ids/record_roles/
+    labels interface; the caller supplies fresh model and data fingerprints.
+    Model loading and any caller warmup are excluded from collection timing.
+    """
+    inputs, contract = collection_contract(prepared, adapter_kind=adapter.kind, device=adapter.device,
+                                         sources=sources, seed=seed, multiplicity=multiplicity)
+    ids, roles = contract['record_ids'], np.asarray(contract['record_roles'])
     stamp = digest(contract)
     with workspace(output) as folder:
         checked_contract(folder, "COLLECTION.json", contract)

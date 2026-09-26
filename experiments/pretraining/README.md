@@ -3,10 +3,84 @@
 当前主方法入口为 `experiments.pretraining.evaluation.evaluate_main`。它复用
 `shared.audit.fixed.run_prepared_main`，采用固定候选 B=2、非成员 TCN、正向稀疏评分，
 与受控 SFT / DP 主方法共用采集、拟合、评分、指标和成本实现。目标和草稿语言模型始终冻结，
-不进行微调；检测器仍需在独立非成员样本上拟合。没有新增实验脚本或调度器。
+不进行微调；检测器仍需在独立非成员样本上拟合。批量脚本见下文。
 
 此前的 p/q、Q/H 提取和 M1 工作流保留在 [LEGACY.md](LEGACY.md)，它们不是这里的当前主方法。
 其分区、检测器和缓存不能用于本入口。
+
+## 三 seed 批量脚本
+
+默认 seed 为 **1919、1949、1978**，检测器 30 epoch，B=2；各条件在独立 worker 子进程中执行。
+默认单 GPU 串行，可通过 `--gpus` 和 `--workers` 启用多个条件并行。
+脚本可从任意目录调用，默认使用仓库 `.venv/bin/python`，可用 `SD_AUDIT_PYTHON` 覆盖。
+不带参数等同 `dry-run`，只读核对数据合同并打印计划；显式 `run` 才加载模型运行实验。
+
+```bash
+cd /home/mxd/lib/SD_MIA
+
+# 7 个领域 + full_pile，24 个条件
+bash experiments/pretraining/scripts/run_pythia_mimir.sh dry-run
+bash experiments/pretraining/scripts/run_pythia_mimir.sh run --gpu 0
+
+# Qwen 时间代理，3 个条件
+bash experiments/pretraining/scripts/run_qwen_temporal.sh dry-run
+# 可选：只组装数据、加载 tokenizer；不加载语言模型，不执行审计
+bash experiments/pretraining/scripts/run_qwen_temporal.sh prepare
+# run 会先自动完成上面的数据准备，然后运行主方法
+bash experiments/pretraining/scripts/run_qwen_temporal.sh run --gpu 0
+
+# 子集示例；括号领域名需要引号
+bash experiments/pretraining/scripts/run_pythia_mimir.sh run --sources 'wikipedia_(en)' --seeds 1919 --gpu 0
+bash experiments/pretraining/scripts/run_qwen_temporal.sh run --seeds 1949 --gpu 0
+
+# 查看已完成报告；若有缺失/无效报告，退出码为 2
+bash experiments/pretraining/scripts/run_pythia_mimir.sh summarize
+bash experiments/pretraining/scripts/run_qwen_temporal.sh summarize
+
+# 多 GPU：空闲 worker 自动领取后续条件
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/pretraining/scripts/run_pythia_mimir.sh run --gpus 0 1 2 --workers 3
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/pretraining/scripts/run_qwen_temporal.sh run --gpus 0 1 2 --workers 3
+```
+
+`--gpu` 和 `--gpus` 互斥，均使用当前可见设备中的逻辑编号。例如
+`CUDA_VISIBLE_DEVICES=2,5` 对应 `--gpus 0 1`，实际使用物理卡 2、5。
+每张卡最多一个 worker；省略 `--workers` 时默认每张所选卡一个，显式指定时必须为
+1 到 GPU 数量之间的整数，小于 GPU 数量时仅用列表前 N 张卡。条件少于 worker 时按条件数启动。
+worker 内只暴露分配到的卡为 `cuda:0`，因此调度顺序或换卡不会改变记录在请求中的设备编号和 seed。
+这里并行的是完整实验条件，每个 worker 仍在单张 GPU 上运行模型。
+默认启用离线模式；`dry-run` 不创建数据或结果目录，也不加载 tokenizer/模型。
+计划核验 manifest 的 seed、模型版本、数量、token 约定及 records 哈希；时间场景还核验
+对应 seed 的 SFT 数据护照和 shared split 哈希。各条件使用同一个公开 seed 完成数据选择、
+辅助分区、接受反馈、检测器和指标估计。独立失败记录后继续其他条件，最终返回非零。
+
+每次执行在 `artifacts/audits/<batch>/executions/<run或prepare>/<attempt>/` 创建独立日志，
+可由 `--log-root` 覆盖；自定义结果根目录时默认日志放在其 `executions/` 下。
+`JOBS.json` 保存条件与命令，`STATUS.json` 保存状态、seed、实际 GPU 和日志路径；每条件一个 `.log`。
+Ctrl-C 或 SIGTERM 停止领取任务并清理全部活动 worker 及子进程；中断后使用原命令恢复。
+`prepare` 也可并发，但只使用 CPU/tokenizer，不占用 GPU。预览仅规划编号，不检测硬件可用性。
+
+默认输入根目录为仓库旁的 `SD_MIA-pretraining-data`，可用 `--data-root` 指定包含既有
+MIMIR/历史候选 manifest 的完整数据根目录。默认结果为：
+
+- MIMIR：`artifacts/audits/pythia_mimir_v1/tasks/<source>/seed<seed>/`
+- Qwen：`artifacts/audits/qwen3_temporal_shared_split_v1/tasks/wikitection/seed<seed>/`
+
+每个目录内的 `main_fixed_sparse_positive/REPORT.json` 是最终报告。
+`--output-root` 可替换上述 `tasks/` 根目录；相同命令可恢复，数据、模型、参数或来源变化
+会拒绝复用旧结果。不要同时向同一个条件目录写入。
+
+**Qwen 复用规则：**从 `qwen3_wikitext_temporal_512_seed<seed>/manifest.json` 保留该 seed
+已选好的 **2,000 条历史成员行**；从原受控 SFT 的 WikiTection 四角色划分保留
+`nonmember` 的 **2,000 条**、`audit_auxiliary` 的 **600 条**，包括原 ID 和顺序。
+SFT 的 `auxiliary` 是草稿训练数据，不参与这里的非成员检测器拟合。
+原时间 manifest 也使用这三个 seed，但它独立抽取近期数据，因此近期样本并非原 SFT 划分。
+新脚本不重抽样，也不改原 manifest、数据池或 split；新数据保存到
+`SD_MIA-pretraining-data/qwen3_temporal_shared_split_v1/seed<seed>/`，首次 `prepare`/`run` 生成。
+
+历史成员仍为 512 token；复用的近期数据保留原 128–512 token 的筛选带，实际长度见
+[数据清单](DATA_INVENTORY.md)。长度差异是分析时间代理结果时需考虑的因素。
+数据准备校验原文哈希、日期和精确 token 重复，拒绝历史/近期的近似重复；近期内部的
+近似去重继承原 shared split，不通过替换冻结样本来消除冲突。
 
 ## 支持的模型与标签
 
@@ -21,7 +95,8 @@ Pythia 默认 revision 固定为 `c0e3eee36dc47af0c49f361c74cfe459c09f7f23`（6.
 两者都训练过 The Pile，因此草稿不是受控 SFT 中的 member-blind 辅助草稿。
 
 Qwen 模型 revision 取自共享模型注册表，使用原始 Base 模型和独立 1.7B 草稿，
-不依赖 SFT 结果文件，也不使用 EAGLE 头。两个模型必须有相同的完整 tokenizer。
+不使用 EAGLE 头。评估接口不依赖 SFT 权重；上述批量脚本读取 SFT 数据护照，仅用于
+定位并核对已有划分。两个模型必须有相同的完整 tokenizer。
 目标训练成员关系未知；报告明确写入 `membership_verified=False`，不能把时间代理 AUC
 直接写成有真实成员标签的 MIA AUC。文章发布时间也不能排除旧内容被复制到新页面。
 
@@ -94,9 +169,10 @@ manifest 保存实际长度统计。此准备步骤只做精确 token 去重，�
 Qwen3 发布日 **2025-04-29**。历史和新文本之间、测试和辅助之间统一做模型可见 token
 精确去重与 13-gram 近似去重。跨角色文档 ID 不得重复。
 
-`min_tokens` 默认 128；已准备的正式候选数据显式设为 512，使所有角色都用 512 个文本 token，
+`min_tokens` 默认 128；原时间候选 manifest 显式设为 512，使所有角色都用 512 个文本 token，
 即首 token 作上下文、511 个评分 token。WikiText raw 的标点/空格处理和精选文章来源仍不同于
-新 Wikipedia，长度统一不能消除全部来源偏差。见 [数据清单](DATA_INVENTORY.md)。
+新 Wikipedia，长度统一不能消除全部来源偏差。批量脚本使用上面的 shared split 复用接口，
+近期记录保留原长度，不再全部固定为 512。见 [数据清单](DATA_INVENTORY.md)。
 
 两种准备函数都原子发布 `records.jsonl` / `manifest.json`，拒绝覆盖已有目录。
 记录来源、哈希、原标签、选样 seed、模型版本、tokenizer 指纹和实际 token ID。
@@ -115,10 +191,10 @@ report = evaluate_main(
 )
 ```
 
-这是一个条件的功能调用；用户后续脚本负责选择 GPU、数据集和 seed。
+这是一个条件的功能调用；批量脚本负责选择 GPU、数据集和 seed。
 `seed` 必须与 manifest 的 `selection_seed` 相等，可分别准备 1919、1949、1978。
 辅助分区、逐文档接受反馈、TCN 和 AUC bootstrap 都从该条件 seed 确定。
-本场景没有微调 seed；不借用某个 SFT 模型或其成员分配。
+本场景没有微调 seed；历史成员来自原时间候选划分，不使用 SFT 的成员集或微调模型。
 数据选样沿用可复现的 `condition_seed + official_label` 随机子流，后续各阶段直接使用
 该条件 seed；不引入独立可调的选样 seed。不同 seed 的数据允许重叠。
 
@@ -149,3 +225,6 @@ TPR 和实际 FPR，不能混用这两种指标。成本沿用准备/校准/测�
 验证冻结权重、无目标概率泄漏、三种 seed、分区隔离、同 seed 冷启动确定性、缓存恢复、
 篡改拒绝，以及历史文章跨分片重建和日期检查。它验证功能，不证明大模型效果。
 本次未运行 Pythia/Qwen 正式审计、语言模型微调或效率实验。
+`test_temporal_reuse.py` 另行覆盖三 seed 的历史成员保留、近期角色 ID/顺序复用、
+源文件不变、恢复、错误来源拒绝和 CPU 小模型端到端调用；`test_matrix_scripts.py`
+验证默认矩阵、预览不启动任务、seed 传递和 DP 脚本的训练/审计隔离。

@@ -1,8 +1,12 @@
 # Resource-curve support
 
-This is an opt-in Python library, outside the Qwen and cross-model runners'
-source-fingerprint trees. It does not modify or schedule either matrix. No
-sweep launcher is provided. Baseline implementations are unchanged.
+This is an opt-in Python library and Qwen3 ablation runner, outside the existing
+Qwen and cross-model runners' source-fingerprint trees. The new scripts schedule
+their own matrices. Baseline implementations are unchanged.
+
+**可执行消融脚本与多 GPU 用法： [QWEN_ABLATIONS.md](QWEN_ABLATIONS.md)**。
+提供辅助数据量、News→Wiki/Arxiv 分布变化、B=1/2/4/8/16 三个独立入口，
+均为 Qwen3、epoch 1、KD 草稿，默认三个对应 seed。
 
 ## Experiment units
 
@@ -39,7 +43,7 @@ keeps calibration unchanged and refits the detector; earlier training samples
 never move into validation. Build the two studies separately: their extension
 IDs may overlap, without requiring a joint 1200+1200 allocation.
 
-## Compose a future experiment
+## Compose an experiment through the library
 
 1. Obtain the frozen `shared` split manifest, the original `base_prepared`
    records/tokenizer using the existing model-specific loader, the matching
@@ -168,8 +172,8 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 \
   -q -p no:cacheprovider tests/resource_curves
 ```
 
-No GPU/model experiment or actual pool expansion has been run as part of this
-change. The read-only data preflight and its scope are recorded in
+No GPU/model experiment has been run as part of this change.
+The read-only data preflight and its scope are recorded in
 [DATA_PREFLIGHT.md](DATA_PREFLIGHT.md); raw unused pool size alone is not a
-guarantee of post-filter availability. This package is callable experiment
-support, not an existing executable ablation sweep script.
+guarantee of post-filter availability. The library can be called independently;
+the new Qwen scripts consume the existing checked extension manifests.

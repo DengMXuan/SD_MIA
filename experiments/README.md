@@ -8,7 +8,7 @@
 | 受控 SFT 训练与 Qwen 审计 | [SD 实验](sd_membership_sft/README.md) | `training/controlled_sft_v2/`、`audits/qwen_shared_reference_v1/` |
 | 跨模型固定候选审计 | [跨模型实验](cross_model_audit/README.md) | `audits/cross_model_fixed_v1/` |
 | 全参数 DP 防御 | [DP 实验](dp_defense/README.md) | `training/dp_defense_v1/`、`audits/dp_defense_v1/` |
-| 查询与辅助集资源曲线 | [资源曲线](resource_curves/README.md) | `audits/resource_curves_v1/` |
+| 查询次数、辅助数据量与非同分布消融 | [Qwen3 多 GPU 脚本](resource_curves/QWEN_ABLATIONS.md)、[资源曲线 API](resource_curves/README.md) | `audits/resource_curves_v1/` |
 | Target-only baseline | [Baseline](baseline/README.md) | 矩阵内 `tasks/<condition>/baseline/`，或显式输出目录 |
 | Pythia / MIMIR 预训练审计 | [预训练实验](pretraining/README.md) | `data/pretraining/`、`audits/pretraining_v1/` |
 | 目录维护 | [维护说明](maintenance/README.md) | `maintenance/` |
