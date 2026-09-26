@@ -49,20 +49,38 @@ prepare_temporal(
 
 MIMIR 输入为官方缓存 JSONL（JSON 字符串，或含 `text` 的对象），保留原标签和来源行号。
 辅助集从官方非成员中独立预留，不与测试集重叠。`source_provenance` 可记录下载版本；
-未提供时明确标为用户提供的官方缓存，不伪造下载证明。原有下载器
-`experiments.pretraining.prepare` 仍可获取固定版本
-`iamgroot42/mimir@02500d3b7cece0cb7628e939ba9fc93fdb6362ae`，不新增下载脚本。
-该仓库是 gated 数据集（官方 API 标记 `gated: auto`）。匿名数据请求返回 HTTP 401；
-进一步核查发现本机 token 有效，但数据文件的认证请求返回 HTTP 403，官方原因是账号
-尚未进入授权名单。需要用 **该 token 所属的 Hugging Face 账号** 打开
-[数据集页面](https://huggingface.co/datasets/iamgroot42/mimir)，提交页面的访问申请并获准。
-现有下载器会使用 Hugging Face SDK 的本机登录，通常无需重新登录；更换账号时才需要
-`hf auth login`。使用 fine-grained token 时还应允许读取获准访问的 gated 数据集。
-不要把 token 写进脚本或提交到 Git。目前仍未取得真实 MIMIR 数据缓存。
+未提供时明确标为用户提供的官方缓存，不伪造下载证明。可调用的下载与容量检查接口为：
+
+```python
+from experiments.pretraining.datasets import download_mimir, inspect_mimir, prepare_mimir
+
+cache = download_mimir(
+    source="wikipedia_(en)", split="ngram_13_0.8", cache_size=1000,
+    local_dir="/home/mxd/lib/SD_MIA-pretraining-data/mimir/official",
+    local_files_only=True,  # 此目录已有下载；首次获取时设为 False
+)
+check = inspect_mimir(cache["member_file"], cache["nonmember_file"],
+                      source=cache["source"], n_aux=600)
+# check["max_balanced_test_per_class"] 是预留辅助样本并精确去重后的容量。
+# 新划分才需调用 prepare_mimir；现有已冻结 manifest 可直接交给 evaluate_main。
+manifest = prepare_mimir(**cache, output_dir=new_data_dir, seed=1919,
+                         n_per_class=400, n_aux=600)
+```
+
+下载器固定 `iamgroot42/mimir@02500d3b7cece0cb7628e939ba9fc93fdb6362ae`，只获取所选领域的
+train/test，不下载邻居缓存或模型权重。`full_pile` 使用 `split="none", cache_size=10000`。
+两个准备入口共用解析和过滤逻辑；检查会报告可用数量、长度、源文件哈希及 tokenizer 指纹。
+若权限不足，会提示用本机 SDK 登录账号申请官方数据集访问，不保存 token。
+
+**2026-09-26 重新核查后权限已生效**，所需的 16 个官方缓存文件均已下载并验证。
+先前的 401/403 障碍已解除，无需换用非官方镜像。数据路径、冻结划分和统计见
+[数据清单](DATA_INVENTORY.md)。
 
 规模须显式选择：每类 1000 条的缓存无法支持 2000+2000 测试和 600 辅助样本。
-例如可选每类 300 条测试、600 条辅助，或取得更大的官方缓存；过滤后不足会报错，不会缩减
-或借用测试样本。`full_pile` 的混合语料结果不能当作某个单一领域结果。
+已准备 7 个领域各 400/400/600，以及混合 Pile 的 2000/2000/600，均覆盖三个 seed。
+过滤后不足会报错，不会缩减或借用测试样本。`full_pile` 的混合语料结果不能当作某个单一
+领域结果，也不等于 7 个领域的宏平均。官方缓存中的文本长度不固定，512 是截断上限；
+manifest 保存实际长度统计。此准备步骤只做精确 token 去重，不声称额外执行了近似去重。
 
 时间数据支持两种历史来源：
 
@@ -101,6 +119,8 @@ report = evaluate_main(
 `seed` 必须与 manifest 的 `selection_seed` 相等，可分别准备 1919、1949、1978。
 辅助分区、逐文档接受反馈、TCN 和 AUC bootstrap 都从该条件 seed 确定。
 本场景没有微调 seed；不借用某个 SFT 模型或其成员分配。
+数据选样沿用可复现的 `condition_seed + official_label` 随机子流，后续各阶段直接使用
+该条件 seed；不引入独立可调的选样 seed。不同 seed 的数据允许重叠。
 
 默认 600 个辅助非成员按 320/80/200 分配给检测器训练、验证与校准，所有成员及
 测试非成员只用于最终测试。可显式调整三个辅助分区大小，但必须全部为正并恰好耗尽辅助集。

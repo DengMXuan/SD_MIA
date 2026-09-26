@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from experiments.pretraining.data import TOKEN_CONTRACT, load_tokenizer, tokenizer_hash, sha256
-from experiments.pretraining.prepare import freeze
+from experiments.pretraining.prepare import freeze, download_mimir, inspect_mimir
 from experiments.shared.data.data import _hash_ids
 from experiments.shared.data.pools import NearDuplicateIndex
 from experiments.shared.models.registry import MODEL_PAIRS

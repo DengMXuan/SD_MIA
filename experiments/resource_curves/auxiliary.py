@@ -7,6 +7,7 @@ import random
 
 from experiments.shared.data.data import SFTRecord, _hash_ids
 from experiments.shared.data.splits import SFT_PROMPT, _document_identity, _selection_gram_hashes
+from experiments.resource_curves.config import condition_seed
 from experiments.resource_curves.storage import checked_contract, digest, file_sha, workspace
 
 
@@ -56,7 +57,7 @@ def _tokenize(document, tokenizer, band):
                           truncation=True, max_length=band["max_tokens"]).input_ids)
 
 
-def select_extension(pool_path, shared_manifest_path, tokenizers, *, count, seed=20260922):
+def select_extension(pool_path, shared_manifest_path, tokenizers, *, count, seed=None):
     """Return a separate manifest; no files are changed and no models are loaded.
 
     Supply the exact tokenizer-source mapping audited by the frozen split, so
@@ -68,6 +69,7 @@ def select_extension(pool_path, shared_manifest_path, tokenizers, *, count, seed
         raise ValueError("extension count must be a nonnegative integer")
     shared_path = Path(shared_manifest_path)
     shared = json.loads(shared_path.read_text())
+    seed = condition_seed(shared.get("seed"), seed)
     if shared.get("schema_version") != 3 or "audit_auxiliary" not in shared["splits"]:
         raise ValueError("a frozen four-role shared split is required")
     if not tokenizers or set(tokenizers) != set(shared["tokenizer_sources"]):

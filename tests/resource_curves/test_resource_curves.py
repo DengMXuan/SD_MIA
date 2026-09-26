@@ -79,8 +79,8 @@ def test_invalid_multiplicity(bad):
         fixed_trace(ToyAdapter(), [1], [0], seed=1, multiplicity=bad)
 
 
-def shared_split():
-    return {"seed": 1919, "splits": {
+def shared_split(seed=1919):
+    return {"seed": seed, "splits": {
         "audit_auxiliary": [{"record_id": f"a{i}"} for i in range(600)],
         "member": [{"record_id": f"m{i}"} for i in range(2)],
         "nonmember": [{"record_id": f"n{i}"} for i in range(2)],
@@ -89,7 +89,7 @@ def shared_split():
 
 
 def extension(shared, count=1000):
-    return {"shared_split_digest": digest(shared), "records": [{"record_id": f"e{i}"} for i in range(count)]}
+    return {"shared_split_digest": digest(shared), "seed": shared["seed"], "records": [{"record_id": f"e{i}"} for i in range(count)]}
 
 
 def test_default_partitions_match_old_and_requested_curves_are_nested():
@@ -140,7 +140,35 @@ def test_bad_auxiliary_allocations(args):
         AuxiliaryBudget(*args)
 
 
-def synthetic_observations(multiplicity=2):
+@pytest.mark.parametrize("seed", [1919, 1949, 1978])
+def test_one_condition_seed_controls_all_resource_stages(tmp_path, seed):
+    shared = shared_split(seed)
+    ext = extension(shared, 0)
+    study = build_study(shared, ext, (AuxiliaryBudget(160, 40),), name="seed-check")
+    point = study["points"][0]
+    assert study["seed"] == point["seed"] == seed
+    obs = synthetic_observations(seed=seed)
+    fit = fit_detector(obs, point, tmp_path / "fit", epochs=1)
+    assert fit.metadata["contract"]["seed"] == seed
+    report = evaluate(obs, point, fit, tmp_path / "eval", bootstrap=0)
+    assert report["contract"]["metric_seed"] == seed
+    with pytest.raises(ValueError, match="seed must match"):
+        fit_detector(obs, point, tmp_path / "bad-fit", seed=seed + 1, epochs=1)
+    with pytest.raises(ValueError, match="seed must match"):
+        evaluate(obs, point, fit, tmp_path / "bad-eval", metric_seed=seed + 1)
+    with pytest.raises(ValueError, match="seed must match"):
+        fit_detector(synthetic_observations(seed=seed + 1), point, tmp_path / "wrong-obs", epochs=1)
+    with pytest.raises(ValueError, match="extension seed"):
+        build_study(shared, {**ext, "seed": seed + 1}, (AuxiliaryBudget(160, 40),), name="wrong")
+    prepared = SimpleNamespace(condition_seed=seed)
+    adapter = ToyAdapter()
+    with pytest.raises(ValueError, match="seed must match"):
+        collect_observations(prepared, adapter, tmp_path / "wrong-collection",
+                             sources={"synthetic": True}, seed=seed + 1)
+    assert adapter.cost.target_forward_calls == 0
+
+
+def synthetic_observations(multiplicity=2, *, seed=1919):
     rng = np.random.default_rng(51)
     ids = np.asarray([f"a{i}" for i in range(600)] + ["m0", "m1", "n0", "n1"])
     roles = np.asarray(["audit_auxiliary"] * 600 + ["member"] * 2 + ["nonmember"] * 2)
@@ -150,7 +178,7 @@ def synthetic_observations(multiplicity=2):
     arrays = dict(features=features, bits=rng.integers(0, 2, size=(len(features), multiplicity), dtype=np.uint8),
                   lengths=lengths, record_ids=ids, record_roles=roles, labels=(roles == "member").astype(int),
                   candidate_positions=lengths.copy())
-    contract = {"multiplicity": multiplicity, "adapter": "plain", "seed": 51, "sources": {"synthetic": True},
+    contract = {"multiplicity": multiplicity, "adapter": "plain", "seed": seed, "sources": {"synthetic": True},
                 "sampling": "nested_pair_streams_v1", "runtime_sha256": "test", "hardware": {"device": "cpu"}}
     costs = [{**asdict(RuntimeCost(target_forward_calls=1, draft_forward_calls=1, target_input_tokens=4,
                                   draft_input_tokens=4)), "record_id": str(record_id), "seconds": .1,
@@ -158,8 +186,8 @@ def synthetic_observations(multiplicity=2):
     return Observations(arrays, contract, costs, multiplicity)
 
 
-def small_points():
-    shared = shared_split()
+def small_points(seed=1919):
+    shared = shared_split(seed)
     return build_study(shared, extension(shared, 0), (AuxiliaryBudget(160, 40), AuxiliaryBudget(160, 80)), name="cal")["points"]
 
 
@@ -182,8 +210,8 @@ def test_train_predict_evaluate_variable_support_and_resume(tmp_path, multiplici
 
 
 def test_b2_detector_unchanged_and_calibration_cannot_affect_fit(tmp_path):
-    obs = synthetic_observations()
-    first, larger = small_points()
+    obs = synthetic_observations(seed=81)
+    first, larger = small_points(seed=81)
     fit = fit_detector(obs, first, tmp_path / "fit", seed=81, epochs=1)
     sub, parts = fitting_data(obs, first)
     old, mean, scale, _, _ = original_fit(sub["features"][:, FEATURE_COLUMNS], sub["counts"], sub["lengths"],
@@ -267,7 +295,7 @@ def test_collection_recovers_completed_records_and_checks_contract(tmp_path):
     tokenizer = SimpleNamespace(apply_chat_template=lambda *a, **k: [1, 2])
     records = [SimpleNamespace(record_id=f"a{i}", response_ids=(0, 0, 0), prompt="p", prompt_ids=(1, 2)) for i in range(3)]
     prepared = SimpleNamespace(records=records, tokenizer=tokenizer, record_ids=np.array([f"a{i}" for i in range(3)]),
-                               record_roles=np.array(["audit_auxiliary"] * 3), labels=np.zeros(3, int))
+                               record_roles=np.array(["audit_auxiliary"] * 3), labels=np.zeros(3, int), condition_seed=1919)
     class Interrupted(ToyAdapter):
         def rows(self, tokens):
             if self.cost.target_forward_calls == 1:
@@ -319,7 +347,7 @@ def test_extension_excludes_all_assignments_and_rechecks_quality(tmp_path):
     pool_sha = hashlib.sha256(payload).hexdigest()
     pool.with_suffix(".manifest.json").write_text(json.dumps({"benchmark": "toy", "jsonl_sha256": pool_sha,
                                                             "records": len(assigned + candidates)}))
-    split = {"schema_version": 3, "benchmark": "toy", "pool_sha256": pool_sha,
+    split = {"schema_version": 3, "benchmark": "toy", "pool_sha256": pool_sha, "seed": 1919,
              "tokenizer_sources": ["toy"], "token_band": {"min_tokens": 16, "max_tokens": 32},
              "splits": {name: [{"record_id": row["record_id"], "text_sha256": row["text_sha256"]}]
                         for name, row in zip(("member", "nonmember", "auxiliary", "audit_auxiliary"), assigned)}}
@@ -334,7 +362,10 @@ def test_extension_excludes_all_assignments_and_rechecks_quality(tmp_path):
     before = {path: path.read_bytes() for path in (pool, pool.with_suffix(".manifest.json"), shared_path)}
     manifest = select_extension(pool, shared_path, {"toy": tokenize}, count=2)
     assert {row["record_id"] for row in manifest["records"]} == {"good1", "good2"}
-    assert manifest == select_extension(pool, shared_path, {"toy": tokenize}, count=2)
+    assert manifest["seed"] == 1919
+    assert manifest == select_extension(pool, shared_path, {"toy": tokenize}, count=2, seed=1919)
+    with pytest.raises(ValueError, match="seed must match"):
+        select_extension(pool, shared_path, {"toy": tokenize}, count=2, seed=1949)
     assert len(extension_records(manifest, tokenize, "toy")) == 2
     saved = save_extension(tmp_path / "extension", manifest)
     assert json.loads(saved.read_text()) == manifest

@@ -48,6 +48,8 @@ IDs may overlap, without requiring a joint 1200+1200 allocation.
    weight identity. Loading/warmup are the future caller's responsibility.
 2. `auxiliary.select_extension(pool_path, shared_manifest_path, tokenizers,
    count=1000)` verifies the frozen pool and selects unassigned nonmembers.
+   Its seed defaults to the frozen shared split's seed; an explicit different
+   seed is rejected. It no longer defaults to the historical seed 20260922.
    `tokenizers` maps **all exact tokenizer source names in the shared manifest**
    to locally loaded tokenizer objects. Selection excludes every original
    member/nonmember/draft-auxiliary/audit-auxiliary record, and checks raw text,
@@ -74,6 +76,8 @@ from experiments.resource_curves.storage import CACHE_ROOT, DATA_ROOT, RUN_ROOT,
 # shared, extension, base_prepared, tokenizer_source, adapter, sources and
 # condition_key are supplied by the future caller. condition_key identifies
 # dataset, training seed, epoch, model pair and draft role.
+# Check that the model passport's config.seed and config.data_seed both equal
+# shared["seed"], and that its shared-split checksum matches, before composing.
 study = build_study(shared, extension, calibration_curve(), name="calibration")
 save_study(DATA_ROOT / condition_key / study["name"], study)
 extra = extension_records(extension, base_prepared.tokenizer, tokenizer_source)
@@ -94,6 +98,13 @@ For the fitting curve replace `calibration_curve()` with `fitting_curve()` and
 use distinct study/collection/result directories. For the query curve build a
 study containing only `AuxiliaryBudget(400, 200)` and collect each multiplicity
 into its own directory. All APIs are explicit about the selected budget.
+
+The extension, study, every point and prepared records carry the same condition
+seed. `prepare_study` supplies `prepared.condition_seed`; observation collection
+requires it and rejects a different seed. Detector fitting and metric bootstrap
+inherit the observation seed and reject overrides. This preserves the mapping
+1919→1919, 1949→1949, 1978→1978 across stages. Older extension/study artifacts
+without this seed contract must be rebuilt in a new dedicated output folder.
 
 New outputs default to dedicated roots:
 
@@ -158,5 +169,7 @@ CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 \
 ```
 
 No GPU/model experiment or actual pool expansion has been run as part of this
-change. Eligibility of all requested extra records remains a future preflight
-check; raw unused pool size is not a guarantee of post-filter availability.
+change. The read-only data preflight and its scope are recorded in
+[DATA_PREFLIGHT.md](DATA_PREFLIGHT.md); raw unused pool size alone is not a
+guarantee of post-filter availability. This package is callable experiment
+support, not an existing executable ablation sweep script.

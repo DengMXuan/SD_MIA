@@ -8,6 +8,7 @@ from experiments.shared.audit.main import select_documents, sparse_scores
 from experiments.shared.audit.metrics import metrics, METRIC_CONVENTIONS
 from experiments.shared.methods.protocol_accept_only import predict
 from experiments.resource_curves.detector import FEATURE_COLUMNS, fitting_identity
+from experiments.resource_curves.config import condition_seed
 from experiments.resource_curves.partitions import partition_indices
 from experiments.resource_curves.storage import atomic_json, atomic_npz, checked_contract, code_fingerprint, file_sha, workspace
 
@@ -41,8 +42,8 @@ def evaluate(observations, point, detector, output, *, two_sided=False, bootstra
         raise ValueError("detector was fitted on a different training/validation allocation or budget")
     if type(bootstrap) is not int or bootstrap < 0:
         raise ValueError("bootstrap must be a nonnegative integer")
-    if metric_seed is None:
-        metric_seed = observations.contract["seed"]
+    metric_seed = condition_seed(observations.contract["seed"], metric_seed)
+    condition_seed(observations.contract["seed"], detector.metadata["contract"]["seed"])
     data = observations.count_data()
     parts = partition_indices(data, point)
     contract = {"schema": "resource_evaluation_v1", "observations": observations.signature,

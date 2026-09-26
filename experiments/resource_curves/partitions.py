@@ -2,7 +2,7 @@
 import numpy as np
 from types import SimpleNamespace
 
-from experiments.resource_curves.config import AuxiliaryBudget
+from experiments.resource_curves.config import AuxiliaryBudget, condition_seed
 from experiments.resource_curves.storage import checked_contract, digest, workspace
 
 ROLES = ("train", "validation", "calibration", "test")
@@ -36,6 +36,9 @@ def build_study(shared, extension, budgets, *, name):
             and len({b.calibration for b in budgets}) > 1):
         raise ValueError("build fitting and calibration curves as separate studies")
     base = base_partitions(shared)
+    seed = condition_seed(shared.get("seed"))
+    if extension.get("seed") != seed:
+        raise ValueError("extension seed must match the frozen condition seed")
     if extension["shared_split_digest"] != digest(shared):
         raise ValueError("extension belongs to a different frozen split")
     extension_ids = [row["record_id"] for row in extension["records"]]
@@ -62,8 +65,8 @@ def build_study(shared, extension, budgets, *, name):
         all_ids = [record for role in ROLES for record in parts[role]]
         if len(set(all_ids)) != len(all_ids):
             raise ValueError("study roles are not disjoint")
-        points.append({"budget": budget.to_dict(), "partitions": parts})
-    return {"schema": "resource_study_v1", "name": name,
+        points.append({"seed": seed, "budget": budget.to_dict(), "partitions": parts})
+    return {"schema": "resource_study_v1", "name": name, "seed": seed,
             "shared_split_digest": digest(shared), "extension_digest": digest(extension),
             "points": points}
 
@@ -107,6 +110,11 @@ def prepare_study(base_prepared, extra_records, extension, study):
     """
     if study["extension_digest"] != digest(extension):
         raise ValueError("study and auxiliary extension manifest disagree")
+    seed = condition_seed(study.get("seed"), extension.get("seed"))
+    for point in study["points"]:
+        condition_seed(point.get("seed"), seed)
+    if hasattr(base_prepared, "condition_seed"):
+        condition_seed(base_prepared.condition_seed, seed)
     allowed_extra = {row["record_id"] for row in extension["records"]}
     if {record.record_id for record in extra_records} != allowed_extra or len(extra_records) != len(allowed_extra):
         raise ValueError("extension record identities differ from the audited manifest")
@@ -125,7 +133,7 @@ def prepare_study(base_prepared, extra_records, extension, study):
         raise ValueError("study requires records absent from the prepared pool")
     selected = [(record, role) for record, role in zip(rows, roles) if record.record_id in wanted]
     records, selected_roles = zip(*selected)
-    result = SimpleNamespace(records=list(records), tokenizer=base_prepared.tokenizer,
+    result = SimpleNamespace(records=list(records), tokenizer=base_prepared.tokenizer, condition_seed=seed,
                              record_ids=np.asarray([record.record_id for record in records]),
                              record_roles=np.asarray(selected_roles),
                              labels=np.asarray([int(role == "member") for role in selected_roles]))

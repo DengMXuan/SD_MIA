@@ -90,3 +90,12 @@ disjointness, extension exclusion, deterministic recovery, metrics and timing
 provenance. Verify that existing runtime fingerprints and active experiment
 outputs remain unchanged. Real model and GPU validation belongs to the future
 experiments requested by the user.
+
+The 2026-09-26 follow-up binds extension selection, study partitions,
+observations, detector fitting and metric bootstrap to the frozen condition's
+seed. It removes the extension selector's old independent default (20260922)
+and rejects cross-condition seed overrides. Qwen epoch-1 target/KD passports
+and tokenizer-only extension readiness are documented in
+[`DATA_PREFLIGHT.md`](../experiments/resource_curves/DATA_PREFLIGHT.md).
+These checks do not start an ablation experiment; a future launcher still
+needs to compose the existing APIs and identify the matching model condition.

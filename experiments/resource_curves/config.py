@@ -4,6 +4,15 @@ from dataclasses import asdict, dataclass
 QUERY_MULTIPLICITIES = (1, 2, 4, 8, 16)
 
 
+def condition_seed(expected, requested=None):
+    """Inherit the frozen condition's public seed and reject stage overrides."""
+    if type(expected) is not int or not 0 <= expected < 2**32:
+        raise ValueError("a frozen condition seed in [0, 2**32) is required")
+    if requested is not None and (type(requested) is not int or requested != expected):
+        raise ValueError("seed must match the frozen condition seed")
+    return expected
+
+
 def check_multiplicity(value: int) -> None:
     if type(value) is not int or value not in QUERY_MULTIPLICITIES:
         raise ValueError("query multiplicity must be one of 1, 2, 4, 8, 16")

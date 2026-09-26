@@ -11,7 +11,7 @@ from experiments.shared.audit.costs import timed, peak_memory, reset_peak
 from experiments.shared.data.data import _hash_ids
 from experiments.shared.protocols.collect_protocol_observations import protocol_prompt_ids
 from experiments.shared.protocols.sd_protocol import draft_features, trajectory_seed
-from experiments.resource_curves.config import check_multiplicity
+from experiments.resource_curves.config import check_multiplicity, condition_seed
 from experiments.resource_curves.storage import atomic_json, atomic_npz, checked_contract, code_fingerprint, digest, file_sha, workspace
 
 ARRAY_KEYS = {"features", "bits", "lengths", "record_ids", "record_roles", "labels", "candidate_positions"}
@@ -144,6 +144,7 @@ def collect_observations(prepared, adapter, output, *, sources, seed, multiplici
     check_multiplicity(multiplicity)
     if not sources:
         raise ValueError("frozen model and data provenance is required")
+    seed = condition_seed(getattr(prepared, "condition_seed", None), seed)
     ids = [record.record_id for record in prepared.records]
     if ids != prepared.record_ids.tolist() or len(set(ids)) != len(ids) or not ids:
         raise ValueError("prepared records/IDs are not unique and aligned")

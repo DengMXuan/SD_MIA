@@ -13,6 +13,7 @@ from experiments.shared.audit.costs import timed
 from experiments.shared.audit.main import select_documents
 from experiments.shared.methods.conditional_accept_only import ConditionalCountTCN, make_batch, count_nll
 from experiments.resource_curves.observations import arrays_digest
+from experiments.resource_curves.config import condition_seed
 from experiments.resource_curves.partitions import partition_indices
 from experiments.resource_curves.storage import atomic_json, code_fingerprint, digest, file_sha, workspace
 
@@ -20,6 +21,7 @@ FEATURE_COLUMNS = [0, 4, 1, 2, 3]
 
 
 def fitting_data(observations, point):
+    condition_seed(point.get("seed"), observations.contract["seed"])
     data = observations.count_data()
     parts = partition_indices(data, point)
     reference = np.unique(np.r_[parts["train"], parts["validation"]])
@@ -95,8 +97,7 @@ def fit_detector(observations, point, cache_root, *, seed=None, device="cpu", ep
     """Cache by exact train/validation observations, not calibration allocation."""
     if type(epochs) is not int or epochs < 1:
         raise ValueError("positive detector epoch count required")
-    if seed is None:
-        seed = observations.contract["seed"]
+    seed = condition_seed(observations.contract["seed"], seed)
     identity = fitting_identity(observations, point)
     contract = {"identity": identity, "seed": seed, "epochs": epochs, "device": str(device),
                 "runtime_sha256": code_fingerprint(), "torch": str(torch.__version__),

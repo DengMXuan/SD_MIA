@@ -23,7 +23,7 @@ def _mimir(root, models, output, seed=1919):
                          n_per_class=4, n_aux=6)
 
 
-@pytest.mark.parametrize('family,seed', [('pythia', 1919), ('pythia', 1949), ('qwen3', 1978)])
+@pytest.mark.parametrize('family,seed', [('pythia', 1919), ('pythia', 1949), ('pythia', 1978), ('qwen3', 1978)])
 def test_current_method_frozen_models_seed_and_resume(pretrained_fixture, tmp_path, monkeypatch, family, seed):
     root, _, models = pretrained_fixture
     if family == 'qwen3':
