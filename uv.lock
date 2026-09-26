@@ -1489,6 +1489,9 @@ dependencies = [
 dp = [
     { name = "opacus" },
 ]
+pretraining = [
+    { name = "pyarrow" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1504,6 +1507,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2,<3" },
     { name = "opacus", marker = "extra == 'dp'", specifier = ">=1.5,<2" },
     { name = "peft", specifier = ">=0.15,<1" },
+    { name = "pyarrow", marker = "extra == 'pretraining'", specifier = ">=23,<24" },
     { name = "requests", specifier = ">=2.32,<3" },
     { name = "rouge-score", specifier = ">=0.1.2" },
     { name = "sacrebleu", specifier = ">=2.6.0" },
@@ -1514,7 +1518,7 @@ requires-dist = [
     { name = "transformers", specifier = ">=5.0,<5.17" },
     { name = "warcio", specifier = ">=1.8.1" },
 ]
-provides-extras = ["dp"]
+provides-extras = ["dp", "pretraining"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8,<9" }]

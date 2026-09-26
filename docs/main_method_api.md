@@ -1,5 +1,9 @@
 # 主方法与差分隐私实验调用接口
 
+预训练模型不需要 SFT 护照：Pythia/MIMIR 和 Qwen 时间代理场景使用
+`experiments.pretraining.evaluation.evaluate_main`，见 [预训练接口](../experiments/pretraining/README.md)。
+它们与下述受控实验复用固定候选评分实现，但数据标签、原文 token 合同和预训练草稿暴露条件不同。
+
 这些函数位于 `experiments.shared.audit.evaluation`，供实验脚本调用，不负责调度矩阵。DP 调用显式注入训练校验器；旧 `experiments.cross_model_audit.api` 仍作为自动注入该校验器的兼容入口。新增模型与草稿类型见 [代码结构与扩展指南](code_structure.md)。普通微调检查点与 DP 检查点使用同一个固定候选主方法：B=2、非成员 TCN、正向稀疏评分；检测器训练/验证/校准/测试规模仍为 320/80/200/4000。
 
 ## 支持范围

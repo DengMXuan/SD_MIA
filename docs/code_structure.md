@@ -60,6 +60,14 @@ Qwen 和跨模型的任务选择、就绪策略可以不同，但 worker 调度�
 
 DP sweep 支持 `--model-pairs`。矩阵目录包含 `<model_pair>/epsilon<预算>/<benchmark>/epoch<N>/seed<N>`，跨模型和跨隐私预算分别保存。见 [DP 操作说明](../experiments/dp_defense/README.md)。
 
+## 预训练成员与时间代理评估
+
+`pretraining/datasets.py` 冻结 MIMIR 官方标签或历史/近期文本代理标签，
+`pretraining/evaluation.py` 校验预训练模型快照与独立非成员分区。
+它直接调用 `shared.audit.fixed.run_prepared_main`；受控 SFT / DP 的 `run_main`
+也调用同一实现。预训练场景无需伪造 SFT 护照或草稿训练分区，且不会重新实现 TCN 或评分。
+准备、单条件评估和标签解释见 [预训练接口](../experiments/pretraining/README.md)。
+
 ## 兼容与验证
 
 已移除的自然 SD 串行采集器及其旧别名不再提供入口。主方法名称 `main_fixed_sparse_positive`、输出路径及 B=2/TCN/校准规则保持不变。`starts` 和 `rounds_per_start` 仅作为旧请求身份字段保留，不再对应任何生成分支。

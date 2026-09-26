@@ -12,8 +12,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, SuppressTokensLogi
 
 from experiments.shared.data.data import SFTRecord, _hash_ids
 
-TARGET = {'repo_id': 'EleutherAI/pythia-6.9b', 'revision': '21bfa02e806e253fe453702c29c81d9f83617255'}
-DRAFT = {'repo_id': 'EleutherAI/pythia-1.4b', 'revision': '9cc5c8c8148a4e0115d9e29c6b4f21124cfe748a'}
+TARGET = {'repo_id': 'EleutherAI/pythia-6.9b', 'revision': 'c0e3eee36dc47af0c49f361c74cfe459c09f7f23'}
+DRAFT = {'repo_id': 'EleutherAI/pythia-1.4b', 'revision': 'fedc38a16eea3bd36a96b906d78d11d2ce18ed79'}
 MIMIR_REVISION = '02500d3b7cece0cb7628e939ba9fc93fdb6362ae'
 TOKEN_CONTRACT = {
     'mode': 'raw_text_completion', 'add_special_tokens': False,
@@ -100,16 +100,20 @@ class Evaluation:
             draft_model=self.manifest['models']['draft']['repo_id'], benchmark=self.manifest['benchmark'])
 
 
-def load_evaluation(manifest_path: Path, verify_draft=False):
+def load_evaluation(manifest_path: Path, verify_draft=False, *, model_paths=None):
     manifest_path = manifest_path.resolve()
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get('kind') != 'mimir_pretraining_v1' or manifest.get('token_contract') != TOKEN_CONTRACT:
+    if (manifest.get('kind') not in ('mimir_pretraining_v1', 'temporal_pretraining_v1')
+            or manifest.get('token_contract') != TOKEN_CONTRACT):
         raise ValueError('unsupported pretraining manifest/token contract')
-    tokenizer = load_tokenizer(manifest['models']['target'])
+    specs = manifest['models']
+    if model_paths is not None:
+        specs = {role: {**spec, 'repo_id': str(model_paths[role])} for role, spec in specs.items()}
+    tokenizer = load_tokenizer(specs['target'])
     if tokenizer_hash(tokenizer) != manifest['tokenizer_sha256']:
-        raise ValueError('tokenizer changed since MIMIR preparation')
+        raise ValueError('tokenizer changed since pretraining data preparation')
     if verify_draft:
-        draft_tokenizer = load_tokenizer(manifest['models']['draft'])
+        draft_tokenizer = load_tokenizer(specs['draft'])
         if tokenizer_hash(draft_tokenizer) != manifest['tokenizer_sha256']:
             raise ValueError('target and draft tokenizers are not identical')
     path = manifest_path.parent / manifest['records_file']
@@ -120,8 +124,10 @@ def load_evaluation(manifest_path: Path, verify_draft=False):
     for line in path.read_text().splitlines():
         row = json.loads(line)
         group = row['group']
+        if group not in groups:
+            raise ValueError('unknown frozen record group')
         ids = list(row['token_ids'])
-        if len(ids) < 2 or len(ids) > manifest['max_tokens'] or any(i < 0 or i >= len(tokenizer) for i in ids):
+        if len(ids) < 2 or len(ids) > manifest['max_tokens'] or any(type(i) is not int or i < 0 or i >= len(tokenizer) for i in ids):
             raise ValueError('invalid token sequence')
         token_hash = _hash_ids(ids)
         if token_hash != row['token_hash'] or token_hash in seen_tokens or row['record_id'] in seen_ids:
