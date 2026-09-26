@@ -13,10 +13,12 @@ from experiments.shared.core.deployment_archive import sha256_file
 from experiments.shared.training.generalization import load_run_config
 from experiments.shared.audit.artifacts import digest
 from experiments.dp_defense.accounting import make_plan, pair_budgets
-from experiments.dp_defense.artifacts import code_sources, owned_run, read_stage, save_stage, stage_key, ROLES
+from experiments.dp_defense.artifacts import code_sources, owned_run, read_stage, save_stage, stage_key
+from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy
 
 
-def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, gpu: int):
+def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, gpu: int, draft_variants=None):
+    selected = variants(draft_variants)
     reference, output = reference.resolve(), output.resolve()
     if reference == output or reference in output.parents or output in reference.parents:
         raise ValueError("DP output must be separate from the reference experiment")
@@ -36,8 +38,9 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
     manifest = manifest if manifest.is_absolute() else ROOT / manifest
     if sha256_file(manifest) != artifact["data"]["shared_split_sha256"]:
         raise ValueError("reference split changed")
-    cfg = replace(cfg, output_dir=output, gpu=gpu, run_auxiliary_draft=True,
-                  run_member_draft=True, save_adapters=True)
+    policy = seed_policy(cfg.as_dict(), manifest)
+    cfg = replace(cfg, output_dir=output, gpu=gpu, run_auxiliary_draft='kd' in selected,
+                  run_member_draft='member' in selected, save_adapters=True)
     plans = {
         role: make_plan(epsilon=epsilon, max_grad_norm=clip, population=cfg.n_per_class,
                        expected_batch_size=batch * accumulation, epochs=cfg.target_epochs)
@@ -45,10 +48,12 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
             ("target", cfg.target_batch_size, cfg.target_grad_accum),
             ("draft_member_sft", cfg.draft_batch_size, cfg.draft_grad_accum),
         )
+        if role in stage_roles(selected)
     }
     source_files = [reference / "results.json", manifest, manifest.with_suffix(".audit.json")]
     request = dict(
         schema="sd_mia_dp_request_v1", model_pair=spec.name,
+        draft_variants=list(selected), seed_policy=policy,
         reference_run=str(reference), config=cfg.as_dict(),
         plans={role: plan.as_dict() for role, plan in plans.items()},
         sources=code_sources() + [{"path": str(p), "sha256": sha256_file(p)} for p in source_files],
@@ -58,14 +63,15 @@ def prepare_request(reference: Path, output: Path, epsilon: float, clip: float, 
     return cfg, artifact, manifest, plans, request
 
 
-def run(reference, output, epsilon, clip, gpu):
+def run(reference, output, epsilon, clip, gpu, draft_variants=None):
     import torch
     from experiments.shared.data.data import records_metadata
     from experiments.shared.drafts.plain import _load_condition_split
     from experiments.shared.training.training import load_causal_lm, load_tokenizer, distill_on_auxiliary, set_seed
     from experiments.dp_defense.training import dp_sft_train
 
-    cfg, reference_artifact, manifest, plans, request = prepare_request(reference, output, epsilon, clip, gpu)
+    cfg, reference_artifact, manifest, plans, request = prepare_request(reference, output, epsilon, clip, gpu, draft_variants)
+    selected = variants(request.get('draft_variants'))
     with owned_run(output, request) as output:
         if (output / "results.json").exists():
             from experiments.dp_defense.artifacts import verify_run
@@ -92,7 +98,7 @@ def run(reference, output, epsilon, clip, gpu):
         if record_metadata != reference_artifact["records"]:
             raise ValueError("DP data reconstruction differs from the reference experiment")
         stages = {}
-        for role in ROLES:
+        for role in stage_roles(selected):
             teacher_sha = stages["target"]["checkpoint_sha256"] if role == "draft_auxiliary_distilled" or (request.get("head_pair") and role == "draft_member_sft") else None
             key = stage_key(request, role, teacher_sha)
             cached = read_stage(output, role, key)
@@ -100,6 +106,9 @@ def run(reference, output, epsilon, clip, gpu):
                 stages[role] = cached
                 print(json.dumps({"stage": role, "reused": True}), flush=True)
                 continue
+            # Reset public randomness for this stage, including on resumed runs.
+            # dp_sft_train creates separate secret sampling/noise generators.
+            set_seed(cfg.seed)
             model_id = cfg.target_model if role == "target" else cfg.draft_model
             revision = cfg.target_revision if role == "target" else cfg.draft_revision
             model = load_causal_lm(model_id, device, revision=revision, local_files_only=True,
@@ -131,7 +140,10 @@ def run(reference, output, epsilon, clip, gpu):
             config=cfg.as_dict(), data=metadata, records=record_metadata,
             training={"private_losses": "not logged or released", "models_full_parameter": True},
             privacy={"schema": "sd_mia_dp_condition_v1", "request_key": digest(request),
-                     "stages": stages, "pairs": pair_budgets(stages["target"]["privacy"], stages["draft_member_sft"]["privacy"]),
+                     "draft_variants": list(selected), "draft_roles": draft_roles(False, selected),
+                     "seed_policy": request.get('seed_policy'),
+                     "stages": stages, "pairs": pair_budgets(stages["target"]["privacy"],
+                         stages.get("draft_member_sft", {}).get("privacy"), include_kd='kd' in selected),
                      "scope": request["scope"], "reference_run": str(reference.resolve()),
                      "release_warning": "records, split manifests and audit labels are trusted experiment metadata, not DP releases"},
         )
@@ -147,24 +159,27 @@ def main():
     parser.add_argument("--epsilon", type=float, choices=(1., 4., 8.), required=True)
     parser.add_argument("--max-grad-norm", type=float, default=1.)
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument('--draft-variants', nargs='+', choices=('kd', 'member'), default=['kd', 'member'])
     args = parser.parse_args()
     if args.gpu < 0:
         parser.error("GPU index must be nonnegative")
     from .api import _trainer
     trainer = _trainer(args.reference_run)
     if args.command == "run":
-        trainer.run(args.reference_run, args.output_dir, args.epsilon, args.max_grad_norm, args.gpu)
+        trainer.run(args.reference_run, args.output_dir, args.epsilon, args.max_grad_norm, args.gpu, args.draft_variants)
         return
     *_, plans, request = trainer.prepare_request(args.reference_run, args.output_dir,
-                                             args.epsilon, args.max_grad_norm, args.gpu)
+                                             args.epsilon, args.max_grad_norm, args.gpu, args.draft_variants)
     if args.command == "dry-run":
-        print(json.dumps({"request": request, "pairs": pair_budgets(*(p.as_dict() for p in plans.values()))}, indent=2))
+        print(json.dumps({"request": request, "pairs": pair_budgets(plans['target'].as_dict(),
+            plans['draft_member_sft'].as_dict() if 'draft_member_sft' in plans else None,
+            include_kd='kd' in variants(args.draft_variants))}, indent=2))
     else:
         stages = {}
         manifest = args.output_dir / "DP_REQUEST.json"
         if manifest.exists() and json.loads(manifest.read_text()) != request:
             raise ValueError("DP request changed")
-        for role in ROLES:
+        for role in stage_roles(args.draft_variants):
             teacher = stages.get("target", {}).get("checkpoint_sha256") if role == "draft_auxiliary_distilled" or (request.get("head_pair") and role == "draft_member_sft") else None
             stage = read_stage(args.output_dir, role, stage_key(request, role, teacher))
             stages[role] = stage or {}

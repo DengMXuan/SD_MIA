@@ -66,19 +66,21 @@ def make_plan(*, epsilon: float, delta: float = 5e-6, max_grad_norm: float = 1.,
                        steps, q, sigma, actual, version("opacus"))
 
 
-def pair_budgets(target: dict, member: dict) -> dict:
+def pair_budgets(target: dict, member: dict | None = None, *, include_kd=True) -> dict:
     """Basic composition; distillation does not independently spend member budget."""
-    for stage in (target, member):
+    for stage in (target,) if member is None else (target, member):
         if stage["accounted_epsilon"] > stage["epsilon"] + 1e-10:
             raise ValueError("a stage exceeded its privacy cap")
-    if target["epsilon"] != member["epsilon"] or target["delta"] != member["delta"]:
+    if member is not None and (target["epsilon"] != member["epsilon"] or target["delta"] != member["delta"]):
         raise ValueError("this experiment requires matching target/member budgets")
     def bound(epsilon, delta, cap, mechanism):
         return dict(epsilon=epsilon, delta=delta, epsilon_cap=cap, composition=mechanism)
-    return {
-        "draft_auxiliary_distilled": bound(target["accounted_epsilon"], target["delta"],
-                                            target["epsilon"], "target_postprocessing"),
-        "draft_member_sft": bound(target["accounted_epsilon"] + member["accounted_epsilon"],
-                                   target["delta"] + member["delta"],
-                                   target["epsilon"] + member["epsilon"], "basic_sequential"),
-    }
+    result = {}
+    if include_kd:
+        result['draft_auxiliary_distilled'] = bound(target['accounted_epsilon'], target['delta'],
+                                                   target['epsilon'], 'target_postprocessing')
+    if member is not None:
+        result['draft_member_sft'] = bound(target['accounted_epsilon'] + member['accounted_epsilon'],
+                                          target['delta'] + member['delta'],
+                                          target['epsilon'] + member['epsilon'], 'basic_sequential')
+    return result

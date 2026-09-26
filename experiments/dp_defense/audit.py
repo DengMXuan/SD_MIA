@@ -16,19 +16,27 @@ from experiments.shared.models.loading import prepare_records
 from experiments.shared.audit.fixed import run_main
 from experiments.shared.audit.baselines import BASELINE_DEFAULTS, METHODS
 from experiments.dp_defense.artifacts import dp_runtime_files, verify_run
+from experiments.dp_defense.conditions import variants, draft_roles
+from experiments.dp_defense.accounting import pair_budgets
 
 
-def make_tasks(run_dir, output, artifact, *, seed=None, epochs=30, baselines=False):
+def make_tasks(run_dir, output, artifact, *, seed=None, epochs=30, baselines=False, draft_variants=None):
     if epochs <= 0:
         raise ValueError("detector epochs must be positive")
     cfg = artifact["config"]
     spec = identify_pair(artifact)
+    available = variants(artifact['privacy'].get('draft_variants'))
+    selected = available if draft_variants is None else variants(draft_variants)
+    if not set(selected).issubset(available):
+        raise ValueError('requested draft was not trained in this DP condition')
+    if cfg.get('data_seed', cfg['seed']) != cfg['seed']:
+        raise ValueError('DP audit data seed must equal condition seed')
     condition = dict(benchmark=cfg["benchmark"], epoch=cfg["target_epochs"], condition_seed=cfg["seed"], model_pair=spec.name)
     settings = condition_settings(audit_settings(audit_seed=seed, detector_epochs=epochs), cfg["seed"])
     common = dict(run_dir=str(run_dir.resolve()), condition=condition, settings=settings, model_pair=spec.name,
                   dp_request_key=artifact["privacy"]["request_key"])
     tasks = []
-    for role in spec.roles:
+    for role in draft_roles(spec.is_head, selected):
         tasks.append({**common, "id": str(output.resolve() / role / "fixed"),
                       "output": str(output.resolve() / role / "fixed"), "kind": "main",
                       "draft_role": role, "protocol": "fixed", "methods": ["main_fixed_sparse_positive"]})
@@ -69,12 +77,14 @@ def summarize(tasks, output, artifact):
     return result
 
 
-def run_audit(run_dir, output, *, device="cuda:0", seed=None, epochs=30, baselines=False, execute=True):
+def run_audit(run_dir, output, *, device="cuda:0", seed=None, epochs=30, baselines=False, execute=True,
+              draft_variants=None):
     run_dir, output = run_dir.resolve(), output.resolve()
     if output == run_dir or output in run_dir.parents or run_dir in output.parents:
         raise ValueError("audit output must be separate from training artifacts")
     artifact = verify_run(run_dir)
-    tasks = make_tasks(run_dir, output, artifact, seed=seed, epochs=epochs, baselines=baselines)
+    tasks = make_tasks(run_dir, output, artifact, seed=seed, epochs=epochs, baselines=baselines,
+                       draft_variants=draft_variants)
     output.mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
         training_lock = stack.enter_context((run_dir / ".dp.lock").open("r"))
@@ -107,7 +117,10 @@ def run_audit(run_dir, output, *, device="cuda:0", seed=None, epochs=30, baselin
                     pair_role = task.get("draft_role", "draft_auxiliary_distilled")
                     pair_role = {"auxiliary_head": "draft_auxiliary_distilled", "member_head": "draft_member_sft"}.get(pair_role, pair_role)
                     # Extend the ordinary schema without touching old evaluators.
-                    privacy = {**artifact["privacy"]["pairs"][pair_role],
+                    budget = artifact['privacy']['pairs'].get(pair_role)
+                    if task['kind'] == 'baseline' and budget is None:
+                        budget = pair_budgets(artifact['privacy']['stages']['target']['privacy'])['draft_auxiliary_distilled']
+                    privacy = {**budget,
                                "target_epsilon_cap": artifact["privacy"]["stages"]["target"]["privacy"]["epsilon"],
                                "scope": "target_only" if task["kind"] == "baseline" else "deployment_pair",
                                "dp_request_key": artifact["privacy"]["request_key"]}
@@ -125,9 +138,12 @@ def main():
     parser.add_argument("--audit-seed", type=int, default=None, help="must match the condition seed; defaults to it")
     parser.add_argument("--detector-epochs", type=int, default=30)
     parser.add_argument("--include-baselines", action="store_true")
+    parser.add_argument('--draft-variants', nargs='+', choices=('kd', 'member'),
+                        help='defaults to the drafts actually trained in this condition')
     args = parser.parse_args()
     result = run_audit(args.run_dir, args.output_dir, device=args.device, seed=args.audit_seed,
-                       epochs=args.detector_epochs, baselines=args.include_baselines, execute=args.command == "run")
+                       epochs=args.detector_epochs, baselines=args.include_baselines, execute=args.command == "run",
+                       draft_variants=args.draft_variants)
     print(json.dumps({"complete": result["complete"], "rows": len(result["rows"])}))
     if not result["complete"]:
         raise SystemExit(2)

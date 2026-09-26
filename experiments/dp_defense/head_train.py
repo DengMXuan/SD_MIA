@@ -22,9 +22,11 @@ from experiments.shared.training.training import load_causal_lm, _autocast, set_
 from experiments.dp_defense.accounting import make_plan, pair_budgets
 from experiments.dp_defense.artifacts import ROLES, code_sources, owned_run, read_stage, save_stage, stage_key, verify_run
 from experiments.dp_defense.training import dp_sft_train
+from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy
 
 
-def prepare_request(reference, output, epsilon, clip, gpu):
+def prepare_request(reference, output, epsilon, clip, gpu, draft_variants=None):
+    selected = variants(draft_variants)
     reference, output = reference.resolve(), output.resolve()
     if reference == output or reference in output.parents or output in reference.parents:
         raise ValueError("DP output must be separate from reference models")
@@ -32,8 +34,9 @@ def prepare_request(reference, output, epsilon, clip, gpu):
     if details["kind"] not in ("eagle3", "mtp"):
         raise ValueError(f"DP training is not implemented for draft family: {details['kind']}")
     cfg = replace(load_run_config(reference), trainer="full", optimizer="adamw8bit", output_dir=output, gpu=gpu,
-                  pool_path=details["pool"], run_auxiliary_draft=True, run_member_draft=True)
-    for role in ("draft_auxiliary_distilled", "draft_member_sft"):
+                  pool_path=details["pool"], run_auxiliary_draft='kd' in selected, run_member_draft='member' in selected)
+    policy = seed_policy(cfg.as_dict(), details['manifest'])
+    for role in stage_roles(selected)[1:]:
         marker = json.loads((details["paths"][role] / "_COMPLETE.json").read_text())
         if (marker["optimizer_updates"] != 384 or marker["effective_batch_size"] != 16
                 or marker["learning_rate"] != 2e-5):
@@ -41,9 +44,10 @@ def prepare_request(reference, output, epsilon, clip, gpu):
     plans = dict(
         target=make_plan(epsilon=epsilon, max_grad_norm=clip, population=cfg.n_per_class,
                          expected_batch_size=cfg.target_batch_size * cfg.target_grad_accum, epochs=cfg.target_epochs),
-        draft_member_sft=make_plan(epsilon=epsilon, max_grad_norm=clip, population=cfg.n_per_class,
-                                   expected_batch_size=16, steps=384),
     )
+    if 'member' in selected:
+        plans['draft_member_sft'] = make_plan(epsilon=epsilon, max_grad_norm=clip, population=cfg.n_per_class,
+                                              expected_batch_size=16, steps=384)
     source_head = None
     source_fingerprint = None
     if details["kind"] == "mtp":
@@ -56,6 +60,7 @@ def prepare_request(reference, output, epsilon, clip, gpu):
         source_fingerprint = checkpoint_fingerprint(source_head)
     files = [reference / "results.json", details["manifest"], details["audit_path"]]
     request = dict(schema="sd_mia_dp_head_request_v1", head_pair=details["pair"], config=cfg.as_dict(),
+                   draft_variants=list(selected), seed_policy=policy,
                    reference_run=str(reference), plans={k: p.as_dict() for k, p in plans.items()},
                    source_head=str(source_head) if source_head else None, source_head_sha256=source_fingerprint,
                    environment={name: version(name) for name in ("torch", "transformers", "speculators", "opacus")},
@@ -127,10 +132,11 @@ def load_initial_head(pair, source_head, target_checkpoint, device):
     return load_mtp_speculator(source_head, device, verifier_checkpoint=target_checkpoint)
 
 
-def run(reference, output, epsilon, clip, gpu):
+def run(reference, output, epsilon, clip, gpu, draft_variants=None):
     from experiments.shared.drafts.common import tokenizer_for, tokenizer_source_for
     from experiments.shared.data.splits import build_controlled_split_from_shared_manifest
-    cfg, details, plans, request = prepare_request(reference, output, epsilon, clip, gpu)
+    cfg, details, plans, request = prepare_request(reference, output, epsilon, clip, gpu, draft_variants)
+    selected = variants(request.get('draft_variants'))
     with owned_run(output, request) as output:
         if (output / "results.json").exists():
             verify_run(output)
@@ -151,12 +157,13 @@ def run(reference, output, epsilon, clip, gpu):
             raise ValueError("reference split changed")
         target_checkpoint = output / "checkpoints/target"
         stages, manifests = {}, {}
-        for role in ROLES:
+        for role in stage_roles(selected):
             teacher_sha = stages["target"]["checkpoint_sha256"] if role != "target" else None
             key = stage_key(request, role, teacher_sha)
             cached = read_stage(output, role, key)
             stage_name = "target" if role == "target" else ("aux_head" if role == ROLES[1] else "member_head")
             if cached is None:
+                set_seed(cfg.seed)  # Public initialization/dropout; stable across stage resume.
                 if role == "target":
                     model = load_causal_lm(cfg.target_model, device, revision=cfg.target_revision,
                                           local_files_only=True, attn_implementation="sdpa")
@@ -204,7 +211,10 @@ def run(reference, output, epsilon, clip, gpu):
         artifact = dict(config=cfg.as_dict(), protocol_track=dict(pair=pair, target_frozen_before_heads=True,
                          shared_raw_split=str(details["manifest"])), stages=manifests,
                          privacy=dict(schema="sd_mia_dp_condition_v1", request_key=digest(request), stages=stages,
-                                      pairs=pair_budgets(stages["target"]["privacy"], stages["draft_member_sft"]["privacy"]),
+                                      draft_variants=list(selected), draft_roles=draft_roles(True, selected),
+                                      seed_policy=request.get('seed_policy'),
+                                      pairs=pair_budgets(stages["target"]["privacy"],
+                                          stages.get("draft_member_sft", {}).get("privacy"), include_kd='kd' in selected),
                                       scope=request["scope"], reference_run=str(reference.resolve())))
         _write_json(output / "results.json", artifact)
         print(json.dumps(dict(complete=str(output), pairs=artifact["privacy"]["pairs"])), flush=True)

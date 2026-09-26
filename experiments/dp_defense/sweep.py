@@ -9,11 +9,13 @@ import sys
 
 from experiments.paths import ROOT, TRAINING_ROOT, AUDITS
 from experiments.shared.models.registry import MODEL_PAIRS
+from experiments.dp_defense.conditions import variants, stage_roles
 
 
 def commands(args):
     result = []
     pairs = getattr(args, "model_pairs", ["qwen3"])
+    selected = variants(getattr(args, 'draft_variants', None))
     if args.reference_root is not None and len(pairs) != 1:
         raise ValueError("--reference-root requires exactly one model pair")
     for pair in pairs:
@@ -33,7 +35,11 @@ def commands(args):
                                  "--device", f"cuda:{args.gpu}"]
                         if args.include_baselines:
                             audit.append("--include-baselines")
-                        result.append(dict(model_pair=pair, condition=str(condition), epsilon=epsilon, train=train, audit=audit))
+                        train += ['--draft-variants', *selected]
+                        audit += ['--draft-variants', *selected]
+                        result.append(dict(model_pair=pair, condition=str(condition), epsilon=epsilon,
+                                           draft_variants=list(selected), stages=list(stage_roles(selected)),
+                                           train=train, audit=audit))
     return result
 
 
@@ -51,6 +57,7 @@ def main():
     parser.add_argument("--epsilons", nargs="+", type=float, choices=(1., 4., 8.), default=[1., 4., 8.])
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--include-baselines", action="store_true")
+    parser.add_argument('--draft-variants', nargs='+', choices=('kd', 'member'), default=['kd', 'member'])
     args = parser.parse_args()
     if args.gpu < 0 or any(len(v) != len(set(v)) for v in (args.model_pairs, args.benchmarks, args.epochs, args.seeds, args.epsilons)):
         parser.error("choose a nonnegative GPU and unique matrix values")
@@ -59,7 +66,8 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     if args.command == "dry-run":
-        print(json.dumps({"conditions": len(tasks), "artifacts": 3 * len(tasks), "tasks": tasks}, indent=2))
+        print(json.dumps({"conditions": len(tasks), "artifacts": sum(len(t['stages']) for t in tasks),
+                          "draft_audits": sum(len(t['draft_variants']) for t in tasks), "tasks": tasks}, indent=2))
         return
     failures = []
     for task in tasks:

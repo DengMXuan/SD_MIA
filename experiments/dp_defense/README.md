@@ -20,6 +20,26 @@ Python 接口及 train/audit/sweep CLI 支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、
 
 ## 安装与入口
 
+只做 **epoch 1、KD 草稿** 时，使用既有矩阵入口的选择参数：
+
+```bash
+.venv/bin/python -m experiments.dp_defense.sweep dry-run \
+  --model-pairs qwen3 --epochs 1 --draft-variants kd \
+  --seeds 1919 1949 1978
+```
+
+这会规划三个数据集 × 三个 seed × 三个 ε，共 **27 个条件、54 份模型产物、27 个草稿审计**。
+每个条件只训练 DP 目标和向该目标蒸馏的 KD 草稿，不训练 member 草稿，也不要求其检查点。
+KD 部署只继承目标的隐私预算，不加上未执行的 member 训练预算。
+这里的 epoch 1 指目标的期望遍历次数（当前 125 步）；KD 沿用参考条件的蒸馏预算，默认 384 步。
+
+`--draft-variants kd` 同时传给训练和审计；`train`、`audit` 单条件命令也支持此参数。
+Python 的 `plan_private_training` / `train_private` 使用 `draft_variants=["kd"]`，
+`run_audit` 不指定时自动选择该条件实际完成的草稿。默认训练选择仍为 `kd member`。
+可显式对已有双草稿 DP 模型只审计 KD；请求未训练的分支会报错。
+改变训练分支必须使用新输出目录；不能把已有双分支请求改写成单分支来恢复。
+这些参数也适用于现有 EAGLE-3 / MTP 家族，KD 对应其 auxiliary head。
+
 从仓库根目录运行。Opacus 是可选依赖，旧实验不要求安装：
 
 以下以 Qwen 独立草稿为例；更换参考训练目录即可使用已注册的其他基座与 EAGLE-3/MTP 草稿头。CLI 根据训练护照选择对应训练实现。
@@ -89,6 +109,17 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
 
 ## 训练机制与隐私边界
 
+每个新 DP 请求保存 `seed_policy`：**同一条件的 seed = data_seed = 冻结 split.seed =
+目标公开随机 seed = 草稿公开随机 seed = KD 采样 seed = audit_seed**。
+训练规划核对实际 split 内容，审计拒绝另一个 seed；1919/1949/1978 分别对应自己的数据、
+目标、KD 草稿、TCN、辅助分区和 bootstrap。模型训练按阶段重新设置同一个公开 seed，
+避免跳过已完成阶段后，初始化/dropout 随机状态因执行历史发生变化。
+
+**DP 的 Poisson 采样与高斯噪声是明确例外**：它们用独立、未公开的 OS 熵初始化随机流，
+不由公开 seed 推导，不在元数据中保存。公开固定噪声会破坏 DP 的保护假设。
+因此同一个 condition seed 表示匹配的实验条件，不保证重新执行 DP 训练后权重逐字节相同；
+已完成阶段的恢复则复用同一份已校验权重。
+
 - 邻接关系为固定训练配方下增加/移除一个原始文档。当前共享 split 每个
   document ID 恰好对应一个 SFT 样本，拒绝重复 ID；prompt 不计入损失。
   若以后将文档拆成多个样本，必须先实现文档内梯度聚合，不能直接沿用此保证。
@@ -156,3 +187,9 @@ Qwen 共享权重训练、阶段来源/哈希恢复和匹配报告比较。完�
 2026-09-20 验证：新增 23 项 DP 测试和全仓 286 项测试通过；真实
 WikiTection/epoch1/seed1919 的 6,600 条四角色记录及共享划分哈希与参考
 训练护照一致；54 条件矩阵 dry-run 与单条件噪声规划通过，未启动完整训练。
+
+仅 KD 扩展验证：全仓 472 项测试通过；对现有 Qwen3 三个数据集的 epoch1、
+1919/1949/1978 参考条件，完成 ε=1/4/8 的 27 条件只读规划，确认实际冻结 split、
+数据配置和审计 seed 对应一致。CPU 小模型测试覆盖单 KD 分支、真实 DP 目标更新、
+中断恢复后的公开随机状态、预算、分支缺失拒绝，以及五种模型家族的审计选择。
+未执行正式 GPU DP 训练或成员推断实验。

@@ -78,7 +78,9 @@ WikiText 是精选文章，保留旧式标点和空格处理，与新页面存�
 固定 revision 及模型使用条件见 [README.md](README.md)。
 
 本次请求 `iamgroot42/mimir@02500d3b7cece0cb7628e939ba9fc93fdb6362ae` 的 README、
-官方 Wikipedia train/test 小型缓存均返回 HTTP 401；这只说明当前端点访问未成功，
-不据此断言数据集一定需要许可。没有用自行划分的语料冒充 MIMIR。
+官方 Wikipedia train/test 小型缓存的匿名请求返回 HTTP 401。后续核查官方 API 确认
+仓库公开但 `gated: auto`；本机 token 有效，认证数据请求返回 HTTP 403，官方说明
+账号不在授权名单中。需由 token 所属账号在数据集页面申请访问；地址和固定 revision 正确。
+没有用自行划分的语料冒充 MIMIR。
 代码已支持导入官方缓存并完整运行当前主方法，但真实 MIMIR 数据仍需取得。
 CPU 集成测试使用带已知标签的本地合成记录与小型模型，不属于正式有效性结果。

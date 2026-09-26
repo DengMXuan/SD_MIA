@@ -11,6 +11,7 @@ from experiments.paths import prepare_training_storage
 from experiments.shared.core.audit_runtime import _write_json
 from experiments.shared.core.deployment_archive import sha256_file, checkpoint_fingerprint
 from experiments.shared.audit.artifacts import digest, runtime_files
+from experiments.dp_defense.conditions import variants, stage_roles, draft_roles, seed_policy
 
 ROLES = ("target", "draft_auxiliary_distilled", "draft_member_sft")
 
@@ -135,6 +136,26 @@ def verify_run(output: Path):
     artifact = json.loads((output / "results.json").read_text())
     if artifact["privacy"]["request_key"] != digest(request):
         raise ValueError("DP passport request mismatch")
+    selected = variants(request.get('draft_variants'))
+    roles = stage_roles(selected)
+    if set(artifact['privacy']['stages']) != set(roles):
+        raise ValueError('DP passport stages differ from selected drafts')
+    if set(request['plans']) != set(roles) - {'draft_auxiliary_distilled'}:
+        raise ValueError('DP privacy plans differ from selected stages')
+    if 'draft_variants' in request:
+        if (artifact['privacy'].get('draft_variants') != list(selected)
+                or artifact['privacy'].get('draft_roles') != draft_roles(bool(request.get('head_pair')), selected)):
+            raise ValueError('DP passport draft selection differs from request')
+    if 'seed_policy' in request:
+        from experiments.shared.models.registry import split_manifest
+        if artifact['config'] != request['config']:
+            raise ValueError('DP passport config differs from request')
+        policy = seed_policy(request['config'], split_manifest(artifact))
+        if request['seed_policy'] != policy or artifact['privacy'].get('seed_policy') != policy:
+            raise ValueError('DP condition seed policy changed')
+        if (request['config']['run_auxiliary_draft'] != ('kd' in selected)
+                or request['config']['run_member_draft'] != ('member' in selected)):
+            raise ValueError('DP training flags differ from selected drafts')
     for source in request["sources"]:
         if sha256_file(Path(source["path"])) != source["sha256"]:
             raise ValueError(f"DP training source changed: {source['path']}")
@@ -142,7 +163,7 @@ def verify_run(output: Path):
         if checkpoint_fingerprint(Path(request["source_head"])) != request["source_head_sha256"]:
             raise ValueError("initial native MTP source changed")
     stages = {}
-    for role in ROLES:
+    for role in roles:
         teacher = (stages["target"]["checkpoint_sha256"]
                    if role == "draft_auxiliary_distilled" or (request.get("head_pair") and role == "draft_member_sft")
                    else None)
@@ -151,7 +172,7 @@ def verify_run(output: Path):
             raise ValueError("DP stage missing or differs from training passport")
         stages[role] = stage
     from experiments.dp_defense.accounting import epsilon_for, pair_budgets
-    for role in ("target", "draft_member_sft"):
+    for role in request['plans']:
         value = stages[role]["privacy"]
         if any(value.get(k) != v for k, v in request["plans"][role].items()):
             raise ValueError("completed DP stage differs from planned mechanism")
@@ -160,7 +181,8 @@ def verify_run(output: Path):
         actual = epsilon_for(value["noise_multiplier"], value["sample_rate"], value["steps"], value["delta"])
         if abs(actual - value["accounted_epsilon"]) > 1e-8 or actual > value["epsilon"]:
             raise ValueError("DP accounting result does not match mechanism")
-    pairs = pair_budgets(stages["target"]["privacy"], stages["draft_member_sft"]["privacy"])
+    pairs = pair_budgets(stages["target"]["privacy"], stages.get("draft_member_sft", {}).get("privacy"),
+                         include_kd='kd' in selected)
     if pairs != artifact["privacy"]["pairs"]:
         raise ValueError("DP deployment-pair accounting mismatch")
     return artifact

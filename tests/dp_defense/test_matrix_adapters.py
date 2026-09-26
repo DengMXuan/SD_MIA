@@ -31,19 +31,24 @@ def passport(pair):
                             target_revision=spec.target_revision, draft_revision=spec.draft_revision),
                 protocol_track=dict(pair=pair),
                 privacy=dict(request_key='private-request',
-                             stages={'target': {'privacy': {'epsilon': 4.}}},
+                             stages={'target': {'privacy': {'epsilon': 4., 'accounted_epsilon': 4., 'delta': 5e-6}}},
                              pairs={'draft_auxiliary_distilled': dict(epsilon=4., delta=5e-6),
                                     'draft_member_sft': dict(epsilon=8., delta=1e-5)}))
 
 
 @pytest.mark.parametrize('pair', list(MODEL_PAIRS))
-def test_dp_execution_selects_each_registered_draft_and_attaches_its_budget(tmp_path, monkeypatch, pair):
+@pytest.mark.parametrize('selected', [('kd', 'member'), ('kd',), ('member',)])
+def test_dp_execution_selects_each_registered_draft_and_attaches_its_budget(tmp_path, monkeypatch, pair, selected):
     import torch
     from experiments.shared.audit import baselines
     from tests.sft.test_qwen_audit_matrix import write_example_result
 
     artifact = passport(pair)
+    artifact['privacy']['draft_variants'] = list(selected)
+    stage_names = {'kd': 'draft_auxiliary_distilled', 'member': 'draft_member_sft'}
+    artifact['privacy']['pairs'] = {stage_names[v]: artifact['privacy']['pairs'][stage_names[v]] for v in selected}
     spec = MODEL_PAIRS[pair]
+    roles = [spec.roles[0 if v == 'kd' else 1] for v in selected]
     run = tmp_path / 'model'
     run.mkdir()
     (run / '.dp.lock').touch()
@@ -65,11 +70,12 @@ def test_dp_execution_selects_each_registered_draft_and_attaches_its_budget(tmp_
     monkeypatch.setattr(baselines, 'run_baselines', execute)
     result = audit.run_audit(run, tmp_path / 'audit', baselines=True)
     assert result['complete']
-    assert prepared == [(spec.adapter, spec.roles[0]), (spec.adapter, spec.roles[1]), (spec.adapter, None)]
-    assert sources == [(spec.adapter, ('target', role)) for role in spec.roles] + [(spec.adapter, ('target',))]
+    assert prepared == [(spec.adapter, role) for role in roles] + [(spec.adapter, None)]
+    assert sources == [(spec.adapter, ('target', role)) for role in roles] + [(spec.adapter, ('target',))]
     main = [row for row in result['rows'] if row['method'] == 'main_fixed_sparse_positive']
-    assert [row['privacy']['epsilon'] for row in main] == [4., 8.]
+    assert [row['privacy']['epsilon'] for row in main] == [4. if v == 'kd' else 8. for v in selected]
     assert all(row['privacy']['scope'] == 'target_only' for row in result['rows'] if row['draft_role'] == 'target_only')
+    assert all(row['privacy']['epsilon'] == 4. for row in result['rows'] if row['draft_role'] == 'target_only')
     tasks = audit.make_tasks(run, tmp_path / 'audit', artifact)
     assert all(task['settings'] == condition_settings(audit_settings(), 1919) for task in tasks)
 

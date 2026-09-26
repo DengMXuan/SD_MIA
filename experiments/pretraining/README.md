@@ -52,7 +52,13 @@ MIMIR 输入为官方缓存 JSONL（JSON 字符串，或含 `text` 的对象）�
 未提供时明确标为用户提供的官方缓存，不伪造下载证明。原有下载器
 `experiments.pretraining.prepare` 仍可获取固定版本
 `iamgroot42/mimir@02500d3b7cece0cb7628e939ba9fc93fdb6362ae`，不新增下载脚本。
-本次该固定版本端点返回 HTTP 401，尚无真实 MIMIR 数据冻结产物；需要先取得官方缓存。
+该仓库是 gated 数据集（官方 API 标记 `gated: auto`）。匿名数据请求返回 HTTP 401；
+进一步核查发现本机 token 有效，但数据文件的认证请求返回 HTTP 403，官方原因是账号
+尚未进入授权名单。需要用 **该 token 所属的 Hugging Face 账号** 打开
+[数据集页面](https://huggingface.co/datasets/iamgroot42/mimir)，提交页面的访问申请并获准。
+现有下载器会使用 Hugging Face SDK 的本机登录，通常无需重新登录；更换账号时才需要
+`hf auth login`。使用 fine-grained token 时还应允许读取获准访问的 gated 数据集。
+不要把 token 写进脚本或提交到 Git。目前仍未取得真实 MIMIR 数据缓存。
 
 规模须显式选择：每类 1000 条的缓存无法支持 2000+2000 测试和 600 辅助样本。
 例如可选每类 300 条测试、600 条辅助，或取得更大的官方缓存；过滤后不足会报错，不会缩减

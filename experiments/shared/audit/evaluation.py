@@ -40,8 +40,9 @@ def _read_run(run_dir, verification=None):
 
 
 def _task(run_dir, output, spec, artifact, role, seed, epochs):
-    if role not in spec.roles:
-        raise ValueError(f"choose a draft role from {spec.roles}")
+    roles = _available_roles(spec, artifact)
+    if role not in roles:
+        raise ValueError(f"choose a trained draft role from {roles}")
     if type(epochs) is not int or epochs < 1:
         raise ValueError("positive detector epochs and nonnegative integer audit seed required")
     cfg = artifact["config"]
@@ -56,6 +57,13 @@ def _task(run_dir, output, spec, artifact, role, seed, epochs):
     return task
 
 
+def _available_roles(spec, artifact):
+    roles = artifact.get('privacy', {}).get('draft_roles', spec.roles)
+    if not roles or len(set(roles)) != len(roles) or not set(roles).issubset(spec.roles):
+        raise ValueError('passport contains invalid available draft roles')
+    return roles
+
+
 def inspect_run(run_dir, *, verification=None):
     """Read-only passport/weight checks; no inference or output creation.
 
@@ -64,12 +72,13 @@ Private runs additionally require verified stage checksums and privacy accountin
     from experiments.shared.models.readiness import ready
     run_dir = Path(run_dir).resolve()
     spec, artifact = _read_run(run_dir, verification)
-    for role in spec.roles:
+    roles = _available_roles(spec, artifact)
+    for role in roles:
         task = _task(run_dir, run_dir, spec, artifact, role, None, 30)
         valid, reason = ready(task)
         if not valid:
             raise ValueError(reason)
-    return dict(model_pair=spec.name, adapter=spec.adapter, draft_roles=list(spec.roles),
+    return dict(model_pair=spec.name, adapter=spec.adapter, draft_roles=list(roles),
                 private="privacy" in artifact,
                 condition=task["condition"], privacy_pairs=artifact.get("privacy", {}).get("pairs"))
 

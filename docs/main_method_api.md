@@ -71,6 +71,11 @@ comparison = compare_reports(
 )
 ```
 
+只需要 KD 部署时，规划和训练均传入 `draft_variants=["kd"]`，并选择 epoch1 的参考目录。
+产物只包含 DP 目标与辅助蒸馏草稿；`inspect_run` 只检查实际训练的草稿角色。
+矩阵入口使用 `--epochs 1 --draft-variants kd`，详见 [DP 文档](../experiments/dp_defense/README.md)。
+公开 condition seed 贯穿数据、目标/KD、检测器和审计；DP 采样/噪声保持独立且不公开。
+
 DP 训练复用普通实验的冻结数据划分和配方，**从固定公开基础模型/原生头初始化**，不会把已非 DP 微调的权重继续训练后称作 DP 模型。目标做全参数 DP；独立 member 草稿做全参数 DP，member 草稿头只对其可训练参数做逐文档裁剪与加噪。辅助草稿/头用独立辅助集合向 DP 目标重新蒸馏，属于后处理。
 
 `epsilon` 分别约束目标和 member 适配阶段；默认每阶段 δ=5×10⁻⁶。因此 ε=4 的辅助部署上限是 (4, 5×10⁻⁶)，member 部署基本组合上限是 (8, 10⁻⁵)。报告附实际会计结果。多版本联合发布需另行组合；成员 ID 等实验元数据不是 DP 发布物。完整边界见 [DP 文档](../experiments/dp_defense/README.md)。
