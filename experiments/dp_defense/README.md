@@ -25,17 +25,17 @@ Python 接口及 train/audit/sweep CLI 支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、
 ```bash
 cd /home/mxd/lib/SD_MIA
 # 不带参数也默认为 dry-run，只打印计划
-bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh dry-run
-bash experiments/dp_defense/scripts/run_qwen_epoch1_kd_main.sh dry-run
+bash experiments/scripts/training/train_robustness_qwen3_epoch1_kd_dp_epsilon1_4_8.sh dry-run
+bash experiments/scripts/robustness/robustness_main_qwen3_epoch1_kd_dp_epsilon1_4_8.sh dry-run
 
 # 先完成 27 条件的 DP 目标训练与 KD 蒸馏
-bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh run --gpu 0
+bash experiments/scripts/training/train_robustness_qwen3_epoch1_kd_dp_epsilon1_4_8.sh run --gpu 0
 # 再使用上述匹配的 DP 模型完成 27 条件主方法审计
-bash experiments/dp_defense/scripts/run_qwen_epoch1_kd_main.sh run --gpu 0
+bash experiments/scripts/robustness/robustness_main_qwen3_epoch1_kd_dp_epsilon1_4_8.sh run --gpu 0
 
 # 多 GPU：训练和审计仍分开运行
-CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh run --gpus 0 1 2 --workers 3
-CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/dp_defense/scripts/run_qwen_epoch1_kd_main.sh run --gpus 0 1 2 --workers 3
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/scripts/training/train_robustness_qwen3_epoch1_kd_dp_epsilon1_4_8.sh run --gpus 0 1 2 --workers 3
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/scripts/robustness/robustness_main_qwen3_epoch1_kd_dp_epsilon1_4_8.sh run --gpus 0 1 2 --workers 3
 ```
 
 第一个脚本只调用 `sweep train`，第二个只调用 `sweep audit`，不会隐式启动另一阶段。
@@ -78,7 +78,7 @@ CUDA 模式额外占用约 `4 × trainable_parameters` 字节显存，同时减�
 ```bash
 cd /home/mxd/.codex/worktrees/dp-throughput/SD_MIA
 export SD_AUDIT_PYTHON=/home/mxd/lib/SD_MIA/.venv/bin/python
-bash experiments/dp_defense/scripts/train_qwen_epoch1_kd.sh dry-run \
+bash experiments/scripts/training/train_robustness_qwen3_epoch1_kd_dp_epsilon1_4_8.sh dry-run \
   --reference-root /home/mxd/lib/SD_MIA/artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3 \
   --benchmarks wikitection --seeds 1919 --epsilons 4 \
   --accumulator-device cuda --gpu 0 \
@@ -98,7 +98,7 @@ Python `plan_private_training` / `train_private` 使用 `accumulator_device="cud
 训练直接读取各条件的匹配参考护照，核验 `seed == data_seed == shared.seed`，
 初始化、KD 和审计使用对应公开 seed；DP 采样/噪声保留独立未公开随机流。
 数据、模型和参数变化时使用新目录。运行命令及结果路径也见
-[当前实验指南](../../docs/ready_experiments.md)。
+[当前实验指南](../../docs/experiments.md)。
 
 每次启动有独立日志目录，`--log-root` 可覆盖；默认训练在
 `artifacts/training/dp_defense_v1/executions/train/<attempt>/`，审计在

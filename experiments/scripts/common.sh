@@ -1,0 +1,7 @@
+# Shared shell environment; source from experiments/scripts/<purpose>/*.sh.
+SD_REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$SD_REPO_ROOT"
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}" TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+export PYTHONDONTWRITEBYTECODE=1 TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}" MKL_NUM_THREADS="${MKL_NUM_THREADS:-2}" OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+SD_PYTHON="${SD_AUDIT_PYTHON:-$SD_REPO_ROOT/.venv/bin/python}"

@@ -25,16 +25,16 @@ MTP 沿用现有 depth=1 协议适配器；EAGLE 沿用现有层融合与词表�
 从仓库根目录运行。以下 `status`/`dry-run` 只读，不加载模型权重、不做推理、不写实验输出：
 
 ```bash
-bash experiments/cross_model_audit/run.sh status --model-pairs gemma4
+bash experiments/scripts/effectiveness/effectiveness_comparison_multimodel_fixed.sh status --model-pairs gemma4
 
-bash experiments/cross_model_audit/run.sh dry-run \
+bash experiments/scripts/effectiveness/effectiveness_comparison_multimodel_fixed.sh dry-run \
   --model-pairs gemma4 qwen3_8b_eagle3 llama31_8b_eagle3 qwen35_9b_mtp
 ```
 
 未来准备正式验证时，先选择一个配置：
 
 ```bash
-bash experiments/cross_model_audit/run.sh run \
+bash experiments/scripts/effectiveness/effectiveness_comparison_multimodel_fixed.sh run \
   --model-pairs gemma4 \
   --benchmarks newstection --epochs 1 --seeds 1919 --gpus 0
 ```
@@ -42,7 +42,7 @@ bash experiments/cross_model_audit/run.sh run \
 或在指定 GPU 上调度四类其他模型的完整矩阵：
 
 ```bash
-bash experiments/cross_model_audit/run.sh run \
+bash experiments/scripts/effectiveness/effectiveness_comparison_multimodel_fixed.sh run \
   --model-pairs gemma4 qwen3_8b_eagle3 llama31_8b_eagle3 qwen35_9b_mtp \
   --gpus 0 1 2
 ```
@@ -74,7 +74,7 @@ artifacts/audits/cross_model_condition_seed_v1/intermediate/
 重复相同命令会校验并跳过完整方法；主方法复用逐条轨迹、完整观测和已拟合检测器。baseline 未保存的单个方法需要重跑。新结果的来源指纹同时包含本目录和所调用的共享算法，不绕过来源校验。自定义输出根目录的缓存保存在任务自身的 `intermediate/`。
 
 ```bash
-bash experiments/cross_model_audit/run.sh summarize --model-pairs gemma4
+bash experiments/scripts/effectiveness/effectiveness_comparison_multimodel_fixed.sh summarize --model-pairs gemma4
 ```
 
 未完成全部任务时，`summarize` 仍输出部分结果，返回码为 2；摘要会列出未完成项及错误。不同 `--model-pairs`/数据集选择的汇总反映本次选择范围，原始方法结果不变。

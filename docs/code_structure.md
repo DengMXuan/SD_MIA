@@ -1,11 +1,14 @@
 # 代码结构与扩展指南
 
-代码放在 `experiments/`，测试统一在 `tests/`，生成数据与结果放在 `artifacts/`。产物路径约定见 [全生命周期目录](artifact_layout.md)，路径函数集中在 `experiments/paths.py`。
+当前代码放在 `experiments/`，测试统一在 `tests/`，生成数据与结果放在 `artifacts/`。旧 `standalone/` 仅保留已被来源哈希引用的实现；新实验使用 [统一入口规范](experiments.md)，不复制评估器。产物路径约定见 [全生命周期目录](artifact_layout.md)，路径函数集中在 `experiments/paths.py`。
 
 ## 目录职责
 
 ```text
 experiments/
+  scripts/                   # 按实验目的与主要配置命名的正式 shell 入口
+  launchers/                 # 编排与多 GPU 条件队列，不属于数值算法来源树
+  pretraining/benchmarks/     # 独立 MIMIR13 / MIMIR7 / WikiMIA 配置
   paths.py                   # 产物根目录与阶段路径规则
   shared/
     core/                    # 数据合同、指标、分区、缓存与通用运行支持

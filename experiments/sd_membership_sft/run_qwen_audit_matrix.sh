@@ -1,4 +1,1 @@
-#!/usr/bin/env bash
-set -euo pipefail
-SD_SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-exec bash "$SD_SCRIPT_DIR/scripts/run_qwen_audit_matrix.sh" "$@"
+../scripts/effectiveness/effectiveness_comparison_qwen3_sft_matrix.sh

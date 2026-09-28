@@ -1,0 +1,1 @@
+../../experiments/scripts/effectiveness/effectiveness_main_qwen3_gemma4_temporal_matched_b2.sh

@@ -19,27 +19,27 @@
 cd /home/mxd/lib/SD_MIA
 
 # 7 个领域 + full_pile，24 个条件
-bash experiments/pretraining/scripts/run_pythia_mimir.sh dry-run
-bash experiments/pretraining/scripts/run_pythia_mimir.sh run --gpu 0
+bash experiments/scripts/effectiveness/effectiveness_main_pythia_mimir13gram08_fullpile_b2.sh dry-run
+bash experiments/scripts/effectiveness/effectiveness_main_pythia_mimir13gram08_fullpile_b2.sh run --gpu 0
 
 # Qwen 时间代理，3 个条件
-bash experiments/pretraining/scripts/run_qwen_temporal.sh dry-run
+bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_shared_b2.sh dry-run
 # 可选：只组装数据、加载 tokenizer；不加载语言模型，不执行审计
-bash experiments/pretraining/scripts/run_qwen_temporal.sh prepare
+bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_shared_b2.sh prepare
 # run 会先自动完成上面的数据准备，然后运行主方法
-bash experiments/pretraining/scripts/run_qwen_temporal.sh run --gpu 0
+bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_shared_b2.sh run --gpu 0
 
 # 子集示例；括号领域名需要引号
-bash experiments/pretraining/scripts/run_pythia_mimir.sh run --sources 'wikipedia_(en)' --seeds 1919 --gpu 0
-bash experiments/pretraining/scripts/run_qwen_temporal.sh run --seeds 1949 --gpu 0
+bash experiments/scripts/effectiveness/effectiveness_main_pythia_mimir13gram08_fullpile_b2.sh run --sources 'wikipedia_(en)' --seeds 1919 --gpu 0
+bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_shared_b2.sh run --seeds 1949 --gpu 0
 
 # 查看已完成报告；若有缺失/无效报告，退出码为 2
-bash experiments/pretraining/scripts/run_pythia_mimir.sh summarize
-bash experiments/pretraining/scripts/run_qwen_temporal.sh summarize
+bash experiments/scripts/effectiveness/effectiveness_main_pythia_mimir13gram08_fullpile_b2.sh summarize
+bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_shared_b2.sh summarize
 
 # 多 GPU：空闲 worker 自动领取后续条件
-CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/pretraining/scripts/run_pythia_mimir.sh run --gpus 0 1 2 --workers 3
-CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/pretraining/scripts/run_qwen_temporal.sh run --gpus 0 1 2 --workers 3
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/scripts/effectiveness/effectiveness_main_pythia_mimir13gram08_fullpile_b2.sh run --gpus 0 1 2 --workers 3
+CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_shared_b2.sh run --gpus 0 1 2 --workers 3
 ```
 
 `--gpu` 和 `--gpus` 互斥，均使用当前可见设备中的逻辑编号。例如

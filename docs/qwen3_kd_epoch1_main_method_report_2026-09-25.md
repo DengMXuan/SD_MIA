@@ -24,7 +24,7 @@ Qwen3-8B 目标模型与 Qwen3-1.7B 辅助数据蒸馏草稿的固定候选主�
 | 两种 TPR | `ROC TPR` 是同一测试集上，在经验 FPR 不超过 10% 或 1% 时可达到的最大 TPR，属于事后描述。`校准 TPR / 实际 FPR` 用独立 200 条非成员样本定阈值，再在测试集上测得。 |
 | 不确定性 | 下表 `±` 为三个条件 seed 的**样本标准差**，不是均值的置信区间。逐条件 AUC 的文档分层 bootstrap 区间和部署率的 Wilson 区间见原始报告；部署率区间以已定校准阈值为条件。 |
 
-方法与数据约定见[专用重跑说明](../experiments/sd_membership_sft/docs/QWEN_KD_EPOCH1_RERUN.md)和[矩阵设计](../experiments/sd_membership_sft/docs/QWEN_AUDIT_MATRIX_DESIGN.md)。
+方法与数据约定见[专用重跑说明](../experiments/sd_membership_sft/README.md)和[矩阵设计](../experiments/sd_membership_sft/docs/QWEN_AUDIT_MATRIX_DESIGN.md)。
 
 ## 主方法结果
 
@@ -113,6 +113,6 @@ NewsTection 的 AUC 跨 seed 样本标准差最小（0.0021）；WikiTection 的
 ## 数据来源与复核
 
 - 指标取自本批次的[逐条件 CSV](../artifacts/audits/qwen_kd_epoch1_condition_seed_v1/reports/RESULTS.csv)；三 seed 样本标准差取自[聚合 CSV](../artifacts/audits/qwen_kd_epoch1_condition_seed_v1/reports/SEED_SUMMARY.csv)。原始逐条件 `REPORT.json`、分数和观测存于同批次 `tasks/` 与 `intermediate/`。
-- 已执行只读 `bash experiments/sd_membership_sft/scripts/run_qwen_kd_epoch1.sh status`：9/9 条件为 `complete`，各条状态均为 `checked result hashes and sources`；状态中的 seed 映射为 1919→1919、1949→1949、1978→1978，基线任务数为 0。本报告没有重新运行 GPU 推理。
+- 已执行只读 `bash experiments/scripts/effectiveness/effectiveness_main_qwen3_epoch1_kd_b2.sh status`：9/9 条件为 `complete`，各条状态均为 `checked result hashes and sources`；状态中的 seed 映射为 1919→1919、1949→1949、1978→1978，基线任务数为 0。本报告没有重新运行 GPU 推理。
 - 三 seed 标准差只描述这三个训练/划分条件的变动；逐条件 AUC bootstrap 区间不是主方法相对基线的差值区间。主方法的较高 AUC 支持其在本设置下有效识别成员，但**相对现有基线的有效性尚待同条件实测**。
 - 旧基线参考只取已恢复 CSV 中 News/Wiki 的 epoch 1 汇总；旧逐方法报告仍未恢复，旧批次数据也未并入新版 `SUMMARY.json`。ArxivTection 无旧基线参考。

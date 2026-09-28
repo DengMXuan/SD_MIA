@@ -94,7 +94,7 @@ $$
 
 这是一种信号富集规则，不保证每个低概率位置都有成员信息，也不保证最低概率的极少数 token 最有用。
 
-历史位置分析显示，适度比例的 low-q 选择比只保留最极端的 1% 或 2% 更有希望。但该分析使用精确概率差评价位置，只能作为机制证据；实际攻击效果还需要接受位评分实验验证。相关结果见 [E1b 位置分析](../artifacts/archive/sft_runs/accept_only_active_v2/e1_q_only_positions/E1B_Q_ONLY_REPORT.md)。
+历史位置分析显示，适度比例的 low-q 选择比只保留最极端的 1% 或 2% 更有希望。但该分析使用精确概率差评价位置，只能作为机制证据；实际攻击效果还需要接受位评分实验验证。相关结果见 E1b 位置分析（历史产物：`../artifacts/archive/sft_runs/accept_only_active_v2/e1_q_only_positions/E1B_Q_ONLY_REPORT.md`）。
 
 #### （2）位置选择
 
@@ -137,7 +137,7 @@ $$
 
 严格无辅助数据版本应采用固定比例的原始分数。历史 low-q 实现使用参考非成员对多个尺度做标准化，再取最大值，因此不能直接归入本章的严格资源设定，也不能直接沿用其效果数字。
 
-该章的严格版本需要独立实现或确认调用路径，并重新评估。相关基础函数位于 [lowq_baseline.py](../experiments/sd_membership_sft/methods/lowq_baseline.py)。
+该章的严格版本需要独立实现或确认调用路径，并重新评估。相关基础函数位于 [lowq_baseline.py](../experiments/shared/methods/lowq_baseline.py)。
 
 ## 第二章：利用辅助非成员数据的成员推理
 
@@ -203,7 +203,7 @@ $$
 - 草稿难度特征的消融。
 - 如需论证 TCN 的序列建模价值，比较逐位置模型与 TCN。
 
-实现参考：[ConditionalCountTCN](../experiments/sd_membership_sft/methods/conditional_accept_only.py)、[检测器训练](../experiments/sd_membership_sft/methods/difficulty_accept_only.py)。
+实现参考：[ConditionalCountTCN](../experiments/shared/methods/conditional_accept_only.py)、[检测器训练](../experiments/shared/methods/difficulty_accept_only.py)。
 
 ### 2.2 正向成员证据与稀疏聚合
 
@@ -261,7 +261,7 @@ $$
 - 条件模型的全局正向评分与稀疏评分的匹配消融。
 - low-q 与条件评分的同预算比较，并明确辅助数据资源的差别。
 
-实现参考：[主方法评分](../experiments/sd_membership_sft/audit/matrix_main.py)。历史组合消融见 [组合验证结果](../artifacts/archive/sft_runs/combination_validation/FINDINGS_ZH.md)，不替代当前协议下的新验证。
+实现参考：[主方法评分](../experiments/shared/audit/main.py)。历史组合消融见 组合验证结果（历史产物：`../artifacts/archive/sft_runs/combination_validation/FINDINGS_ZH.md`），不替代当前协议下的新验证。
 
 ### 2.3 独立非成员校准与成员判定
 
@@ -296,7 +296,7 @@ $$
 
 可将校准集规模与实际 FPR／TPR 的关系作为补充实验；正文重点保留判定规则、统计条件和数据独立性。
 
-实现参考：[校准工具](../experiments/sd_membership_sft/core/audit_metrics.py)、[指标口径](../experiments/sd_membership_sft/audit/matrix_metrics.py)。
+实现参考：[校准工具](../experiments/shared/core/audit_metrics.py)、[指标口径](../experiments/shared/audit/metrics.py)。
 
 ## 正文与实验部分的分工
 

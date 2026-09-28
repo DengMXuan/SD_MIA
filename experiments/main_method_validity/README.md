@@ -9,10 +9,10 @@ Gemma4 使用 `draft_auxiliary_distilled`，其余三组使用 `auxiliary_head`�
 从仓库根目录执行：
 
 ```bash
-bash experiments/main_method_validity/run_four_models.sh dry-run
-bash experiments/main_method_validity/run_four_models.sh run --gpus 0 1 2 3
-bash experiments/main_method_validity/run_four_models.sh status
-bash experiments/main_method_validity/run_four_models.sh summarize
+bash experiments/scripts/effectiveness/effectiveness_main_fourmodels_epoch1_b2.sh dry-run
+bash experiments/scripts/effectiveness/effectiveness_main_fourmodels_epoch1_b2.sh run --gpus 0 1 2 3
+bash experiments/scripts/effectiveness/effectiveness_main_fourmodels_epoch1_b2.sh status
+bash experiments/scripts/effectiveness/effectiveness_main_fourmodels_epoch1_b2.sh summarize
 ```
 
 运行时根据实际空闲 GPU 修改 `--gpus`。每张 GPU 同时一个 worker；调度器复用
@@ -28,5 +28,5 @@ bash experiments/main_method_validity/run_four_models.sh summarize
 
 采集、TCN、辅助集 320/80/200 内部分配与 AUC bootstrap 均使用对应条件
 seed。每条件使用 2000 member、2000 nonmember、600 audit auxiliary；
-主方法的剩余协议与 [Qwen 专用实验](../sd_membership_sft/docs/QWEN_KD_EPOCH1_RERUN.md)
+主方法的剩余协议与 [Qwen 专用实验](../sd_membership_sft/README.md)
 一致。新脚本不修改或读取 Qwen 当前批次的产物。
