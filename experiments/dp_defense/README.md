@@ -23,7 +23,7 @@ Python 接口及 train/audit/sweep CLI 支持 Qwen3、Gemma 4、Qwen3 EAGLE-3、
 本轮 **Qwen、epoch 1、KD、3 数据集 × 3 seed × ε=1/4/8** 有两个独立脚本：
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 # 不带参数也默认为 dry-run，只打印计划
 bash experiments/scripts/training/train_robustness_qwen3_epoch1_kd_dp_epsilon1_4_8.sh dry-run
 bash experiments/scripts/robustness/robustness_main_qwen3_epoch1_kd_dp_epsilon1_4_8.sh dry-run
@@ -52,6 +52,25 @@ CUDA_VISIBLE_DEVICES=0,1,2 bash experiments/scripts/robustness/robustness_main_q
 `--audit-root` 修改审计结果根目录，`--reference-root` 修改参考训练根目录。
 参数须使用完整名称，不能覆盖固定的模型、epoch 或草稿分支。
 
+### 使用已训练的 Wiki v2 模型
+
+默认模型根目录仍是 `artifacts/training/dp_defense_v1/runs`，不会自动选择磁盘上的
+最新批次；默认范围为三个数据集的全部 27 条件。`dry-run` 只展开命令，
+不检查训练是否已经完成。若训练输出位于 v2 且只完成 Wiki，应显式选择批次和数据集：
+
+```bash
+bash experiments/scripts/robustness/robustness_main_qwen3_epoch1_kd_dp_epsilon1_4_8.sh run \
+  --gpus 3 4 \
+  --benchmarks wikitection \
+  --model-root artifacts/training/dp_defense_v2/runs \
+  --audit-root artifacts/audits/dp_defense_v2/tasks
+```
+
+这会选择 ε=1/4/8 × seed=1919/1949/1978，共 9 个 Wiki 条件。`--model-root`
+应指向包含 `qwen3/epsilon*/.../DP_REQUEST.json` 和 `results.json` 的 **runs 根目录**，
+而不是实际权重所在的 `models/`。审计会继续检查 checkpoint、DP 来源和完成状态。
+只有 `DP_REQUEST.json`、没有 `results.json` 的目录表示尚无完整训练结果，不能用于审计。
+
 ## DP 梯度累加加速
 
 默认 `--accumulator-device cpu` 以 FP32 在主机上累加逐文档裁剪后的梯度。
@@ -73,13 +92,11 @@ CUDA 模式额外占用约 `4 × trainable_parameters` 字节显存，同时减�
 默认保留 CPU 模式；CUDA 不足时不自动改变后端或恢复半完成的优化过程。
 累加设备写入 `DP_REQUEST.json.execution` 和阶段训练记录，切换设备须使用新输出目录。
 
-当前独立工作树可复用原目录的 Python 环境和冻结参考数据，结果默认写入本工作树：
+从仓库根目录运行。先按[复现指南](../../docs/reproduction.md)准备 Python 环境及受控 SFT 参考训练；结果写入指定的独立批次：
 
 ```bash
-cd /home/mxd/.codex/worktrees/dp-throughput/SD_MIA
-export SD_AUDIT_PYTHON=/home/mxd/lib/SD_MIA/.venv/bin/python
 bash experiments/scripts/training/train_robustness_qwen3_epoch1_kd_dp_epsilon1_4_8.sh dry-run \
-  --reference-root /home/mxd/lib/SD_MIA/artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3 \
+  --reference-root artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3 \
   --benchmarks wikitection --seeds 1919 --epsilons 4 \
   --accumulator-device cuda --gpu 0 \
   --model-root artifacts/training/dp_cuda_accum_v1/runs

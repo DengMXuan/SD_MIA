@@ -107,7 +107,7 @@ member/nonmember 的 bootstrap 独立重采样；基座/微调模型的 bootstra
 epoch 1；共 45 个条件、45 项泛化性任务和 45 项接受率任务。
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 
 # 只读：检查训练护照、划分证明、所需权重分片及本地基座快照，不运行推理。
 .venv/bin/python -m experiments.model_quality.cli dry-run
@@ -268,7 +268,7 @@ EAGLE 词表映射和 MTP 位置对齐。
 运行时先完成维护核验，再恢复失败任务（GPU 编号按可用设备调整）：
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 .venv/bin/python -m experiments.maintenance.repair_quality_bytecode
 # 上一步成功后执行：
 .venv/bin/python -m experiments.model_quality.cli run --gpus 1 2 3 4

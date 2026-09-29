@@ -69,6 +69,12 @@ bash experiments/scripts/robustness/robustness_baseline_pythia_mimir7gram02_seve
 
 资源曲线支持 `dry-run / prepare / run / status / summarize`。B 是每个有效候选 token 的判定次数，不是 forward 次数。DP 包装入口支持 `dry-run / run`，完整 DP 汇总、非 DP 参考与对比命令见 [DP 协议](../experiments/dp_defense/README.md)；资源配置和接口见 [资源曲线协议](../experiments/resource_curves/README.md)。
 
+DP 审计默认读取 `artifacts/training/dp_defense_v1/runs` 并选择三个数据集的 27 个条件，
+不会自动寻找其他训练批次。若使用已训练的 Wiki v2，传入
+`--benchmarks wikitection --model-root artifacts/training/dp_defense_v2/runs --audit-root artifacts/audits/dp_defense_v2/tasks`；
+完整命令见 [Wiki v2 用法](../experiments/dp_defense/README.md#使用已训练的-wiki-v2-模型)。
+DP 的 `dry-run` 只打印计划，不代表所选模型已完成训练。
+
 ## 三个独立 Pythia benchmark
 
 原 `paper_positive_controls` 已拆除。对应配置分别在 `experiments/pretraining/benchmarks/mimir13.py`、`mimir7.py`、`wikimia.py`；每次只读所选 benchmark 的输入，没有 `--experiment all`。主方法与 baseline 各有入口、队列、日志和汇总；缺少另一实验数据不会阻止当前实验。

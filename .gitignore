@@ -54,3 +54,14 @@ experiments/results/
 
 # Canonical local models, runs, caches, datasets and migration backups
 /artifacts/
+
+# Local research reports and disclosure materials, kept outside the source release
+/docs/patent/
+/docs/news_wiki_audit_*.csv
+/docs/model_quality_experiment_report_*.md
+/docs/qwen3_kd_epoch1_main_method_report_*.md
+/docs/reports/experiment_audit_*.md
+/docs/experiment_presentation_plan_zh.md
+/docs/introduction_figures_zh.md
+/docs/history/method_development.md
+/experiments/pretraining/DATA_INVENTORY.md

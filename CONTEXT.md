@@ -10,4 +10,4 @@
 - 模型、数据、分数和源码均保留来源校验。整理启动脚本不改变数值实现；改变实验参数或源码后使用新输出批次，不修改旧产物绕过校验。
 - 代码在 `experiments/`；冻结兼容实现见 `standalone/README.md`；回归测试统一在 `tests/`；生成数据和结果在 `artifacts/`。
 
-详细说明：[方法接口](docs/main_method_api.md)、[方法论](docs/methodology_outline_zh.md)、[代码结构](docs/code_structure.md)、[产物目录](docs/artifact_layout.md)、[架构决策](docs/adr/)、[历史方法协议](docs/history/method_development.md)。
+详细说明：[复现指南](docs/reproduction.md)、[方法接口](docs/main_method_api.md)、[方法论](docs/methodology_outline_zh.md)、[代码结构](docs/code_structure.md)、[产物目录](docs/artifact_layout.md)、[架构决策](docs/adr/)。

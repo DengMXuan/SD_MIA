@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import sys
 
+from huggingface_hub.constants import HF_HUB_CACHE
+
 import prepare as data
 
 sys.path.insert(0,str(data.ROOT))
@@ -27,7 +29,7 @@ def main():
     parser.add_argument('--source-root',type=Path,default=data.SOURCE)
     parser.add_argument('--data-root',type=Path,default=data.OUTPUT)
     parser.add_argument('--output-root',type=Path,default=data.ROOT/'artifacts/audits/qwen_temporal_clean_v2/tasks')
-    parser.add_argument('--model-root',type=Path,default=Path('/home/mxd/.cache/huggingface/hub'))
+    parser.add_argument('--model-root',type=Path,default=Path(HF_HUB_CACHE))
     parser.add_argument('--seeds',type=int,nargs='+',choices=data.SEEDS,default=list(data.SEEDS))
     parser.add_argument('--variants',nargs='+',choices=data.VARIANTS,default=['length_matched'])
     parser.add_argument('--detector-epochs',type=int,default=30)

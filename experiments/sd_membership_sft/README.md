@@ -88,7 +88,7 @@ bash experiments/scripts/training/train_effectiveness_fivepairs_epoch1_3.sh --st
 
 默认训练写入上述训练区，权重写入模型区。自定义训练根目录时保持原有独立目录行为；自定义数据划分位置可设置 `SPLIT_ROOT`。
 
-详细设计：[批量审计](docs/QWEN_AUDIT_MATRIX_DESIGN.md)。历史探索协议与方法盘点保留在 [方法开发记录](../../docs/history/method_development.md)。迁移核验和恢复说明见 [维护文档](../maintenance/README.md)。
+详细设计：[批量审计](docs/QWEN_AUDIT_MATRIX_DESIGN.md)。历史分支代码位于 `archive/`；迁移核验和恢复说明见 [维护文档](../maintenance/README.md)。
 
 ## Qwen3 epoch 1 KD 主方法重跑
 
@@ -125,7 +125,7 @@ artifacts/training/controlled_sft_v2/runs/model_pairs/qwen3/
 从仓库根目录执行：
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 
 ### 只读预检：应该显示 9 个 ready，以及四列一一对应的 seed。
 bash experiments/scripts/effectiveness/effectiveness_main_qwen3_epoch1_kd_b2.sh dry-run

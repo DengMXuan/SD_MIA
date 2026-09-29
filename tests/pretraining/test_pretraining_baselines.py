@@ -14,7 +14,7 @@ from experiments.shared.audit.artifacts import digest
 from standalone.pretraining_baselines import evaluate as runner
 from standalone.pretraining_baselines.contract import METHODS, MAIN, frozen_contract
 from standalone.pretraining_baselines.reporting import checked_report
-from standalone.pretraining_baselines.run import parse_args
+from standalone.pretraining_baselines.run import DATA, parse_args
 from tests.pretraining.test_pretraining import pretrained_fixture
 
 SIZES = dict(detector_train=3, detector_validation=1, calibration=2)
@@ -141,11 +141,15 @@ def test_protected_output(pretrained_fixture, tmp_path):
     ['mimir', 'run', '--variants', 'clean_only'],
     ['temporal', 'run', '--sources', 'github'],
     ['mimir', 'run', '--gpus', '0', '0'],
-    ['mimir', 'run', '--output-root', '/home/mxd/lib/SD_MIA-pretraining-data'],
 ])
 def test_invalid_cli_selections(argv):
     with pytest.raises(SystemExit):
         parse_args(argv)
+
+
+def test_baseline_output_cannot_overlap_default_data_root():
+    with pytest.raises(SystemExit):
+        parse_args(['mimir', 'run', '--output-root', str(DATA)])
 
 
 def test_domain_and_seed_selection():

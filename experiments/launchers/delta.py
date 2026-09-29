@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import sys
 
+from huggingface_hub.constants import HF_HUB_CACHE
+
 from experiments.paths import ROOT
 from experiments.shared.core import gpu_pool
 from experiments.launchers.devices import run_jobs
@@ -56,7 +58,7 @@ def main(argv=None):
     parser.add_argument('--dtype', choices=('float32', 'bfloat16'), default='float32')
     parser.add_argument('--data-root', type=Path, default=verify.DEFAULT_DATA)
     parser.add_argument('--audit-root', type=Path, default=verify.DEFAULT_AUDIT)
-    parser.add_argument('--model-root', type=Path, default=Path('/home/mxd/.cache/huggingface/hub'))
+    parser.add_argument('--model-root', type=Path, default=Path(HF_HUB_CACHE))
     parser.add_argument('--output', type=Path, default=ROOT / 'artifacts/audits/pythia_delta_gpu_v1')
     gpu_pool.add_arguments(parser)
     args = parser.parse_args(argv)

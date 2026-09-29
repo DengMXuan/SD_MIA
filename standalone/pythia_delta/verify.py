@@ -14,12 +14,13 @@ import os
 from pathlib import Path
 import time
 
+from huggingface_hub.constants import HF_HUB_CACHE
 import numpy as np
 from scipy.stats import ks_2samp, rankdata
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA = Path('/home/mxd/lib/SD_MIA-pretraining-data/mimir/prepared')
-DEFAULT_AUDIT = Path('/home/mxd/lib/SD_MIA/artifacts/audits/pythia_mimir_v1')
+DEFAULT_DATA = ROOT.parent / 'SD_MIA-pretraining-data/mimir/prepared'
+DEFAULT_AUDIT = ROOT / 'artifacts/audits/pythia_mimir_v1'
 SOURCES = ('github', 'wikipedia_(en)', 'dm_mathematics', 'arxiv',
            'hackernews', 'pile_cc', 'pubmed_central', 'full_pile')
 SCHEMA = 'pythia_exact_delta_v1'
@@ -354,7 +355,7 @@ def main():
     p.add_argument('--dtype',choices=('float32','bfloat16'),default='float32')
     p.add_argument('--data-root',type=Path,default=DEFAULT_DATA)
     p.add_argument('--audit-root',type=Path,default=DEFAULT_AUDIT)
-    p.add_argument('--model-root',type=Path,default=Path('/home/mxd/.cache/huggingface/hub'))
+    p.add_argument('--model-root',type=Path,default=Path(HF_HUB_CACHE))
     p.add_argument('--output',type=Path,default=ROOT/'artifacts/audits/pythia_delta_pilot_v1')
     args=p.parse_args()
     require(args.bootstrap>=100 and args.threads>=1 and args.per_class>=0,'invalid computation sizes')

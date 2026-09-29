@@ -110,3 +110,41 @@ def test_summary_fails_on_incomplete_selected_role(tmp_path):
     comparison = json.loads((tmp_path / 'results/reports/baseline/COMPARISON.json').read_text())
     assert comparison['expected_baseline_rows'] == 6 * 7
     assert not comparison['comparison_complete']
+
+
+def test_mimir7_prepare_uses_explicit_auxiliary_root(tmp_path, monkeypatch, capsys):
+    from experiments.launchers import prepare_mimir7
+    from experiments.pretraining.benchmarks import prepare
+
+    auxiliary_root = tmp_path / 'pinned_mimir13'
+    auxiliary_file = auxiliary_root / 'official/cache_100_200_1000_512/test/github_ngram_13_0.8.jsonl'
+    auxiliary_file.parent.mkdir(parents=True)
+    auxiliary_file.write_text('"auxiliary record"\n')
+    manifest = auxiliary_root / 'prepared/github/seed1919/manifest.json'
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({
+        'source_provenance': {'revision': prepare.MIMIR_REVISION},
+        'source_files': {'nonmember': {
+            'path': str(auxiliary_file), 'sha256': sha256(auxiliary_file),
+        }},
+    }))
+    official_root = tmp_path / 'mimir7_official'
+    for role in ('train', 'test'):
+        source = official_root / f'cache_100_200_1000_512/{role}/github_ngram_7_0.2.jsonl'
+        source.parent.mkdir(parents=True)
+        source.write_text('"test record"\n')
+
+    frozen = []
+    def freeze(member, nonmember, auxiliary, output, **kwargs):
+        frozen.append((member, nonmember, auxiliary, output))
+        return output / 'manifest.json'
+    monkeypatch.setattr(prepare, '_freeze_mimir_with_external_aux', freeze)
+    data_root = tmp_path / 'mimir7_prepared'
+    prepare_mimir7.main([
+        '--source', 'github', '--seeds', '1919', '--data-root', str(data_root),
+        '--official-root', str(official_root), '--auxiliary-root', str(auxiliary_root),
+    ])
+    result = json.loads(capsys.readouterr().out)
+    assert result['manifest'] == str(data_root / 'mimir_7_0.2/github/seed1919/manifest.json')
+    assert frozen[0][2] == auxiliary_file
+    assert frozen[0][0].is_relative_to(official_root)

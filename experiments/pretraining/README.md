@@ -16,7 +16,7 @@
 不带参数等同 `dry-run`，只读核对数据合同并打印计划；显式 `run` 才加载模型运行实验。
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 
 # 7 个领域 + full_pile，24 个条件
 bash experiments/scripts/effectiveness/effectiveness_main_pythia_mimir13gram08_fullpile_b2.sh dry-run
@@ -77,8 +77,8 @@ SFT 的 `auxiliary` 是草稿训练数据，不参与这里的非成员检测器
 新脚本不重抽样，也不改原 manifest、数据池或 split；新数据保存到
 `SD_MIA-pretraining-data/qwen3_temporal_shared_split_v1/seed<seed>/`，首次 `prepare`/`run` 生成。
 
-历史成员仍为 512 token；复用的近期数据保留原 128–512 token 的筛选带，实际长度见
-[数据清单](DATA_INVENTORY.md)。长度差异是分析时间代理结果时需考虑的因素。
+历史成员仍为 512 token；复用的近期数据保留原 128–512 token 的筛选带。
+长度差异是分析时间代理结果时需考虑的因素，实际分布写入准备产物的 manifest。
 数据准备校验原文哈希、日期和精确 token 重复，拒绝历史/近期的近似重复；近期内部的
 近似去重继承原 shared split，不通过替换冻结样本来消除冲突。
 
@@ -127,17 +127,19 @@ MIMIR 输入为官方缓存 JSONL（JSON 字符串，或含 `text` 的对象）�
 未提供时明确标为用户提供的官方缓存，不伪造下载证明。可调用的下载与容量检查接口为：
 
 ```python
+from pathlib import Path
 from experiments.pretraining.datasets import download_mimir, inspect_mimir, prepare_mimir
 
 cache = download_mimir(
     source="wikipedia_(en)", split="ngram_13_0.8", cache_size=1000,
-    local_dir="/home/mxd/lib/SD_MIA-pretraining-data/mimir/official",
+    local_dir="artifacts/pretraining_inputs/mimir/official",
     local_files_only=True,  # 此目录已有下载；首次获取时设为 False
 )
 check = inspect_mimir(cache["member_file"], cache["nonmember_file"],
                       source=cache["source"], n_aux=600)
 # check["max_balanced_test_per_class"] 是预留辅助样本并精确去重后的容量。
 # 新划分才需调用 prepare_mimir；现有已冻结 manifest 可直接交给 evaluate_main。
+new_data_dir = Path("artifacts/pretraining_inputs/mimir/prepared/wikipedia_(en)/seed1919")
 manifest = prepare_mimir(**cache, output_dir=new_data_dir, seed=1919,
                          n_per_class=400, n_aux=600)
 ```
@@ -147,12 +149,10 @@ train/test，不下载邻居缓存或模型权重。`full_pile` 使用 `split="n
 两个准备入口共用解析和过滤逻辑；检查会报告可用数量、长度、源文件哈希及 tokenizer 指纹。
 若权限不足，会提示用本机 SDK 登录账号申请官方数据集访问，不保存 token。
 
-**2026-09-26 重新核查后权限已生效**，所需的 16 个官方缓存文件均已下载并验证。
-先前的 401/403 障碍已解除，无需换用非官方镜像。数据路径、冻结划分和统计见
-[数据清单](DATA_INVENTORY.md)。
+从全新检出的下载、冻结与运行顺序见[复现指南](../../docs/reproduction.md)。
 
 规模须显式选择：每类 1000 条的缓存无法支持 2000+2000 测试和 600 辅助样本。
-已准备 7 个领域各 400/400/600，以及混合 Pile 的 2000/2000/600，均覆盖三个 seed。
+正式矩阵要求 7 个领域各 400/400/600，以及混合 Pile 的 2000/2000/600，均覆盖三个 seed。
 过滤后不足会报错，不会缩减或借用测试样本。`full_pile` 的混合语料结果不能当作某个单一
 领域结果，也不等于 7 个领域的宏平均。官方缓存中的文本长度不固定，512 是截断上限；
 manifest 保存实际长度统计。此准备步骤只做精确 token 去重，不声称额外执行了近似去重。
@@ -172,7 +172,7 @@ Qwen3 发布日 **2025-04-29**。历史和新文本之间、测试和辅助之�
 `min_tokens` 默认 128；原时间候选 manifest 显式设为 512，使所有角色都用 512 个文本 token，
 即首 token 作上下文、511 个评分 token。WikiText raw 的标点/空格处理和精选文章来源仍不同于
 新 Wikipedia，长度统一不能消除全部来源偏差。批量脚本使用上面的 shared split 复用接口，
-近期记录保留原长度，不再全部固定为 512。见 [数据清单](DATA_INVENTORY.md)。
+近期记录保留原长度，不再全部固定为 512；实际分布由派生 manifest 记录。
 
 两种准备函数都原子发布 `records.jsonl` / `manifest.json`，拒绝覆盖已有目录。
 记录来源、哈希、原标签、选样 seed、模型版本、tokenizer 指纹和实际 token ID。

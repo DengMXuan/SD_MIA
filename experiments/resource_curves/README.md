@@ -20,7 +20,7 @@
 ## 执行
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 
 # 不带参数也默认 dry-run；只读检查输入并打印矩阵，不创建结果或加载模型/tokenizer。
 bash experiments/scripts/ablation/ablation_main_qwen3_epoch1_kd_auxiliary_size.sh dry-run
@@ -84,7 +84,7 @@ bash experiments/scripts/ablation/ablation_main_qwen3_epoch1_kd_auxiliary_size.s
 应重点比较校准后的 TPR、实际 FPR 和 conformal 分辨率。
 
 输入为已完成预检查的九组额外 1000 条非成员：
-`/home/mxd/lib/SD_MIA-pretraining-data/resource_curves/<dataset>/seed<seed>/extension/EXTENSION.json`。
+仓库同级的 `SD_MIA-pretraining-data/resource_curves/<dataset>/seed<seed>/extension/EXTENSION.json`。
 可用 `--extension-root` 替换此根目录。脚本检查扩展所属的 pool、split、seed、tokenizer、
 去重约定，并重新验证文本/token 身份；扩展不得使用原模型/审计四角色中的任何记录。
 若该预检查目录缺失，dry-run 明确失败，不重新采样或借用测试集。

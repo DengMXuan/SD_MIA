@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 
+from huggingface_hub.constants import HF_HUB_CACHE
 import numpy as np
 import pyarrow.parquet as pq
 
@@ -20,7 +21,7 @@ from experiments.shared.data.data import _hash_ids
 
 from experiments.paths import ROOT
 DATA_ROOT = ROOT / 'artifacts/data/paper_positive_controls_v1'
-OLD_MIMIR_ROOT = Path('/home/mxd/lib/SD_MIA-pretraining-data/mimir')
+DEFAULT_MIMIR_ROOT = ROOT.parent / 'SD_MIA-pretraining-data/mimir'
 MIMIR_REVISION = '02500d3b7cece0cb7628e939ba9fc93fdb6362ae'
 WIKIMIA_REVISION = 'a89ab76d88f704e9bc5870ac39cc9d458a2a70ac'
 SEEDS = (1919, 1949, 1978)
@@ -64,17 +65,19 @@ def _existing(path: Path, *, benchmark: str, seed: int, files: dict[str, Path]) 
 
 
 def prepare_mimir(source: str, seed: int, data_root: Path = DATA_ROOT,
-                  *, official_root: Path | None = None, allow_download: bool = False) -> Path:
+                  *, official_root: Path | None = None, auxiliary_root: Path | None = None,
+                  allow_download: bool = False) -> Path:
     require(source in MIMIR_SOURCES and seed in SEEDS, 'unsupported MIMIR source or seed')
     data_root = Path(data_root).resolve()
     official_root = Path(official_root or data_root / 'official').resolve()
+    auxiliary_root = Path(auxiliary_root or DEFAULT_MIMIR_ROOT).resolve()
     files = {
         role: official_root / 'cache_100_200_1000_512' / role /
               f'{source}_ngram_7_0.2.jsonl' for role in ('train', 'test')
     }
-    auxiliary_file = (OLD_MIMIR_ROOT / 'official/cache_100_200_1000_512/test' /
+    auxiliary_file = (auxiliary_root / 'official/cache_100_200_1000_512/test' /
                       f'{source}_ngram_13_0.8.jsonl').resolve()
-    old_manifest_path = OLD_MIMIR_ROOT / 'prepared' / source / 'seed1919/manifest.json'
+    old_manifest_path = auxiliary_root / 'prepared' / source / 'seed1919/manifest.json'
     require(auxiliary_file.is_file() and old_manifest_path.is_file(),
             f'pinned 13_gram_0.8 nonmember auxiliary source missing: {source}')
     old_manifest = json.loads(old_manifest_path.read_text())
@@ -166,7 +169,7 @@ def _freeze_mimir_with_external_aux(member_file: Path, nonmember_file: Path,
 def wiki_parquet(length: int, snapshot: Path | None = None) -> Path:
     require(length in WIKI_LENGTHS, 'WikiMIA supports length 64 and 128 here')
     if snapshot is None:
-        root = Path('/home/mxd/.cache/huggingface/hub/datasets--swj0419--WikiMIA')
+        root = Path(HF_HUB_CACHE) / 'datasets--swj0419--WikiMIA'
         snapshot = root / 'snapshots' / WIKIMIA_REVISION
     matches = list((Path(snapshot) / 'data').glob(f'WikiMIA_length{length}-*.parquet'))
     require(len(matches) == 1, f'one pinned WikiMIA length{length} parquet is required: {snapshot}')

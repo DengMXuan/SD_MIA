@@ -18,7 +18,7 @@ import unicodedata
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = Path('/home/mxd/lib/SD_MIA-pretraining-data/qwen3_temporal_shared_split_v1')
+SOURCE = ROOT.parent / 'SD_MIA-pretraining-data/qwen3_temporal_shared_split_v1'
 OUTPUT = ROOT/'artifacts/data/qwen_temporal_clean_v2'
 SEEDS = (1919, 1949, 1978)
 VARIANTS = ('clean_only', 'length_matched')

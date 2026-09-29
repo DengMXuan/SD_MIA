@@ -1,4 +1,4 @@
-# Pythia 证据评分消融：协议与历史结果
+# Pythia 证据评分消融协议
 
 ## Pythia 最小证据计算实验
 
@@ -7,7 +7,6 @@
 检查点或报告。TCN 只做 CPU 前向，使用原检查点的标准化参数和分布核。
 每次必须先复现旧分数、AUC、ROC 和校准指标，才能保存新旧对照。
 
-首轮默认矩阵已完成，结果与解释见 [RESULTS.md](pythia_evidence.md)。
 
 ## 最小矩阵
 
@@ -53,23 +52,23 @@
 
 无需安装新依赖，复用当前环境里的 NumPy、SciPy 和 PyTorch。
 默认 CPU 单线程，条件顺序运行；不启动 GPU 任务、不调用 Transformers。
-工作树可读取原工作区的缓存，结果写到本工作树的独立 artifact 目录。
+须先完成 Pythia 主方法审计以生成输入缓存，输出写入独立的 artifact 目录。
 
 ```bash
-cd /home/mxd/.codex/worktrees/dp-throughput/SD_MIA
-export PYTHIA_EVIDENCE_PYTHON=/home/mxd/lib/SD_MIA/.venv/bin/python
+# 从仓库根目录执行
+export PYTHIA_EVIDENCE_PYTHON=.venv/bin/python
 
 ## 只打印矩阵和缺失报告；不创建输出目录、不加载 TCN。
 "$PYTHIA_EVIDENCE_PYTHON" -B standalone/pythia_evidence/run.py dry-run \
-  --input-root /home/mxd/lib/SD_MIA/artifacts/audits/pythia_mimir_v1
+  --input-root artifacts/audits/pythia_mimir_v1
 
 ## 完成最小矩阵；同命令可校验来源后复用已完成条件。
 CUDA_VISIBLE_DEVICES='' "$PYTHIA_EVIDENCE_PYTHON" -B standalone/pythia_evidence/run.py run \
-  --input-root /home/mxd/lib/SD_MIA/artifacts/audits/pythia_mimir_v1
+  --input-root artifacts/audits/pythia_mimir_v1
 
 ## 自选领域/seed 时使用新的输出根目录。
 CUDA_VISIBLE_DEVICES='' "$PYTHIA_EVIDENCE_PYTHON" -B standalone/pythia_evidence/run.py run \
-  --input-root /home/mxd/lib/SD_MIA/artifacts/audits/pythia_mimir_v1 \
+  --input-root artifacts/audits/pythia_mimir_v1 \
   --sources github 'wikipedia_(en)' --seeds 1919 \
   --output-root artifacts/audits/pythia_evidence_subset_v1
 
@@ -117,46 +116,3 @@ CUDA_VISIBLE_DEVICES='' "$PYTHIA_EVIDENCE_PYTHON" -B -m pytest -q \
 
 小型检查覆盖评分公式、并列分数、独立校准、配对区间、输入只读、来源校验、
 旧分数不一致时中止、完成条件复用以及 dry-run/数据集选择。
-
-## 首轮缓存实验结果
-
-已完成默认最小矩阵：3 领域 × 3 seed × 7 评分，共 63 行结果。
-全程 CPU 单线程，未查询语言模型、未训练 TCN、未改写旧缓存。
-以下均为三个 seed 的平均 AUC；逐 seed 数值、标准差、低 FPR 指标和配对区间见完整输出。
-
-| 评分 | GitHub | Wikipedia | 数学 |
-|---|---:|---:|---:|
-| 旧主方法 | 0.6494 | 0.5789 | 0.5216 |
-| 原始接受率 | 0.7467 | 0.5637 | 0.5053 |
-| 部分校正 λ=0.5 | 0.7401 | 0.5738 | 0.5115 |
-| 完全校正 λ=1 | 0.6129 | 0.5813 | 0.5198 |
-| 弱倾斜＋稀疏 | 0.6189 | 0.5817 | 0.5211 |
-| 原倾斜＋全局 | 0.7085 | 0.5733 | 0.5197 |
-| 弱倾斜＋全局 | 0.6507 | 0.5804 | 0.5204 |
-
-GitHub：部分校正将旧主方法的 0.6494 提高到 0.7401，但仍未超过原始接受率的 0.7467；
-在测试 ROC 的 1% FPR 下，部分校正 TPR 为 13.67%，原始接受率为 25.83%，
-不能仅因 AUC 接近就认为两者在低误报区域等效。
-保持原倾斜强度、只改全局聚合可达 0.7085，说明稀疏聚合假设值得重新审视。
-弱倾斜＋稀疏下降到 0.6189，弱倾斜＋全局为 0.6507，本轮不支持统一减弱倾斜即可改善。
-
-Wikipedia：旧主方法为 0.5789，原始接受率为 0.5637，部分校正为 0.5738。
-完全校正与弱倾斜稀疏分支分别为 0.5813、0.5817，差异较小；
-这里的条件校正仍有收益，不能直接沿用 GitHub 上减弱校正的选择。
-
-数学：各条件仍接近 0.5，旧主方法为 0.5216；本轮两类评分改动没有解决弱区分问题。
-这不证明接受序列中完全没有其他可用结构，只说明本轮固定评分族没有明显恢复性能。
-
-三个 GitHub seed 中，部分校正和原倾斜全局分支相对旧主方法的配对 bootstrap AUC 区间
-均在零以上。区间仅反映当前固定模型与测试文档重采样，未做多重比较校正；
-数据集曾用于诊断，seed 间也可能有重复文档，因此这些结果属于探索性证据，
-不能作为在独立测试集上确认的新方法效果，也不能据此自动按领域选择最优分支。
-
-实现检查：8 项 CPU 回归检查通过；9 个真实条件的旧分数最大绝对误差为
-`1.2434497875801753e-14`，旧 AUC、ROC TPR 和校准指标均与原报告一致。
-真实条件的回放/评分/写出合计约 22.9 秒（不包含全部启动与输入哈希时间），
-这是小型 TCN 和缓存评分耗时，不是语言模型训练/查询的性能测量。
-
-- [完整汇总 Markdown](../../artifacts/audits/pythia_evidence_minimal_v1/SUMMARY.md)
-- [逐 seed 指标 CSV](../../artifacts/audits/pythia_evidence_minimal_v1/SUMMARY.csv)
-- [结构化结果 JSON](../../artifacts/audits/pythia_evidence_minimal_v1/SUMMARY.json)

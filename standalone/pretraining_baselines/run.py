@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sys
 
+from huggingface_hub.constants import HF_HUB_CACHE
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
@@ -16,8 +18,8 @@ from standalone.pretraining_baselines.contract import (
     METHODS, SEEDS, SOURCES, frozen_contract, assert_main_partitions, separate_output,
 )
 
-ORIGINAL = Path('/home/mxd/lib/SD_MIA')
-DATA = Path('/home/mxd/lib/SD_MIA-pretraining-data')
+ORIGINAL = ROOT
+DATA = ROOT.parent / 'SD_MIA-pretraining-data'
 
 
 def plan(args):
@@ -101,7 +103,7 @@ def parse_args(argv=None):
         if args.experiment == 'mimir' else ROOT / 'artifacts/audits/qwen_temporal_clean_v2/tasks')).resolve()
     protected = [args.data_root, args.main_root, ROOT / 'experiments', ROOT / 'standalone',
                  ROOT / 'tests', ROOT / '.git', ORIGINAL / 'experiments', ORIGINAL / 'standalone',
-                 Path('/home/mxd/.cache/huggingface/hub')]
+                 Path(HF_HUB_CACHE)]
     try:
         separate_output(args.output_root, protected)
         if args.log_root:

@@ -2,7 +2,7 @@
 
 核查日期：2026-09-27。本笔记区分**训练数据截止时间**、**权重/模型发布日期**与**实验文章日期**。发布日期只能证明更晚才首次出现的内容不可能进入已发布的固定权重；它不能证明更早的文章实际被训练使用。仓库固定的五组目标/草稿标识和 revision 见 [`model_pairs.json`](../experiments/shared/models/model_pairs.json)。
 
-当前 WikiTection 池的真实 manifest 将近期文章首次创建窗口记为 **2026-04-01 至 2026-09-17**，而非 `pools.py` 中已过时的默认窗口注释；见 [`pool.manifest.json`](../artifacts/data/pools/wikitection/pool.manifest.json)。历史采集器选择 **2023 年首次创建**、截至 **2023-12-31** 的修订版；见 [`README.md`](temporal_data.md)。
+当前实验所用 WikiTection 池的本地 `artifacts/data/pools/wikitection/pool.manifest.json` 将近期文章首次创建窗口记为 **2026-04-01 至 2026-09-17**；该文件是运行时产物，不随源码发布。重新采集的实际窗口须以新生成的 manifest 为准。历史采集器选择 **2023 年首次创建**、截至 **2023-12-31** 的修订版；见[时间数据协议](temporal_data.md)。
 
 | 仓库模型组 | 目标模型的公开时间证据 | 草稿/预测头的公开时间证据 | 对 2023 历史组 / 2026 近期组的含义 |
 |---|---|---|---|

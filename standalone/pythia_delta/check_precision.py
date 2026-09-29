@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 from types import SimpleNamespace
 
+from huggingface_hub.constants import HF_HUB_CACHE
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -19,6 +20,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--output', type=Path, default=v.ROOT/'artifacts/audits/pythia_delta_pilot_v1')
     p.add_argument('--threads', type=int, default=16)
+    p.add_argument('--model-root', type=Path, default=Path(HF_HUB_CACHE))
     args = p.parse_args()
     plan = v.read_json(args.output/'PLAN.json')
     a = SimpleNamespace(datasets=list(dict.fromkeys(c['source'] for c in plan['conditions'])),
@@ -49,7 +51,7 @@ def main():
     torch.set_num_interop_threads(1)
     logging.disable_progress_bar()
     spec = plan['models']['draft']
-    path = Path('/home/mxd/.cache/huggingface/hub')/('models--'+spec['repo_id'].replace('/','--'))/'snapshots'/spec['revision']
+    path = args.model_root/('models--'+spec['repo_id'].replace('/','--'))/'snapshots'/spec['revision']
     tokenizer = AutoTokenizer.from_pretrained(path, local_files_only=True)
     model = AutoModelForCausalLM.from_pretrained(path, local_files_only=True,
                 dtype=torch.bfloat16, attn_implementation='sdpa').eval().requires_grad_(False)

@@ -11,7 +11,7 @@
 ## 运行
 
 ```bash
-cd /home/mxd/lib/SD_MIA
+# 从仓库根目录执行
 
 ## Pythia：默认全部 8 个领域 × 3 seeds = 24 个 GPU 条件，168 个方法结果
 bash experiments/scripts/effectiveness/effectiveness_baseline_pythia_mimir13gram08_fullpile_seven.sh dry-run --gpus 0 1
@@ -42,7 +42,7 @@ MIMIR 的领域名：`arxiv dm_mathematics github hackernews pile_cc pubmed_cent
 
 ## 数据与公平比较
 
-- MIMIR 默认数据根：`/home/mxd/lib/SD_MIA-pretraining-data/mimir/prepared`。普通领域测试 400 成员 + 400 非成员；`full_pile` 为 2000 + 2000。
+- MIMIR 默认数据根：仓库同级的 `SD_MIA-pretraining-data/mimir/prepared`；可用 `--data-root` 指定。普通领域测试 400 成员 + 400 非成员；`full_pile` 为 2000 + 2000。
 - Qwen 默认数据根：仓库的 `artifacts/data/qwen_temporal_clean_v2`，默认 `length_matched`，测试 2000 历史 + 2000 近期文档。历史/近期标签仍是时间代理标签，不能表述为已核实的训练成员身份。
 - 每个条件的 600 条辅助数据按当前主方法的 `deployment_partitions` 划为 320 train + 80 validation + 200 calibration。PETAL 回归拟合、ReCaLL 的 4 个示例、ICP 的 top-5 检索仅使用前两个角色合计 400 条。独立的 200 条只用于阈值校准。全部测试记录保留；不使用旧 M1 的子集划分。
 - 沿用 `k_percent=20`、ReCaLL shots=4、ICP top-k=5/min、SEAD samples=50/temperature=1，其余参数与现有七基线一致。每种方法重置到本条件 seed；方法跳过/恢复不会改变后续方法的随机序列。
@@ -79,7 +79,7 @@ bash experiments/scripts/effectiveness/effectiveness_main_qwen3_temporal_clean_m
 ```bash
 CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 \
-  /home/mxd/lib/SD_MIA/.venv/bin/python -B -m pytest -q -p no:cacheprovider \
+  .venv/bin/python -B -m pytest -q -p no:cacheprovider \
   tests/pretraining/test_pretraining_baselines.py
 ```
 
