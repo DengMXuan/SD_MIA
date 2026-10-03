@@ -66,6 +66,10 @@ bash experiments/scripts/robustness/robustness_baseline_pythia_mimir7gram02_seve
 | `robustness/robustness_main_qwen3_epoch1_kd_auxiliary_domain.sh` | News 辅助 → Wiki/Arxiv；B=2；6 条件 |
 | `ablation/ablation_main_qwen3_epoch1_kd_auxiliary_size.sh` | 拟合量/校准量，5 个唯一配置 × 3 数据集 × 3 seed |
 | `ablation/ablation_main_qwen3_epoch1_kd_query_budget.sh` | B=1/2/4/8/16 × 3 数据集 × 3 seed |
+| `ablation/ablation_main_pythia_preserved_b2_cpu.sh` | Pythia 缓存评分改进；默认 seed1919、B=2；用 `--benchmark mimir13/mimir7/wikimia` 独立执行，12 个固定评分，见[协议](reports/pythia_preserved_evidence.md) |
+| `ablation/ablation_main_pythia_tail_b2_cpu.sh` | Pythia 接受率尾部与有界正向补充；默认 seed1919、B=2；三个 benchmark 独立执行，13 个固定评分，见[协议](reports/pythia_tail_evidence.md) |
+| `ablation/ablation_main_pythia_q_features_b2_cpu.sh` | q 特征与非成员位置参照的三轮开发；按文档分组隔离确认部分，见[协议](reports/pythia_q_exploration.md) |
+| `ablation/ablation_main_pythia_q_reference_confirm_b2_cpu.sh` | 冻结开发选择后，7 条件 × 3 seed 的确认与七基线对照；复用 B=2 反馈，CPU 非成员预测器 |
 
 资源曲线支持 `dry-run / prepare / run / status / summarize`。B 是每个有效候选 token 的判定次数，不是 forward 次数。DP 包装入口支持 `dry-run / run`，完整 DP 汇总、非 DP 参考与对比命令见 [DP 协议](../experiments/dp_defense/README.md)；资源配置和接口见 [资源曲线协议](../experiments/resource_curves/README.md)。
 

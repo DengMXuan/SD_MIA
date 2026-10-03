@@ -55,15 +55,15 @@ def metric_rows(report):
             yield f'{role}/base_minus_tuned', metric, values['delta'], values['ci95_low'], values['ci95_high']
 
 
-def summarize(tasks, output_root):
+def summarize(tasks, output_root, *, inspector=inspect_task, report_reader=read_report):
     for task in tasks:
         validate_output(task['run_dir'], Path(output_root) / 'reports')
     states, rows = {}, []
     for task in tasks:
-        states[task['id']] = state = inspect_task(task)
+        states[task['id']] = state = inspector(task)
         if state['status'] != 'complete':
             continue
-        report = read_report(task)
+        report = report_reader(task)
         for role, metric, value, low, high in metric_rows(report):
             rows.append(dict(**task['condition'], evaluation=task['evaluation'], role=role,
                              metric=metric, value=value, ci95_low=low, ci95_high=high,
@@ -93,10 +93,10 @@ def summarize(tasks, output_root):
     return result
 
 
-def run(tasks, output_root, gpus):
+def run(tasks, output_root, gpus, *, worker_module='experiments.model_quality.cli', inspector=inspect_task):
     for task in tasks:
         validate_output(task['run_dir'], output_root)
-    states = {task['id']: inspect_task(task) for task in tasks}
+    states = {task['id']: inspector(task) for task in tasks}
     blocked = {key: state for key, state in states.items() if state['status'] == 'blocked'}
     if blocked:
         raise ValueError(f'preflight failed: {json.dumps(blocked)}')
@@ -132,10 +132,10 @@ def run(tasks, output_root, gpus):
                 try:
                     check_gpus([gpu])
                     with logfile.open('w') as log:
-                        process = subprocess.run([sys.executable, '-m', 'experiments.model_quality.cli',
+                        process = subprocess.run([sys.executable, '-m', worker_module,
                                                   'worker', '--task-file', str(task_file)], cwd=ROOT, env=env,
                                                  stdout=log, stderr=subprocess.STDOUT)
-                    state = inspect_task(task)
+                    state = inspector(task)
                     ok = process.returncode == 0 and state['status'] == 'complete'
                     _write_json(execution / f'{index}.result.json', dict(returncode=process.returncode, state=state))
                 except Exception as error:
